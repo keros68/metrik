@@ -55,3 +55,29 @@ CREATE INDEX IF NOT EXISTS idx_usage_event_time
 
 CREATE INDEX IF NOT EXISTS idx_usage_event_adapter_time
     ON usage_event(adapter_id, occurred_at_ms);
+
+-- 同步与设置表在既有库上按需补建；它们不参与 schema 兼容性判定，
+-- 缺失时不会触发派生账本重建。
+CREATE TABLE IF NOT EXISTS app_setting (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_usage_event (
+    device_id        TEXT NOT NULL,
+    event_id         TEXT NOT NULL,
+    adapter_id       TEXT NOT NULL,
+    occurred_at_ms   INTEGER NOT NULL,
+    processed_tokens INTEGER NOT NULL CHECK (processed_tokens >= 0),
+    PRIMARY KEY (device_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_usage_event_time
+    ON remote_usage_event(occurred_at_ms);
+
+CREATE TABLE IF NOT EXISTS sync_device (
+    device_id      TEXT PRIMARY KEY,
+    label          TEXT NOT NULL,
+    exported_at_ms INTEGER NOT NULL,
+    last_import_ms INTEGER NOT NULL
+);

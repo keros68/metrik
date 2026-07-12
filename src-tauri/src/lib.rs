@@ -4,6 +4,7 @@ mod domain;
 mod engine;
 mod schema;
 mod storage;
+mod sync;
 
 use anyhow::{Context, Result};
 use domain::{QuotaSample, UsageSnapshot};
@@ -362,6 +363,42 @@ async fn rebuild_local_ledger(
     .map_err(|error| format!("local ledger rebuild task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn sync_settings(state: State<'_, AppState>) -> Result<domain::SyncView, String> {
+    let database_path = state.database_path.clone();
+    let scan_gate = Arc::clone(&state.scan_gate);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        let connection = storage::open_database(&database_path).map_err(|error| error.to_string())?;
+        sync::sync_view(&connection).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("sync settings task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn configure_sync(
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<domain::SyncView, String> {
+    let database_path = state.database_path.clone();
+    let scan_gate = Arc::clone(&state.scan_gate);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        let mut connection =
+            storage::open_database(&database_path).map_err(|error| error.to_string())?;
+        sync::configure(&mut connection, directory).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("sync configuration task failed: {error}"))?
+}
+
 #[cfg(desktop)]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -478,7 +515,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             usage_snapshot,
-            rebuild_local_ledger
+            rebuild_local_ledger,
+            sync_settings,
+            configure_sync
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

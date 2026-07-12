@@ -9,18 +9,32 @@ function shortTokens(value) {
   return String(Math.round(value));
 }
 
-export function UsagePlot({ series, showCodex, showClaude, selectedAgent, formatTokens }) {
+const AGENT_LINE_COLORS = {
+  claude: { stroke: "#e36b49", fill: "rgba(227, 107, 73, 0.11)" },
+  opencode: { stroke: "#1f9d8b", fill: "rgba(31, 157, 139, 0.11)" },
+  default: { stroke: "#246bdb", fill: "rgba(36, 107, 219, 0.11)" },
+};
+
+function pointTotal(point, visibleAgents) {
+  return visibleAgents.reduce(
+    (sum, agent) => sum + Number(point.tokens?.[agent] || 0),
+    0,
+  );
+}
+
+export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }) {
   const shellRef = useRef(null);
   const hostRef = useRef(null);
   const tooltipRef = useRef(null);
   const tooltipTimeRef = useRef(null);
   const tooltipValueRef = useRef(null);
-  const lineColor = selectedAgent === "claude" ? "#e36b49" : "#246bdb";
-  const lineFill = selectedAgent === "claude" ? "rgba(227, 107, 73, 0.11)" : "rgba(36, 107, 219, 0.11)";
+  const palette = AGENT_LINE_COLORS[selectedAgent] || AGENT_LINE_COLORS.default;
+  const lineColor = palette.stroke;
+  const lineFill = palette.fill;
   const accessibleRows = useMemo(() => series.map((point) => ({
     label: point.label,
-    value: (showCodex ? Number(point.codex || 0) : 0) + (showClaude ? Number(point.claude || 0) : 0),
-  })), [series, showClaude, showCodex]);
+    value: pointTotal(point, visibleAgents),
+  })), [series, visibleAgents]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -30,9 +44,7 @@ export function UsagePlot({ series, showCodex, showClaude, selectedAgent, format
 
     const data = [
       series.map((_, index) => index),
-      series.map((point) =>
-        (showCodex ? Number(point.codex || 0) : 0) +
-        (showClaude ? Number(point.claude || 0) : 0)),
+      series.map((point) => pointTotal(point, visibleAgents)),
     ];
 
     const visibleTotal = (index) => data[1][index];
@@ -134,7 +146,7 @@ export function UsagePlot({ series, showCodex, showClaude, selectedAgent, format
       plot.destroy();
       host.replaceChildren();
     };
-  }, [formatTokens, lineColor, lineFill, selectedAgent, series, showClaude, showCodex]);
+  }, [formatTokens, lineColor, lineFill, selectedAgent, series, visibleAgents]);
 
   return (
     <div className="usage-plot-shell" ref={shellRef} style={{ "--series-color": lineColor }}>

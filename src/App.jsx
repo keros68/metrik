@@ -22,7 +22,12 @@ import {
 } from "@phosphor-icons/react";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
-import { getUsageSnapshot, rebuildLocalLedger } from "./usageClient";
+import {
+  configureSync,
+  getSyncSettings,
+  getUsageSnapshot,
+  rebuildLocalLedger,
+} from "./usageClient";
 import {
   applyWindowMode,
   closeWindow,
@@ -61,7 +66,15 @@ const AGENT_META = {
     iconSrc: claudeAppIcon,
     iconClass: "agent-icon--claude",
   },
+  opencode: {
+    label: "OpenCode",
+    accent: "#1f9d8b",
+    monogram: "OC",
+    iconClass: "agent-icon--opencode",
+  },
 };
+
+const AGENT_ORDER = Object.keys(AGENT_META);
 
 function compactTokens(value) {
   const amount = Number(value || 0);
@@ -180,12 +193,13 @@ function PeriodControl({ period, onChange, compact = false }) {
 }
 
 function UsageChart({ snapshot, selectedAgent }) {
-  const showCodex = selectedAgent === "all" || selectedAgent === "codex";
-  const showClaude = selectedAgent === "all" || selectedAgent === "claude";
+  const visibleAgents = selectedAgent === "all" ? AGENT_ORDER : [selectedAgent];
   const activeLabel = selectedAgent === "all"
     ? PERIODS.find((item) => item.id === snapshot.period)?.label || "今日"
     : AGENT_META[selectedAgent].label;
-  const legendClass = selectedAgent === "claude" ? "legend-line--claude" : "legend-line--codex";
+  const legendClass = selectedAgent === "all"
+    ? "legend-line--codex"
+    : `legend-line--${selectedAgent}`;
 
   return (
     <section className="chart-section" aria-labelledby="usage-chart-title">
@@ -195,8 +209,7 @@ function UsageChart({ snapshot, selectedAgent }) {
         <Suspense fallback={<div className="chart-loading">正在准备趋势图</div>}>
           <UsagePlot
             series={snapshot.series}
-            showCodex={showCodex}
-            showClaude={showClaude}
+            visibleAgents={visibleAgents}
             selectedAgent={selectedAgent}
             formatTokens={exactTokens}
           />
@@ -227,7 +240,11 @@ function AgentMark({ agentId }) {
   const meta = AGENT_META[agentId];
   return (
     <span className={`agent-icon ${meta.iconClass}`} aria-hidden="true">
-      <img src={meta.iconSrc} alt="" draggable="false" />
+      {meta.iconSrc ? (
+        <img src={meta.iconSrc} alt="" draggable="false" />
+      ) : (
+        <i className="agent-monogram" style={{ backgroundColor: meta.accent }}>{meta.monogram}</i>
+      )}
     </span>
   );
 }
@@ -468,6 +485,10 @@ function CompactWidget({
           {snapshot.agents.map((agent) => {
             const meta = AGENT_META[agent.id];
             if (!meta) return null;
+            // 小插件空间有限：可选 Agent 没有用量时不占一行，完整视图仍会显示。
+            if (!["codex", "claude"].includes(agent.id) && !agent.tokens && selectedAgent !== agent.id) {
+              return null;
+            }
             const isSelected = selectedAgent === agent.id;
             return (
               <button
@@ -662,6 +683,153 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
         </section>
       </section>
     </div>
+  );
+}
+
+function formatSyncTime(ms) {
+  if (!Number.isFinite(ms)) return "尚未同步";
+  const value = new Date(ms);
+  if (Number.isNaN(value.getTime())) return "尚未同步";
+  return value.toLocaleString("zh-CN", { hour12: false });
+}
+
+function SettingsSection({ onSnapshotRefresh }) {
+  const [settings, setSettings] = useState(null);
+  const [directoryInput, setDirectoryInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSyncSettings()
+      .then((value) => {
+        if (cancelled) return;
+        setSettings(value);
+        setDirectoryInput(value.directory || "");
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", message: "同步设置读取失败，请稍后重试。" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const applySync = async (directory) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const next = await configureSync(directory);
+      setSettings(next);
+      setDirectoryInput(next.directory || "");
+      setFeedback({
+        tone: "success",
+        message: directory ? "同步已开启，本机统计事件已导出。" : "同步已关闭，已清除合并的远端统计。",
+      });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `未能更新同步设置：${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="settings-section" aria-labelledby="settings-title">
+      <header className="settings-header">
+        <span className="section-kicker">设置</span>
+        <h1 id="settings-title">多设备同步</h1>
+        <p>
+          把多台电脑的 Metrik 指向同一个共享文件夹（坚果云、OneDrive、Syncthing 等同步盘均可）。
+          每台设备导出近 30 天的统计事件并自动合并其他设备的导出；
+          导出只含事件标识、Agent、时间与 token 数，不含对话内容、Prompt 或凭据。
+        </p>
+      </header>
+
+      {settings?.demo && (
+        <p className="settings-demo-note">浏览器演示模式：同步配置仅在桌面应用中可用。</p>
+      )}
+
+      <div className="settings-card">
+        <label htmlFor="sync-directory">同步文件夹（绝对路径）</label>
+        <div className="settings-directory-row">
+          <input
+            id="sync-directory"
+            type="text"
+            value={directoryInput}
+            placeholder="例如 D:\Nutstore\metrik-sync"
+            spellCheck={false}
+            disabled={busy || settings?.demo}
+            onChange={(event) => setDirectoryInput(event.target.value)}
+          />
+          <button
+            type="button"
+            className="ledger-button ledger-button--primary"
+            disabled={busy || settings?.demo || !directoryInput.trim()}
+            onClick={() => applySync(directoryInput.trim())}
+          >
+            {settings?.enabled ? "更新目录" : "开启同步"}
+          </button>
+          {settings?.enabled && (
+            <button
+              type="button"
+              className="ledger-button ledger-button--secondary"
+              disabled={busy || settings?.demo}
+              onClick={() => applySync(null)}
+            >
+              关闭同步
+            </button>
+          )}
+        </div>
+
+        {feedback && (
+          <p
+            className={`settings-feedback settings-feedback--${feedback.tone}`}
+            role={feedback.tone === "error" ? "alert" : "status"}
+          >
+            {feedback.message}
+          </p>
+        )}
+
+        {settings && !settings.demo && (
+          <dl className="settings-status">
+            <div>
+              <dt>本机设备</dt>
+              <dd>{settings.deviceLabel} · {settings.deviceId}</dd>
+            </div>
+            <div>
+              <dt>上次同步</dt>
+              <dd>{settings.enabled ? formatSyncTime(settings.lastExportMs) : "同步未开启"}</dd>
+            </div>
+            {settings.lastError && (
+              <div>
+                <dt>同步告警</dt>
+                <dd className="settings-error-text">{settings.lastError}</dd>
+              </div>
+            )}
+          </dl>
+        )}
+      </div>
+
+      {settings?.enabled && (
+        <div className="settings-card">
+          <h2>已发现的设备</h2>
+          {settings.devices.length === 0 ? (
+            <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
+          ) : (
+            <ul className="settings-device-list">
+              {settings.devices.map((device) => (
+                <li key={device.id}>
+                  <strong>{device.label}</strong>
+                  <span>{device.id}</span>
+                  <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </main>
   );
 }
 
@@ -959,6 +1127,8 @@ export function App() {
               />
             </div>
           </>
+        ) : activeNav === "settings" ? (
+          <SettingsSection onSnapshotRefresh={() => loadSnapshot(currentPeriod.current)} />
         ) : (
           <EmptySection section={activeNav} onReturn={() => setActiveNav("overview")} />
         )}

@@ -1,6 +1,10 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// 所有已启用 adapter 的 ID，前端 series 与汇总按此顺序输出。
+pub const AGENT_IDS: [&str; 3] = ["codex", "claude", "opencode"];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TokenVector {
@@ -138,8 +142,7 @@ pub struct UsageSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPoint {
     pub label: String,
-    pub codex: i64,
-    pub claude: i64,
+    pub tokens: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,6 +175,28 @@ pub struct SourceView {
     pub detail: String,
     pub quality: String,
     pub quality_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncView {
+    pub enabled: bool,
+    pub directory: Option<String>,
+    pub device_id: String,
+    pub device_label: String,
+    pub last_export_ms: Option<i64>,
+    pub last_error: Option<String>,
+    pub devices: Vec<SyncDeviceView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncDeviceView {
+    pub id: String,
+    pub label: String,
+    pub exported_at_ms: i64,
+    pub last_import_ms: i64,
+    pub events: i64,
 }
 
 pub fn stable_hash(value: &str) -> String {

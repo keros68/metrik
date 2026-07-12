@@ -1,8 +1,10 @@
 mod claude;
 mod codex;
+mod opencode;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use opencode::OpencodeAdapter;
 
 use crate::domain::{stable_hash, ParsedSource};
 use anyhow::Result;

@@ -18,8 +18,7 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    codex: 0,
-    claude: 0,
+    tokens: { codex: 0, claude: 0, opencode: 0 },
   }));
 }
 
@@ -30,8 +29,11 @@ function demoSeries(period) {
   if (period === "today") {
     return totalBase.map((total, index) => ({
       label: config.label(index),
-      codex: Math.round(total * 0.695),
-      claude: Math.round(total * 0.305),
+      tokens: {
+        codex: Math.round(total * 0.655),
+        claude: Math.round(total * 0.285),
+        opencode: Math.round(total * 0.06),
+      },
     }));
   }
 
@@ -40,8 +42,11 @@ function demoSeries(period) {
     const weekend = period === "week" && (index === 5 || index === 6) ? 0.63 : 1;
     return {
       label: config.label(index),
-      codex: Math.round(892_400 * config.factor * wave * weekend / config.points),
-      claude: Math.round(392_160 * config.factor * (1.14 - (index % 4) / 18) * weekend / config.points),
+      tokens: {
+        codex: Math.round(892_400 * config.factor * wave * weekend / config.points),
+        claude: Math.round(392_160 * config.factor * (1.14 - (index % 4) / 18) * weekend / config.points),
+        opencode: Math.round(76_400 * config.factor * (0.9 + (index % 3) / 10) * weekend / config.points),
+      },
     };
   });
 }
@@ -50,7 +55,8 @@ function demoSnapshot(period = "today") {
   const scale = PERIOD_SCALE[period]?.factor || 1;
   const codexTokens = Math.round(892_400 * scale);
   const claudeTokens = Math.round(392_160 * scale);
-  const totalTokens = codexTokens + claudeTokens;
+  const opencodeTokens = Math.round(76_400 * scale);
+  const totalTokens = codexTokens + claudeTokens + opencodeTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -84,11 +90,13 @@ function demoSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: codexTokens, share: (codexTokens / totalTokens) * 100 },
       { id: "claude", tokens: claudeTokens, share: (claudeTokens / totalTokens) * 100 },
+      { id: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
       { id: "codex-local", kind: "local", label: "ChatGPT / Codex 本地 Token", detail: "由 Codex Agent 会话日志中的累计快照计算正增量，并排除重复记录。", quality: "exact", qualityLabel: "精确解析" },
       { id: "claude-local", kind: "local", label: "Claude Code 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
     ],
   };
 }
@@ -127,6 +135,7 @@ function pendingSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
+      { id: "opencode", tokens: 0, share: 0 },
     ],
     sources: [
       {
@@ -175,6 +184,7 @@ function unavailableSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
+      { id: "opencode", tokens: 0, share: 0 },
     ],
     sources: [
       {
@@ -212,9 +222,33 @@ async function rebuildLocalLedger(period = "today") {
   return invoke("rebuild_local_ledger", { period });
 }
 
+async function getSyncSettings() {
+  if (!isTauriRuntime()) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return {
+      demo: true,
+      enabled: false,
+      directory: null,
+      deviceId: "demo-device",
+      deviceLabel: "演示设备",
+      lastExportMs: null,
+      lastError: null,
+      devices: [],
+    };
+  }
+  return invoke("sync_settings");
+}
+
+async function configureSync(directory) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置同步");
+  }
+  return invoke("configure_sync", { directory });
+}
+
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
   isTauriRuntime() ? pendingSnapshot(period) : demoSnapshot(period)
 );
 
-export { loadUsageSnapshot as getUsageSnapshot, rebuildLocalLedger };
+export { loadUsageSnapshot as getUsageSnapshot, rebuildLocalLedger, getSyncSettings, configureSync };

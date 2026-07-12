@@ -1,7 +1,11 @@
-use crate::adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, ScanDiagnostics};
+use crate::adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, OpencodeAdapter, ScanDiagnostics};
 use crate::app_server;
-use crate::domain::{AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, UsageSnapshot};
+use crate::domain::{
+    AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, SyncView, UsageSnapshot,
+    AGENT_IDS,
+};
 use crate::storage;
+use crate::sync;
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use rusqlite::{params, Connection};
@@ -52,6 +56,7 @@ pub fn build_snapshot(
 
     storage::prune_missing_sources(&mut connection)?;
     storage::prune_old_events(&connection, retention_cutoff)?;
+    sync::run_sync(&mut connection, now);
     query_snapshot(&connection, period, report)
 }
 
@@ -101,6 +106,7 @@ fn ingest_sources(
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![
         Box::new(CodexAdapter::detected()),
         Box::new(ClaudeAdapter::detected()),
+        Box::new(OpencodeAdapter::detected()),
     ];
     let mut report = ScanReport::default();
 
@@ -237,12 +243,16 @@ fn query_snapshot_at(
     let end_ms = local_now.timestamp_millis() + 1;
     let events = load_events(connection, start_ms, end_ms)?;
 
-    let mut codex_buckets = vec![0_i64; bucket_count];
-    let mut claude_buckets = vec![0_i64; bucket_count];
-    let mut totals: HashMap<String, i64> =
-        HashMap::from([("codex".into(), 0), ("claude".into(), 0)]);
+    let mut buckets: HashMap<&str, Vec<i64>> = AGENT_IDS
+        .iter()
+        .map(|agent| (*agent, vec![0_i64; bucket_count]))
+        .collect();
+    let mut totals: HashMap<&str, i64> = AGENT_IDS.iter().map(|agent| (*agent, 0)).collect();
 
     for event in events {
+        let Some(agent) = AGENT_IDS.iter().find(|agent| **agent == event.adapter) else {
+            continue;
+        };
         let local = match Local.timestamp_millis_opt(event.timestamp).single() {
             Some(value) => value,
             None => continue,
@@ -255,32 +265,29 @@ fn query_snapshot_at(
         if index >= bucket_count {
             continue;
         }
-        if event.adapter == "codex" {
-            codex_buckets[index] += event.tokens;
-        } else if event.adapter == "claude" {
-            claude_buckets[index] += event.tokens;
-        }
-        *totals.entry(event.adapter).or_default() += event.tokens;
+        buckets.get_mut(agent).expect("registered agent")[index] += event.tokens;
+        *totals.entry(agent).or_default() += event.tokens;
     }
 
     if period == "today" {
-        for index in 1..bucket_count {
-            codex_buckets[index] += codex_buckets[index - 1];
-            claude_buckets[index] += claude_buckets[index - 1];
+        for bucket in buckets.values_mut() {
+            for index in 1..bucket_count {
+                bucket[index] += bucket[index - 1];
+            }
         }
     }
 
     let series = (0..bucket_count)
         .map(|index| SeriesPoint {
             label: bucket_label(period, start_date, index),
-            codex: codex_buckets[index],
-            claude: claude_buckets[index],
+            tokens: AGENT_IDS
+                .iter()
+                .map(|agent| ((*agent).to_owned(), buckets[agent][index]))
+                .collect(),
         })
         .collect();
 
-    let codex_total = *totals.get("codex").unwrap_or(&0);
-    let claude_total = *totals.get("claude").unwrap_or(&0);
-    let total_tokens = codex_total + claude_total;
+    let total_tokens: i64 = totals.values().sum();
     let denominator = if period == "today" {
         average_prior_elapsed_windows(connection, &local_now, comparison_days)?
     } else {
@@ -325,19 +332,15 @@ fn query_snapshot_at(
         series,
         quota: load_quota(connection, "primary")?,
         secondary_quota: load_quota(connection, "secondary")?,
-        agents: vec![
-            AgentSummary {
-                id: "codex".into(),
-                tokens: codex_total,
-                share: share(codex_total),
-            },
-            AgentSummary {
-                id: "claude".into(),
-                tokens: claude_total,
-                share: share(claude_total),
-            },
-        ],
-        sources: source_views(report),
+        agents: AGENT_IDS
+            .iter()
+            .map(|agent| AgentSummary {
+                id: (*agent).to_owned(),
+                tokens: totals[agent],
+                share: share(totals[agent]),
+            })
+            .collect(),
+        sources: source_views(report, sync::sync_view(connection).ok()),
     })
 }
 
@@ -380,6 +383,10 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
         "SELECT adapter_id, occurred_at_ms, processed_tokens
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
+         UNION ALL
+         SELECT adapter_id, occurred_at_ms, processed_tokens
+         FROM remote_usage_event
+         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          ORDER BY occurred_at_ms",
     )?;
     let rows = statement.query_map(params![start_ms, end_ms], |row| {
@@ -395,8 +402,10 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
 fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<i64> {
     connection
         .query_row(
-            "SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
-             WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2",
+            "SELECT (SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
+                     WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)
+                  + (SELECT COALESCE(SUM(processed_tokens), 0) FROM remote_usage_event
+                     WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)",
             params![start_ms, end_ms],
             |row| row.get(0),
         )
@@ -456,16 +465,18 @@ fn load_quota(connection: &Connection, window_key: &str) -> Result<QuotaView> {
     }
 }
 
-fn source_views(report: ScanReport) -> Vec<SourceView> {
+fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<SourceView> {
     let discovered = |id: &str| report.discovered.get(id).copied().unwrap_or(0);
     let refreshed = |id: &str| report.refreshed.get(id).copied().unwrap_or(0);
     let errors = |id: &str| report.errors.get(id).copied().unwrap_or(0);
     let diagnostics = |id: &str| report.diagnostics.get(id).cloned().unwrap_or_default();
     let codex_diagnostics = diagnostics("codex");
     let claude_diagnostics = diagnostics("claude");
+    let opencode_diagnostics = diagnostics("opencode");
     let codex_partial = codex_diagnostics.partial_sources > 0 || errors("codex") > 0;
     let claude_partial = claude_diagnostics.partial_sources > 0 || errors("claude") > 0;
-    vec![
+    let opencode_partial = opencode_diagnostics.partial_sources > 0 || errors("opencode") > 0;
+    let mut views = vec![
         SourceView {
             id: "codex-quota".into(),
             kind: "official".into(),
@@ -510,7 +521,47 @@ fn source_views(report: ScanReport) -> Vec<SourceView> {
             }
             .into(),
         },
-    ]
+        SourceView {
+            id: "opencode-local".into(),
+            kind: "local".into(),
+            label: "OpenCode 本地 Token".into(),
+            detail: format!(
+                "发现 {} 条近期消息，本次更新 {} 条。{}读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
+                discovered("opencode"),
+                refreshed("opencode"),
+                coverage_detail(&opencode_diagnostics, errors("opencode"))
+            ),
+            quality: if opencode_partial { "partial" } else { "exact" }.into(),
+            quality_label: if opencode_partial {
+                "部分覆盖"
+            } else {
+                "精确解析"
+            }
+            .into(),
+        },
+    ];
+
+    if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
+        let device_count = sync_status.devices.len();
+        let remote_events: i64 = sync_status.devices.iter().map(|device| device.events).sum();
+        let failed = sync_status.last_error.is_some();
+        views.push(SourceView {
+            id: "device-sync".into(),
+            kind: "sync".into(),
+            label: "多设备同步".into(),
+            detail: match (&sync_status.last_error, device_count) {
+                (Some(error), _) => format!("上次同步未完全成功：{error}。合并数字可能滞后，本机统计不受影响。"),
+                (None, 0) => "已开启文件夹同步，尚未发现其他设备的导出。其他电脑指向同一文件夹后会自动合并。".into(),
+                (None, count) => format!(
+                    "已合并 {count} 台其他设备的 {remote_events} 条统计事件；导出只含事件标识、Agent、时间与 token 数，不含任何对话内容。"
+                ),
+            },
+            quality: if failed { "partial" } else { "exact" }.into(),
+            quality_label: if failed { "部分覆盖" } else { "精确解析" }.into(),
+        });
+    }
+
+    views
 }
 
 fn coverage_detail(diagnostics: &AdapterDiagnostics, errors: usize) -> String {
@@ -610,7 +661,7 @@ mod tests {
             },
         );
 
-        let views = source_views(report);
+        let views = source_views(report, None);
         let codex = views
             .iter()
             .find(|source| source.id == "codex-local")
@@ -634,7 +685,7 @@ mod tests {
         let mut report = ScanReport::default();
         report.errors.insert("claude".into(), 1);
 
-        let views = source_views(report);
+        let views = source_views(report, None);
         let claude = views
             .iter()
             .find(|source| source.id == "claude-local")
@@ -658,7 +709,7 @@ mod tests {
             },
         );
 
-        let claude = source_views(report)
+        let claude = source_views(report, None)
             .into_iter()
             .find(|source| source.id == "claude-local")
             .unwrap();
