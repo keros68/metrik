@@ -18,7 +18,7 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    tokens: { codex: 0, claude: 0, opencode: 0 },
+    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0 },
   }));
 }
 
@@ -31,7 +31,8 @@ function demoSeries(period) {
       label: config.label(index),
       tokens: {
         codex: Math.round(total * 0.655),
-        claude: Math.round(total * 0.285),
+        claude: Math.round(total * 0.245),
+        zcode: Math.round(total * 0.04),
         opencode: Math.round(total * 0.06),
       },
     }));
@@ -45,6 +46,7 @@ function demoSeries(period) {
       tokens: {
         codex: Math.round(892_400 * config.factor * wave * weekend / config.points),
         claude: Math.round(392_160 * config.factor * (1.14 - (index % 4) / 18) * weekend / config.points),
+        zcode: Math.round(52_800 * config.factor * (0.8 + (index % 5) / 12) * weekend / config.points),
         opencode: Math.round(76_400 * config.factor * (0.9 + (index % 3) / 10) * weekend / config.points),
       },
     };
@@ -55,8 +57,9 @@ function demoSnapshot(period = "today") {
   const scale = PERIOD_SCALE[period]?.factor || 1;
   const codexTokens = Math.round(892_400 * scale);
   const claudeTokens = Math.round(392_160 * scale);
+  const zcodeTokens = Math.round(52_800 * scale);
   const opencodeTokens = Math.round(76_400 * scale);
-  const totalTokens = codexTokens + claudeTokens + opencodeTokens;
+  const totalTokens = codexTokens + claudeTokens + zcodeTokens + opencodeTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -90,12 +93,14 @@ function demoSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: codexTokens, share: (codexTokens / totalTokens) * 100 },
       { id: "claude", tokens: claudeTokens, share: (claudeTokens / totalTokens) * 100 },
+      { id: "zcode", tokens: zcodeTokens, share: (zcodeTokens / totalTokens) * 100 },
       { id: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
       { id: "codex-local", kind: "local", label: "ChatGPT / Codex 本地 Token", detail: "由 Codex Agent 会话日志中的累计快照计算正增量，并排除重复记录。", quality: "exact", qualityLabel: "精确解析" },
       { id: "claude-local", kind: "local", label: "Claude Code 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "zcode-local", kind: "local", label: "ZCode / GLM 本地 Token", detail: "读取 model_usage 统计表的逐请求计数；不读取消息内容。", quality: "exact", qualityLabel: "精确解析" },
       { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
     ],
   };
@@ -135,6 +140,7 @@ function pendingSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
+      { id: "zcode", tokens: 0, share: 0 },
       { id: "opencode", tokens: 0, share: 0 },
     ],
     sources: [
@@ -184,6 +190,7 @@ function unavailableSnapshot(period = "today") {
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
+      { id: "zcode", tokens: 0, share: 0 },
       { id: "opencode", tokens: 0, share: 0 },
     ],
     sources: [

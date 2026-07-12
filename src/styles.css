@@ -143,14 +143,16 @@ button:focus-visible {
   transition-timing-function: var(--motion);
 }
 
+/* 深色玻璃材质：底色留给系统级 Acrylic/Vibrancy，前端只做
+   白色低透明度的分层（正文 0.94 / 次要 0.6 / 轨道分隔 0.1）。 */
 .widget-shell--transparent {
   background:
-    radial-gradient(circle at 84% 0%, rgba(255, 255, 255, 0.42), transparent 38%),
-    rgba(247, 246, 242, 0.5);
+    linear-gradient(158deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.02) 36%, rgba(255, 255, 255, 0) 60%),
+    rgba(22, 25, 31, 0.64);
   box-shadow:
-    0 16px 44px rgba(31, 33, 36, 0.1),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.46),
-    inset 0 1px rgba(255, 255, 255, 0.62);
+    0 18px 48px rgba(8, 10, 14, 0.4),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .widget-titlebar {
@@ -513,26 +515,72 @@ button:focus-visible {
 .widget-expand:hover { background: #111214; }
 .widget-expand span { font-size: 10px; font-weight: 520; }
 
-.widget-shell--transparent .period-control--compact {
-  background: rgba(237, 236, 232, 0.55);
+.widget-shell--transparent .widget-titlebar {
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: 0 1px rgba(255, 255, 255, 0.08);
 }
 
-.widget-shell--transparent .widget-quota,
-.widget-shell--transparent .widget-agent-list {
-  background: rgba(251, 251, 250, 0.56);
+.widget-shell--transparent .widget-brand { color: rgba(255, 255, 255, 0.94); }
+
+.widget-shell--transparent .window-action { color: rgba(255, 255, 255, 0.62); }
+
+.widget-shell--transparent .window-action:hover {
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.widget-shell--transparent .window-action--active { color: #9ec1f5; }
+
+.widget-shell--transparent .period-control--compact {
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.widget-shell--transparent .period-control--compact button { color: rgba(255, 255, 255, 0.6); }
+
+.widget-shell--transparent .period-control--compact button.is-selected {
+  color: rgba(18, 20, 24, 0.94);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .widget-shell--transparent .widget-metric {
   padding-inline: 7px 5px;
-  background: rgba(251, 251, 250, 0.44);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 14px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
 }
 
-.widget-shell--transparent .widget-titlebar {
-  background: rgba(251, 251, 250, 0.3);
-  box-shadow: 0 1px rgba(31, 33, 36, 0.06);
+.widget-shell--transparent .widget-metric strong { color: rgba(255, 255, 255, 0.96); }
+
+.widget-shell--transparent .widget-quota,
+.widget-shell--transparent .widget-agent-list {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.08);
 }
+
+.widget-shell--transparent .widget-quota { color: rgba(255, 255, 255, 0.94); }
+
+.widget-shell--transparent .widget-quota:hover {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.widget-shell--transparent .widget-quota-track { background: rgba(255, 255, 255, 0.12); }
+.widget-shell--transparent .widget-quota-track i { background: #7fabef; }
+.widget-shell--transparent .widget-quota--stale > strong { color: #d8b892; }
+.widget-shell--transparent .widget-quota--stale .widget-quota-track i { background: #c1a284; }
+
+.widget-shell--transparent .widget-agent { color: rgba(255, 255, 255, 0.92); box-shadow: 0 1px rgba(255, 255, 255, 0.08); }
+.widget-shell--transparent .widget-agent:last-child { box-shadow: none; }
+
+.widget-shell--transparent .widget-agent:hover,
+.widget-shell--transparent .widget-agent--selected { background: rgba(255, 255, 255, 0.07); }
 
 .widget-shell--transparent .widget-metric > span,
 .widget-shell--transparent .widget-quota > span,
@@ -543,8 +591,19 @@ button:focus-visible {
 .widget-shell--transparent .widget-agent em,
 .widget-shell--transparent .widget-source,
 .widget-shell--transparent .widget-source small {
-  color: #35373b;
+  color: rgba(255, 255, 255, 0.58);
 }
+
+.widget-shell--transparent .widget-comparison svg { color: #7fabef; }
+.widget-shell--transparent .widget-source:hover { color: rgba(255, 255, 255, 0.9); }
+
+.widget-shell--transparent .widget-expand {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.widget-shell--transparent .widget-expand:hover { background: rgba(255, 255, 255, 0.22); }
 
 .sr-only {
   position: absolute;
@@ -932,6 +991,7 @@ button:focus-visible {
 .legend-line--codex { background: var(--blue); }
 .legend-line--claude { background: var(--orange); }
 .legend-line--opencode { background: #1f9d8b; }
+.legend-line--zcode { background: #6a5ae0; }
 
 .inspector-zone {
   min-width: 0;
@@ -1768,18 +1828,17 @@ button:focus-visible {
 @media (prefers-reduced-transparency: reduce) {
   .widget-shell--transparent {
     background:
-      radial-gradient(circle at 84% 0%, rgba(255, 255, 255, 0.96), transparent 38%),
-      rgba(247, 246, 242, 0.98);
+      linear-gradient(158deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 55%),
+      rgba(24, 27, 33, 0.98);
   }
 
-  .widget-shell--transparent .period-control--compact { background: rgba(237, 236, 232, 0.9); }
+  .widget-shell--transparent .period-control--compact { background: rgba(255, 255, 255, 0.14); }
 
   .widget-shell--transparent .widget-quota,
-  .widget-shell--transparent .widget-agent-list { background: rgba(251, 251, 250, 0.96); }
-
+  .widget-shell--transparent .widget-agent-list,
   .widget-shell--transparent .widget-metric {
-    background: rgba(251, 251, 250, 0.96);
-    box-shadow: inset 0 0 0 1px rgba(31, 33, 36, 0.06);
+    background: rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
 }
 

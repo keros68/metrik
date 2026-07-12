@@ -11,6 +11,7 @@ function shortTokens(value) {
 
 const AGENT_LINE_COLORS = {
   claude: { stroke: "#e36b49", fill: "rgba(227, 107, 73, 0.11)" },
+  zcode: { stroke: "#6a5ae0", fill: "rgba(106, 90, 224, 0.11)" },
   opencode: { stroke: "#1f9d8b", fill: "rgba(31, 157, 139, 0.11)" },
   default: { stroke: "#246bdb", fill: "rgba(36, 107, 219, 0.11)" },
 };

@@ -1,14 +1,14 @@
 # Metrik
 
-Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。当前支持 ChatGPT / Codex Agent、Claude Code 和 OpenCode，明确区分官方配额、本地 Token 记录和估算值。
+Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。当前支持 ChatGPT / Codex Agent、Claude Code、ZCode（智谱 GLM coding plan）和 OpenCode，明确区分官方配额、本地 Token 记录和估算值。
 
 ![Metrik desktop widget](design/metrik-compact-standard-final.png)
 
 ## 现在已经具备
 
-- ChatGPT / Codex Agent、Claude Code 与 OpenCode 的今日、7 天和 30 天 Token 统计
+- ChatGPT / Codex Agent、Claude Code、ZCode / GLM 与 OpenCode 的今日、7 天和 30 天 Token 统计
 - 默认 320 × 320 桌面小插件，一键展开完整统计
-- 标准与透明两种材质；透明模式使用系统级毛玻璃（Windows Acrylic / macOS Vibrancy），偏好保存在本机，Windows 毛玻璃已实机验证
+- 标准与深色玻璃两种材质；玻璃模式为系统级毛玻璃（Windows Acrylic / macOS Vibrancy）加深色 HUD 分层，偏好保存在本机，Windows 已在明暗桌面实机验证
 - ChatGPT 与 Claude Code 使用各自官方应用图标，仅用于识别对应服务
 - 可选置顶、展开后收起回原位；前台紧凑态每 5 分钟、完整态每 60 秒刷新，重新获得焦点时立即刷新
 - 系统托盘常驻：不占任务栏（Windows）/ Dock（macOS），关闭按钮收进托盘，左键图标切换显示，右键菜单退出；Windows 已实测，macOS 菜单栏行为待实机验收
@@ -38,6 +38,7 @@ Metrik 不把所有数字混成一个“用量”。
 | ChatGPT / Codex Token | `~/.codex/sessions` 与 `archived_sessions` | 累计快照转正增量；相同会话跨路径去重 |
 | Claude Code Token | `~/.claude/projects` | 按 provider `message.id` 跨会话合并，字段取最大值；`requestId` 与模型只做冲突检测，冲突消息会拒绝并标记“部分覆盖” |
 | Claude Code 配额 | 无稳定本地来源 | 显示不可用，不根据 Token 猜测 |
+| ZCode / GLM Token | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | 逐请求计数按请求标识去重；只读统计列，不读消息内容表 |
 | OpenCode Token | `~/.local/share/opencode/storage` | 每条 assistant 消息一个 JSON 文件，按消息标识去重 |
 | 其他设备统计 | 用户指定的同步文件夹 | 各设备导出统计事件，按设备 + 事件标识合并，不参与本机去重 |
 
@@ -102,6 +103,6 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture
 1. 当前：320 × 320 透明桌面小插件、准确的 ChatGPT / Codex 与 Claude Code 本地统计和可信度说明
 2. 下一步：真正的追加游标、macOS/Linux 构建验收（含托盘/菜单栏行为），再评估开机启动
 3. 再下一步：端到端加密的中继同步（当前为共享文件夹方案），不上传原始对话或凭据
-4. 后续 Agent：Cursor、Copilot CLI 等云端配额型 Agent 需要凭据方案，按适配器成熟度逐个接入
+4. 后续 Agent：Cursor（云端 API + 本地 state.vscdb 凭据）与 Antigravity（本机 language server RPC）在参考实现中均依赖凭据提取或运行中进程，需要单独的凭据同意机制与装有对应软件的实机验收后再接入
 
 详细边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

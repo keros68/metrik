@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// 所有已启用 adapter 的 ID，前端 series 与汇总按此顺序输出。
-pub const AGENT_IDS: [&str; 3] = ["codex", "claude", "opencode"];
+pub const AGENT_IDS: [&str; 4] = ["codex", "claude", "zcode", "opencode"];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TokenVector {

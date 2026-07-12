@@ -1,10 +1,12 @@
 mod claude;
 mod codex;
 mod opencode;
+mod zcode;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
 pub use opencode::OpencodeAdapter;
+pub use zcode::ZcodeAdapter;
 
 use crate::domain::{stable_hash, ParsedSource};
 use anyhow::Result;

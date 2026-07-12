@@ -1,4 +1,6 @@
-use crate::adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, OpencodeAdapter, ScanDiagnostics};
+use crate::adapters::{
+    AgentAdapter, ClaudeAdapter, CodexAdapter, OpencodeAdapter, ScanDiagnostics, ZcodeAdapter,
+};
 use crate::app_server;
 use crate::domain::{
     AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, SyncView, UsageSnapshot,
@@ -106,6 +108,7 @@ fn ingest_sources(
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![
         Box::new(CodexAdapter::detected()),
         Box::new(ClaudeAdapter::detected()),
+        Box::new(ZcodeAdapter::detected()),
         Box::new(OpencodeAdapter::detected()),
     ];
     let mut report = ScanReport::default();
@@ -515,6 +518,29 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             ),
             quality: if claude_partial { "partial" } else { "exact" }.into(),
             quality_label: if claude_partial {
+                "部分覆盖"
+            } else {
+                "精确解析"
+            }
+            .into(),
+        },
+        SourceView {
+            id: "zcode-local".into(),
+            kind: "local".into(),
+            label: "ZCode / GLM 本地 Token".into(),
+            detail: format!(
+                "发现 {} 个用量库，本次更新 {} 个。{}只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
+                discovered("zcode"),
+                refreshed("zcode"),
+                coverage_detail(&diagnostics("zcode"), errors("zcode"))
+            ),
+            quality: if diagnostics("zcode").partial_sources > 0 || errors("zcode") > 0 {
+                "partial"
+            } else {
+                "exact"
+            }
+            .into(),
+            quality_label: if diagnostics("zcode").partial_sources > 0 || errors("zcode") > 0 {
                 "部分覆盖"
             } else {
                 "精确解析"

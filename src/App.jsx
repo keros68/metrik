@@ -66,6 +66,12 @@ const AGENT_META = {
     iconSrc: claudeAppIcon,
     iconClass: "agent-icon--claude",
   },
+  zcode: {
+    label: "ZCode / GLM",
+    accent: "#6a5ae0",
+    monogram: "Z",
+    iconClass: "agent-icon--zcode",
+  },
   opencode: {
     label: "OpenCode",
     accent: "#1f9d8b",
