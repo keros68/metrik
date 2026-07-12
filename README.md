@@ -13,7 +13,8 @@ Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。当前支持
 - 可选置顶、展开后收起回原位；前台紧凑态每 5 分钟、完整态每 60 秒刷新，重新获得焦点时立即刷新
 - 系统托盘常驻：不占任务栏（Windows）/ Dock（macOS），关闭按钮收进托盘，左键图标切换显示，右键菜单退出；Windows 已实测，macOS 菜单栏行为待实机验收
 - 可选的多设备同步：在设置页指定一个共享文件夹（坚果云 / OneDrive / Syncthing 等），各设备导出近 30 天统计事件并自动合并；导出只含事件标识、Agent、时间与 token 数，关闭同步会清除已合并的远端统计
-- ChatGPT / Codex 主短窗与次级长窗官方配额、采集时间、陈旧状态及重置时间；桌面小插件只显示短窗，完整视图显示两者
+- 每个 Agent 的官方配额显示 5 小时与 7 天两个窗口；桌面小插件的配额卡点击可在有数据的 Agent 间切换，完整视图并列展示全部 Agent
+- Claude Code 官方配额来自可选的 statusLine 钩子（设置页一键安装/卸载）：Claude Code 自身把官方额度推给钩子脚本落地成本地文件，零网络请求、零凭据；已有自定义 statusLine 时拒绝覆盖
 - Agent 筛选、趋势悬停和数据来源说明
 - Windows 已构建和实测；macOS、Linux 共用 Tauri/Rust 代码基础，仍需各自机器验收
 - 本地 SQLite 事件账本，重复扫描不会重复入账
@@ -37,7 +38,7 @@ Metrik 不把所有数字混成一个“用量”。
 | ChatGPT / Codex 配额 | 本机 `codex app-server` | 官方滚动窗口；失败时回退到日志内的官方快照 |
 | ChatGPT / Codex Token | `~/.codex/sessions` 与 `archived_sessions` | 累计快照转正增量；相同会话跨路径去重 |
 | Claude Code Token | `~/.claude/projects` | 按 provider `message.id` 跨会话合并，字段取最大值；`requestId` 与模型只做冲突检测，冲突消息会拒绝并标记“部分覆盖” |
-| Claude Code 配额 | 无稳定本地来源 | 显示不可用，不根据 Token 猜测 |
+| Claude Code 配额 | 可选 statusLine 钩子写入的本地文件 | 官方 5 小时 / 7 天窗口；未开启钩子时显示不可用，不猜测 |
 | ZCode / GLM Token | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | 逐请求计数按请求标识去重；只读统计列，不读消息内容表 |
 | OpenCode Token | `~/.local/share/opencode/storage` | 每条 assistant 消息一个 JSON 文件，按消息标识去重 |
 | 其他设备统计 | 用户指定的同步文件夹 | 各设备导出统计事件，按设备 + 事件标识合并，不参与本机去重 |

@@ -2,9 +2,10 @@ use crate::adapters::{
     AgentAdapter, ClaudeAdapter, CodexAdapter, OpencodeAdapter, ScanDiagnostics, ZcodeAdapter,
 };
 use crate::app_server;
+use crate::claude_hook::ClaudeHook;
 use crate::domain::{
-    AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, SyncView, UsageSnapshot,
-    AGENT_IDS,
+    AgentQuotaView, AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, SyncView,
+    UsageSnapshot, AGENT_IDS,
 };
 use crate::storage;
 use crate::sync;
@@ -54,6 +55,9 @@ pub fn build_snapshot(
         for sample in &samples {
             storage::upsert_quota(&connection, sample)?;
         }
+    }
+    for sample in ClaudeHook::detected().quota_samples() {
+        storage::upsert_quota(&connection, &sample)?;
     }
 
     storage::prune_missing_sources(&mut connection)?;
@@ -333,8 +337,16 @@ fn query_snapshot_at(
         comparison_percent,
         comparison_available,
         series,
-        quota: load_quota(connection, "primary")?,
-        secondary_quota: load_quota(connection, "secondary")?,
+        agent_quotas: AGENT_IDS
+            .iter()
+            .map(|agent| {
+                Ok(AgentQuotaView {
+                    agent: (*agent).to_owned(),
+                    five_hour: load_quota(connection, agent, "primary")?,
+                    weekly: load_quota(connection, agent, "secondary")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
         agents: AGENT_IDS
             .iter()
             .map(|agent| AgentSummary {
@@ -415,11 +427,11 @@ fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Re
         .context("failed to calculate comparison usage")
 }
 
-fn load_quota(connection: &Connection, window_key: &str) -> Result<QuotaView> {
+fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
     let row = connection.query_row(
         "SELECT remaining_percent, resets_at_ms, source_label, quality, collected_at_ms
-         FROM quota_snapshot WHERE adapter_id = 'codex' AND window_key = ?1",
-        [window_key],
+         FROM quota_snapshot WHERE adapter_id = ?2 AND window_key = ?1",
+        params![window_key, adapter_id],
         |row| {
             Ok((
                 row.get::<_, f64>(0)?,
@@ -942,7 +954,7 @@ mod tests {
             )
             .unwrap();
 
-        let quota = load_quota(&connection, "primary").unwrap();
+        let quota = load_quota(&connection, "codex", "primary").unwrap();
         assert!(quota.available);
         assert!(quota.stale);
         assert!(quota.reset_expired);
@@ -967,7 +979,7 @@ mod tests {
             )
             .unwrap();
 
-        let quota = load_quota(&connection, "primary").unwrap();
+        let quota = load_quota(&connection, "codex", "primary").unwrap();
         assert!(quota.available);
         assert!(!quota.stale);
         assert!(!quota.reset_expired);
@@ -994,7 +1006,7 @@ mod tests {
             )
             .unwrap();
 
-        let quota = load_quota(&connection, "primary").unwrap();
+        let quota = load_quota(&connection, "codex", "primary").unwrap();
         assert!(!quota.stale);
     }
 
@@ -1020,8 +1032,8 @@ mod tests {
             )
             .unwrap();
 
-        let primary = load_quota(&connection, "primary").unwrap();
-        let secondary = load_quota(&connection, "secondary").unwrap();
+        let primary = load_quota(&connection, "codex", "primary").unwrap();
+        let secondary = load_quota(&connection, "codex", "secondary").unwrap();
         assert_eq!(primary.remaining_percent, 72.0);
         assert_eq!(secondary.remaining_percent, 83.0);
         assert!(!secondary.stale);
@@ -1046,7 +1058,7 @@ mod tests {
             )
             .unwrap();
 
-        let secondary = load_quota(&connection, "secondary").unwrap();
+        let secondary = load_quota(&connection, "codex", "secondary").unwrap();
         assert!(!secondary.available);
         assert_eq!(secondary.remaining_percent, 0.0);
         assert_eq!(secondary.quality, "unavailable");
@@ -1067,9 +1079,9 @@ mod tests {
             snapshot.total_tokens,
             snapshot.agents[0].tokens,
             snapshot.agents[1].tokens,
-            snapshot.quota.available,
-            snapshot.quota.remaining_percent,
-            snapshot.quota.source_label
+            snapshot.agent_quotas[0].five_hour.available,
+            snapshot.agent_quotas[0].five_hour.remaining_percent,
+            snapshot.agent_quotas[0].five_hour.source_label
         );
         assert!(!snapshot.is_demo);
         assert!((1..=24).contains(&snapshot.series.len()));

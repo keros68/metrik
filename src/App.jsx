@@ -8,7 +8,6 @@ import {
   ChartBar,
   ChartLineUp,
   CircleHalfTilt,
-  Clock,
   ClockCounterClockwise,
   Database,
   FileText,
@@ -24,9 +23,11 @@ import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
 import {
   configureSync,
+  getClaudeHookStatus,
   getSyncSettings,
   getUsageSnapshot,
   rebuildLocalLedger,
+  setClaudeHook,
 } from "./usageClient";
 import {
   applyWindowMode,
@@ -144,6 +145,51 @@ function snapshotIsPartial(snapshot) {
   return snapshot.sources?.some((source) => source.quality === "partial") || false;
 }
 
+const UNAVAILABLE_QUOTA = {
+  available: false,
+  remainingPercent: 0,
+  resetsInMinutes: null,
+  ageMinutes: null,
+  stale: false,
+  resetExpired: false,
+  sourceLabel: "暂无可靠来源",
+  quality: "unavailable",
+};
+
+function agentQuotaFor(snapshot, agentId) {
+  return (
+    snapshot.agentQuotas?.find((entry) => entry.agent === agentId) || {
+      agent: agentId,
+      fiveHour: UNAVAILABLE_QUOTA,
+      weekly: UNAVAILABLE_QUOTA,
+    }
+  );
+}
+
+function quotaHasData(entry) {
+  return Boolean(entry && (entry.fiveHour.available || entry.weekly.available));
+}
+
+function QuotaBarRow({ label, view }) {
+  const isSnapshot = view.stale || view.quality === "official_snapshot";
+  return (
+    <div className={`quota-bar-row ${isSnapshot ? "quota-bar-row--stale" : ""}`}>
+      <small>{label}</small>
+      <div className="quota-bar-track" aria-hidden="true">
+        <i style={{ transform: `scaleX(${view.available ? view.remainingPercent / 100 : 0})` }} />
+      </div>
+      <em>{view.available ? `${Math.round(view.remainingPercent)}%` : "--"}</em>
+      <span>
+        {view.resetExpired
+          ? "已重置，等待刷新"
+          : view.available
+            ? `${formatReset(view.resetsInMinutes)}后重置`
+            : "暂不可用"}
+      </span>
+    </div>
+  );
+}
+
 function Sidebar({ activeNav, onNavChange, snapshot, loading }) {
   const partial = snapshotIsPartial(snapshot);
   return (
@@ -256,47 +302,38 @@ function AgentMark({ agentId }) {
 }
 
 function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
-  const quota = snapshot.quota;
-  const secondaryQuota = snapshot.secondaryQuota;
-  const quotaIsSnapshot = quota.stale || quota.quality === "official_snapshot";
-  const secondaryIsSnapshot = secondaryQuota.stale || secondaryQuota.quality === "official_snapshot";
   const dataUnavailable = snapshot.pending || snapshot.loadError;
   const partial = snapshotIsPartial(snapshot);
   return (
     <aside className="inspector" aria-label="配额与 Agent 明细">
-      <div className="inspector-section inspector-quota">
-        <span className="eyebrow">{quotaIsSnapshot ? "ChatGPT / Codex 短窗快照" : "ChatGPT / Codex 短窗剩余"} · {quotaProvenance(quota)}</span>
-        <div className="quota-value">
-          {quota.available ? Math.round(quota.remainingPercent) : "--"}<small>{quota.available ? "%" : ""}</small>
-        </div>
-        <div className={`quota-track ${quotaIsSnapshot ? "quota-track--stale" : ""}`} aria-hidden="true">
-          <span style={{ transform: `scaleX(${quota.available ? quota.remainingPercent / 100 : 0})` }} />
-        </div>
-      </div>
-
-      <div className={`secondary-quota ${secondaryIsSnapshot ? "secondary-quota--stale" : ""}`}>
-        <div className="secondary-quota-head">
-          <span className="eyebrow">{secondaryIsSnapshot ? "ChatGPT / Codex 长窗快照" : "ChatGPT / Codex 长窗剩余"}</span>
-          <strong>{secondaryQuota.available ? `${Math.round(secondaryQuota.remainingPercent)}%` : "--"}</strong>
-        </div>
-        <div className="secondary-quota-track" aria-hidden="true">
-          <span style={{ transform: `scaleX(${secondaryQuota.available ? secondaryQuota.remainingPercent / 100 : 0})` }} />
-        </div>
-        <small>
-          {quotaProvenance(secondaryQuota)} · {secondaryQuota.resetExpired
-            ? "已重置，等待刷新"
-            : secondaryQuota.available
-              ? `${formatReset(secondaryQuota.resetsInMinutes)}后重置`
-              : "重置时间暂不可用"}
-        </small>
-      </div>
-
-      <div className="reset-row">
-        <div>
-          <span className="eyebrow">短窗距离重置</span>
-          <strong>{quota.resetExpired ? "等待刷新" : quota.available ? formatReset(quota.resetsInMinutes) : "暂不可用"}</strong>
-        </div>
-        <Clock size={30} weight="light" aria-hidden="true" />
+      <div className="quota-groups" aria-label="各 Agent 官方配额">
+        {AGENT_ORDER.map((agentId) => {
+          const entry = agentQuotaFor(snapshot, agentId);
+          const hasData = quotaHasData(entry);
+          // 没有配额来源的可选 Agent 不占版面；Codex 与 Claude 始终显示。
+          if (!hasData && !["codex", "claude"].includes(agentId)) return null;
+          const provenanceView = entry.fiveHour.available ? entry.fiveHour : entry.weekly;
+          return (
+            <section className="quota-group" key={agentId}>
+              <header>
+                <strong>{AGENT_META[agentId].label}</strong>
+                <small>
+                  {hasData
+                    ? quotaProvenance(provenanceView)
+                    : agentId === "claude"
+                      ? "在设置中开启配额钩子后显示"
+                      : "暂无可靠来源"}
+                </small>
+              </header>
+              {hasData && (
+                <>
+                  <QuotaBarRow label="5 小时" view={entry.fiveHour} />
+                  <QuotaBarRow label="7 天" view={entry.weekly} />
+                </>
+              )}
+            </section>
+          );
+        })}
       </div>
 
       <div className="agent-list" aria-label="按 Agent 筛选">
@@ -327,7 +364,7 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
 
       <button className={`traceability ${snapshot.loadError ? "traceability--error" : ""} ${partial ? "traceability--warning" : ""}`} type="button" onClick={onOpenSources}>
         <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? "正在读取本机数据" : snapshot.loadError ? "数据暂不可用" : partial ? "部分数据可能不完整" : "数据可追溯"}</span>
-        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "没有用演示数字替代失败结果" : partial ? "打开统计说明查看受影响来源" : snapshot.isDemo ? "当前为演示模式" : `${quota.sourceLabel} · ${quotaProvenance(quota)} · ${formatClock(snapshot.generatedAt)}`}</small>
+        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "没有用演示数字替代失败结果" : partial ? "打开统计说明查看受影响来源" : snapshot.isDemo ? "当前为演示模式" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
       </button>
     </aside>
   );
@@ -411,14 +448,17 @@ function CompactWidget({
   onTogglePinned,
   onToggleTransparent,
   onExpand,
+  quotaAgent,
+  onCycleQuotaAgent,
 }) {
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
   const comparisonLabel = period === "today" ? "较近 7 日同时段" : "较前一周期";
   const flatComparisonLabel = period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
-  const quota = snapshot.quota;
-  const quotaIsSnapshot = quota.stale || quota.quality === "official_snapshot";
+  const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
+  const quotaView = quotaEntry.fiveHour.available ? quotaEntry.fiveHour : quotaEntry.weekly;
+  const quotaIsSnapshot = quotaView.stale || quotaView.quality === "official_snapshot";
   const dataUnavailable = snapshot.pending || snapshot.loadError;
   const partial = snapshotIsPartial(snapshot);
 
@@ -477,13 +517,37 @@ function CompactWidget({
             </p>
           </div>
 
-          <button className={`widget-quota ${quotaIsSnapshot ? "widget-quota--stale" : ""}`} type="button" onClick={onOpenSources}>
-            <span>ChatGPT · Codex 短窗</span>
-            <strong>{quota.available ? `${Math.round(quota.remainingPercent)}%` : "--"}</strong>
-            <div className="widget-quota-track" aria-hidden="true">
-              <i style={{ transform: `scaleX(${quota.available ? quota.remainingPercent / 100 : 0})` }} />
-            </div>
-            <small>{quota.quality === "demo" ? quotaProvenance(quota) : quota.resetExpired ? "窗口已重置，等待刷新" : quotaIsSnapshot ? quotaProvenance(quota) : quota.available ? `${formatReset(quota.resetsInMinutes)}后重置` : "官方配额不可用"}</small>
+          <button
+            className={`widget-quota ${quotaIsSnapshot ? "widget-quota--stale" : ""}`}
+            type="button"
+            onClick={onCycleQuotaAgent}
+            aria-label={`${AGENT_META[quotaAgent].label} 配额，点击切换 Agent`}
+            title="点击切换配额 Agent"
+          >
+            <span>{AGENT_META[quotaAgent].label} 配额</span>
+            {["fiveHour", "weekly"].map((key) => {
+              const view = quotaEntry[key];
+              return (
+                <div className="widget-quota-window" key={key}>
+                  <small>{key === "fiveHour" ? "5h" : "7d"}</small>
+                  <div className="widget-quota-track" aria-hidden="true">
+                    <i style={{ transform: `scaleX(${view.available ? view.remainingPercent / 100 : 0})` }} />
+                  </div>
+                  <em>{view.available ? `${Math.round(view.remainingPercent)}%` : "--"}</em>
+                </div>
+              );
+            })}
+            <small>
+              {quotaView.quality === "demo"
+                ? quotaProvenance(quotaView)
+                : quotaView.resetExpired
+                  ? "窗口已重置，等待刷新"
+                  : quotaView.available
+                    ? `${formatReset(quotaView.resetsInMinutes)}后重置`
+                    : quotaAgent === "claude"
+                      ? "设置中开启配额钩子"
+                      : "官方配额不可用"}
+            </small>
           </button>
         </section>
 
@@ -699,6 +763,95 @@ function formatSyncTime(ms) {
   return value.toLocaleString("zh-CN", { hour12: false });
 }
 
+function ClaudeHookCard({ onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getClaudeHookStatus()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", message: "钩子状态读取失败。" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggle = async (enabled) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const next = await setClaudeHook(enabled);
+      setStatus(next);
+      setFeedback({
+        tone: "success",
+        message: enabled
+          ? "钩子已安装。下次 Claude Code 刷新状态栏后，这里就会出现官方 5 小时与 7 天额度。"
+          : "钩子已卸载，statusLine 设置已恢复。",
+      });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-card">
+      <h2>Claude Code 官方配额</h2>
+      <p className="settings-muted">
+        Claude Code 本身会把官方 5 小时 / 7 天额度推送给状态栏脚本。开启后 Metrik 安装一个只提取
+        额度数字的 statusLine 钩子（不读取对话内容、不接触登录凭据），并顺带在 Claude Code
+        里显示一行简洁的额度状态栏。已有自定义 statusLine 时不会覆盖。
+      </p>
+      {status?.demo ? (
+        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
+      ) : status && (
+        <>
+          <div className="settings-directory-row">
+            <button
+              type="button"
+              className={`ledger-button ${status.installed ? "ledger-button--secondary" : "ledger-button--primary"}`}
+              disabled={busy || (!status.installed && status.conflict)}
+              onClick={() => toggle(!status.installed)}
+            >
+              {status.installed ? "卸载钩子" : "安装钩子"}
+            </button>
+          </div>
+          <dl className="settings-status">
+            <div>
+              <dt>状态</dt>
+              <dd>
+                {status.installed
+                  ? status.lastDataAtMs
+                    ? `已安装 · 最近数据 ${formatSyncTime(status.lastDataAtMs)}`
+                    : "已安装 · 等待 Claude Code 下次刷新状态栏"
+                  : status.conflict
+                    ? "未安装 · 检测到已有其他 statusLine，为避免覆盖已禁用安装"
+                    : "未安装"}
+              </dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {feedback && (
+        <p
+          className={`settings-feedback settings-feedback--${feedback.tone}`}
+          role={feedback.tone === "error" ? "alert" : "status"}
+        >
+          {feedback.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SettingsSection({ onSnapshotRefresh }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
@@ -817,6 +970,8 @@ function SettingsSection({ onSnapshotRefresh }) {
         )}
       </div>
 
+      <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
+
       {settings?.enabled && (
         <div className="settings-card">
           <h2>已发现的设备</h2>
@@ -866,7 +1021,13 @@ export function App() {
   const [activeNav, setActiveNav] = useState("overview");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pinned, setPinned] = useState(() => localStorage.getItem("metrik:pinned") === "true");
-  const [transparent, setTransparent] = useState(() => localStorage.getItem("metrik:transparent") === "true");
+  // 玻璃材质默认开启；用户关闭后记住选择。
+  const [transparent, setTransparent] = useState(
+    () => (localStorage.getItem("metrik:transparent") ?? "true") === "true",
+  );
+  const [quotaAgent, setQuotaAgent] = useState(
+    () => localStorage.getItem("metrik:quotaAgent") || "codex",
+  );
   const [loading, setLoading] = useState(true);
   const [rebuildState, setRebuildState] = useState({ status: "idle", message: "" });
   const [snapshot, setSnapshot] = useState(() => getUsageSnapshot.initial("today"));
@@ -954,6 +1115,22 @@ export function App() {
     if (selectedAgent === "all") return snapshot.totalTokens;
     return snapshot.agents.find((agent) => agent.id === selectedAgent)?.tokens || 0;
   }, [selectedAgent, snapshot]);
+
+  // 配额卡可在有官方数据的 Agent 间循环；没有任何数据时保底显示 Codex。
+  const quotaAgents = useMemo(() => {
+    const withData = (snapshot.agentQuotas || [])
+      .filter(quotaHasData)
+      .map((entry) => entry.agent)
+      .filter((agent) => AGENT_META[agent]);
+    return withData.length ? withData : ["codex"];
+  }, [snapshot]);
+  const activeQuotaAgent = quotaAgents.includes(quotaAgent) ? quotaAgent : quotaAgents[0];
+  const handleCycleQuotaAgent = useCallback(() => {
+    const index = quotaAgents.indexOf(activeQuotaAgent);
+    const next = quotaAgents[(index + 1) % quotaAgents.length];
+    setQuotaAgent(next);
+    localStorage.setItem("metrik:quotaAgent", next);
+  }, [activeQuotaAgent, quotaAgents]);
   const appBusy = loading || rebuildState.status === "busy";
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
@@ -1045,6 +1222,8 @@ export function App() {
           onTogglePinned={handleTogglePinned}
           onToggleTransparent={handleToggleTransparent}
           onExpand={handleWindowMode}
+          quotaAgent={activeQuotaAgent}
+          onCycleQuotaAgent={handleCycleQuotaAgent}
         />
         {drawerOpen && (
           <SourceDrawer

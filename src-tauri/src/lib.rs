@@ -1,5 +1,6 @@
 mod adapters;
 mod app_server;
+mod claude_hook;
 mod domain;
 mod engine;
 mod schema;
@@ -399,6 +400,28 @@ async fn configure_sync(
     .map_err(|error| format!("sync configuration task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn claude_hook_status() -> Result<claude_hook::ClaudeHookStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        claude_hook::ClaudeHook::detected()
+            .status()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("claude hook status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_claude_hook(enabled: bool) -> Result<claude_hook::ClaudeHookStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let hook = claude_hook::ClaudeHook::detected();
+        if enabled { hook.install() } else { hook.uninstall() }
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("claude hook task failed: {error}"))?
+}
+
 #[cfg(desktop)]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -517,7 +540,9 @@ pub fn run() {
             usage_snapshot,
             rebuild_local_ledger,
             sync_settings,
-            configure_sync
+            configure_sync,
+            claude_hook_status,
+            set_claude_hook
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

@@ -132,8 +132,7 @@ pub struct UsageSnapshot {
     pub comparison_percent: f64,
     pub comparison_available: bool,
     pub series: Vec<SeriesPoint>,
-    pub quota: QuotaView,
-    pub secondary_quota: QuotaView,
+    pub agent_quotas: Vec<AgentQuotaView>,
     pub agents: Vec<AgentSummary>,
     pub sources: Vec<SourceView>,
 }
@@ -143,6 +142,15 @@ pub struct UsageSnapshot {
 pub struct SeriesPoint {
     pub label: String,
     pub tokens: BTreeMap<String, i64>,
+}
+
+/// 一个 Agent 的两个官方滚动窗口：短窗（5 小时）与长窗（7 天/周）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuotaView {
+    pub agent: String,
+    pub five_hour: QuotaView,
+    pub weekly: QuotaView,
 }
 
 #[derive(Clone, Debug, Serialize)]

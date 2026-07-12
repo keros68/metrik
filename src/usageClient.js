@@ -70,26 +70,18 @@ function demoSnapshot(period = "today") {
     comparisonPercent: period === "today" ? -12 : period === "week" ? -8 : -5,
     comparisonAvailable: true,
     series: demoSeries(period),
-    quota: {
-      available: true,
-      remainingPercent: 72,
-      resetsInMinutes: 198,
-      ageMinutes: 0,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "演示配额",
-      quality: "demo",
-    },
-    secondaryQuota: {
-      available: true,
-      remainingPercent: 86,
-      resetsInMinutes: 8_940,
-      ageMinutes: 0,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "演示配额",
-      quality: "demo",
-    },
+    agentQuotas: [
+      {
+        agent: "codex",
+        fiveHour: { available: true, remainingPercent: 72, resetsInMinutes: 198, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+        weekly: { available: true, remainingPercent: 86, resetsInMinutes: 8_940, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+      },
+      {
+        agent: "claude",
+        fiveHour: { available: true, remainingPercent: 94, resetsInMinutes: 102, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+        weekly: { available: true, remainingPercent: 58, resetsInMinutes: 6_180, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+      },
+    ],
     agents: [
       { id: "codex", tokens: codexTokens, share: (codexTokens / totalTokens) * 100 },
       { id: "claude", tokens: claudeTokens, share: (claudeTokens / totalTokens) * 100 },
@@ -117,26 +109,7 @@ function pendingSnapshot(period = "today") {
     comparisonPercent: 0,
     comparisonAvailable: false,
     series: emptySeries(period),
-    quota: {
-      available: false,
-      remainingPercent: 0,
-      resetsInMinutes: null,
-      ageMinutes: null,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "正在读取",
-      quality: "unavailable",
-    },
-    secondaryQuota: {
-      available: false,
-      remainingPercent: 0,
-      resetsInMinutes: null,
-      ageMinutes: null,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "正在读取",
-      quality: "unavailable",
-    },
+    agentQuotas: [],
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
@@ -167,26 +140,7 @@ function unavailableSnapshot(period = "today") {
     comparisonPercent: 0,
     comparisonAvailable: false,
     series: emptySeries(period),
-    quota: {
-      available: false,
-      remainingPercent: 0,
-      resetsInMinutes: null,
-      ageMinutes: null,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "本地服务暂不可用",
-      quality: "unavailable",
-    },
-    secondaryQuota: {
-      available: false,
-      remainingPercent: 0,
-      resetsInMinutes: null,
-      ageMinutes: null,
-      stale: false,
-      resetExpired: false,
-      sourceLabel: "本地服务暂不可用",
-      quality: "unavailable",
-    },
+    agentQuotas: [],
     agents: [
       { id: "codex", tokens: 0, share: 0 },
       { id: "claude", tokens: 0, share: 0 },
@@ -253,9 +207,30 @@ async function configureSync(directory) {
   return invoke("configure_sync", { directory });
 }
 
+async function getClaudeHookStatus() {
+  if (!isTauriRuntime()) {
+    return { demo: true, installed: false, conflict: false, lastDataAtMs: null };
+  }
+  return invoke("claude_hook_status");
+}
+
+async function setClaudeHook(enabled) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置钩子");
+  }
+  return invoke("set_claude_hook", { enabled });
+}
+
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
   isTauriRuntime() ? pendingSnapshot(period) : demoSnapshot(period)
 );
 
-export { loadUsageSnapshot as getUsageSnapshot, rebuildLocalLedger, getSyncSettings, configureSync };
+export {
+  loadUsageSnapshot as getUsageSnapshot,
+  rebuildLocalLedger,
+  getSyncSettings,
+  configureSync,
+  getClaudeHookStatus,
+  setClaudeHook,
+};
