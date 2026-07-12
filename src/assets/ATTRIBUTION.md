@@ -1,0 +1,6 @@
+# Service icon sources
+
+- `chatgpt-app-icon.png`: official ChatGPT app icon published by OpenAI Help Center: <https://help.openai.com/en/articles/7905742-what-does-the-official-chatgpt-ios-app-icon-look-like>
+- `claude-app-icon.jpg`: Claude app icon from Anthropic PBC's official Apple App Store listing: <https://apps.apple.com/us/app/claude-by-anthropic/id6473753684>
+
+The source pixels are unmodified; Metrik only clips their display to the interface's rounded icon frame. They are used solely to identify the corresponding services, without implying endorsement or partnership.
