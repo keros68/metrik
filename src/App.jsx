@@ -170,15 +170,19 @@ function quotaHasData(entry) {
   return Boolean(entry && (entry.fiveHour.available || entry.weekly.available));
 }
 
+function quotaUsedPercent(view) {
+  return Math.min(100, Math.max(0, 100 - view.remainingPercent));
+}
+
 function QuotaBarRow({ label, view }) {
   const isSnapshot = view.stale || view.quality === "official_snapshot";
   return (
     <div className={`quota-bar-row ${isSnapshot ? "quota-bar-row--stale" : ""}`}>
       <small>{label}</small>
       <div className="quota-bar-track" aria-hidden="true">
-        <i style={{ transform: `scaleX(${view.available ? view.remainingPercent / 100 : 0})` }} />
+        <i style={{ transform: `scaleX(${view.available ? quotaUsedPercent(view) / 100 : 0})` }} />
       </div>
-      <em>{view.available ? `${Math.round(view.remainingPercent)}%` : "--"}</em>
+      <em>{view.available ? `已用 ${Math.round(quotaUsedPercent(view))}%` : "--"}</em>
       <span>
         {view.resetExpired
           ? "已重置，等待刷新"
@@ -327,8 +331,8 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
               </header>
               {hasData && (
                 <>
-                  <QuotaBarRow label="5 小时" view={entry.fiveHour} />
-                  <QuotaBarRow label="7 天" view={entry.weekly} />
+                  <QuotaBarRow label="Session" view={entry.fiveHour} />
+                  <QuotaBarRow label="每周" view={entry.weekly} />
                 </>
               )}
             </section>
@@ -390,18 +394,16 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
           <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
         </button>
       )}
-      {mode === "compact" && (
-        <button
-          type="button"
-          className={`window-action ${transparent ? "window-action--active" : ""}`}
-          onClick={onToggleTransparent}
-          aria-label={transparent ? "关闭透明模式" : "使用透明模式"}
-          aria-pressed={transparent}
-          title={transparent ? "关闭透明模式" : "透明模式"}
-        >
-          <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
-        </button>
-      )}
+      <button
+        type="button"
+        className={`window-action ${transparent ? "window-action--active" : ""}`}
+        onClick={onToggleTransparent}
+        aria-label={transparent ? "关闭玻璃材质" : "使用玻璃材质"}
+        aria-pressed={transparent}
+        title={transparent ? "关闭玻璃材质" : "玻璃材质"}
+      >
+        <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
+      </button>
       <button
         type="button"
         className={`window-action ${pinned ? "window-action--active" : ""}`}
@@ -524,16 +526,16 @@ function CompactWidget({
             aria-label={`${AGENT_META[quotaAgent].label} 配额，点击切换 Agent`}
             title="点击切换配额 Agent"
           >
-            <span>{AGENT_META[quotaAgent].label} 配额</span>
+            <span>{AGENT_META[quotaAgent].label} 已用</span>
             {["fiveHour", "weekly"].map((key) => {
               const view = quotaEntry[key];
               return (
                 <div className="widget-quota-window" key={key}>
                   <small>{key === "fiveHour" ? "5h" : "7d"}</small>
                   <div className="widget-quota-track" aria-hidden="true">
-                    <i style={{ transform: `scaleX(${view.available ? view.remainingPercent / 100 : 0})` }} />
+                    <i style={{ transform: `scaleX(${view.available ? quotaUsedPercent(view) / 100 : 0})` }} />
                   </div>
-                  <em>{view.available ? `${Math.round(view.remainingPercent)}%` : "--"}</em>
+                  <em>{view.available ? `${Math.round(quotaUsedPercent(view))}%` : "--"}</em>
                 </div>
               );
             })}
@@ -1239,13 +1241,15 @@ export function App() {
 
   return (
     <>
-      <div className={`app-shell app-shell--expanded ${appBusy ? "is-loading" : ""}`}>
+      <div className={`app-shell app-shell--expanded ${transparent ? "app-shell--transparent" : ""} ${appBusy ? "is-loading" : ""}`}>
         <div className="expanded-drag-region" data-tauri-drag-region aria-hidden="true" />
         <WindowActions
           mode="expanded"
           pinned={pinned}
+          transparent={transparent}
           onToggleMode={handleWindowMode}
           onTogglePinned={handleTogglePinned}
+          onToggleTransparent={handleToggleTransparent}
         />
         <Sidebar activeNav={activeNav} onNavChange={handleNavChange} snapshot={snapshot} loading={appBusy} />
 

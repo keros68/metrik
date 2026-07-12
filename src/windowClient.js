@@ -59,12 +59,10 @@ async function setWindowGlass(enabled) {
   if (!api) return;
   const appWindow = api.getCurrentWindow();
   if (enabled) {
-    // Windows 取 acrylic，macOS 取 hudWindow；平台不支持的条目会被忽略。
-    // 深色 tint 配合前端的深色玻璃材质（参考 HUD 风格小组件的通行做法）。
-    await appWindow.setEffects({
-      effects: ["acrylic", "hudWindow", "blur"],
-      color: [18, 21, 27, 175],
-    });
+    // Windows 取 acrylic，macOS 取 popover 材质；平台不支持的条目会被忽略。
+    // Win11 的 DWM Acrylic 明暗跟随系统主题（且忽略 tint 参数），
+    // 前端用 prefers-color-scheme 提供配套的亮/暗两套玻璃分层。
+    await appWindow.setEffects({ effects: ["acrylic", "popover", "hudWindow", "blur"] });
   } else {
     await appWindow.clearEffects();
   }
