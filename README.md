@@ -12,6 +12,7 @@ Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。首版支持
 - 标准与透明两种材质；透明模式使用系统级毛玻璃（Windows Acrylic / macOS Vibrancy），偏好保存在本机，Windows 毛玻璃已实机验证
 - ChatGPT 与 Claude Code 使用各自官方应用图标，仅用于识别对应服务
 - 可选置顶、展开后收起回原位；前台紧凑态每 5 分钟、完整态每 60 秒刷新，重新获得焦点时立即刷新
+- 系统托盘常驻：不占任务栏（Windows）/ Dock（macOS），关闭按钮收进托盘，左键图标切换显示，右键菜单退出；Windows 已实测，macOS 菜单栏行为待实机验收
 - ChatGPT / Codex 主短窗与次级长窗官方配额、采集时间、陈旧状态及重置时间；桌面小插件只显示短窗，完整视图显示两者
 - Agent 筛选、趋势悬停和数据来源说明
 - Windows 已构建和实测；macOS、Linux 共用 Tauri/Rust 代码基础，仍需各自机器验收
@@ -97,7 +98,7 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture
 ## 路线
 
 1. 当前：320 × 320 透明桌面小插件、准确的 ChatGPT / Codex 与 Claude Code 本地统计和可信度说明
-2. 下一步：真正的追加游标、macOS/Linux 构建验收，再评估托盘与开机启动
+2. 下一步：真正的追加游标、macOS/Linux 构建验收（含托盘/菜单栏行为），再评估开机启动
 3. 再下一步：端到端加密的可选设备同步，不上传原始对话或凭据
 4. 后续 Agent：OpenCode、Cursor 等按适配器成熟度逐个接入
 

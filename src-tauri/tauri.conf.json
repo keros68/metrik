@@ -23,7 +23,7 @@
         "transparent": true,
         "shadow": true,
         "alwaysOnTop": false,
-        "skipTaskbar": false,
+        "skipTaskbar": true,
         "preventOverflow": true,
         "fullscreen": false,
         "center": true

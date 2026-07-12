@@ -365,8 +365,8 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
         type="button"
         className="window-action window-action--close"
         onClick={() => runWindowAction(closeWindow)}
-        aria-label="关闭 Metrik"
-        title="关闭"
+        aria-label="隐藏到托盘"
+        title="隐藏到托盘"
       >
         <X size={17} weight="light" aria-hidden="true" />
       </button>

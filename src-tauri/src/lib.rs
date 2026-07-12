@@ -362,6 +362,57 @@ async fn rebuild_local_ledger(
     .map_err(|error| format!("local ledger rebuild task failed: {error}"))?
 }
 
+#[cfg(desktop)]
+fn toggle_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let minimized = window.is_minimized().unwrap_or(false);
+    let visible = window.is_visible().unwrap_or(false);
+    if visible && !minimized {
+        let _ = window.hide();
+    } else {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(desktop)]
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&toggle, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Metrik")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "toggle" => toggle_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -377,6 +428,13 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // macOS 下只保留右上角菜单栏图标，不占用 Dock。
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            #[cfg(desktop)]
+            setup_tray(app)?;
+
             let database_path = match (
                 app.path().app_data_dir(),
                 app.path().app_local_data_dir(),
@@ -409,6 +467,14 @@ pub fn run() {
                 quota_cache: Arc::new(Mutex::new(None)),
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关闭时收进托盘常驻，退出走托盘菜单。
+            #[cfg(desktop)]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             usage_snapshot,
