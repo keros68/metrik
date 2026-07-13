@@ -4,3 +4,5 @@
 - `claude-app-icon.jpg`: Claude app icon from Anthropic PBC's official Apple App Store listing: <https://apps.apple.com/us/app/claude-by-anthropic/id6473753684>
 
 The source pixels are unmodified; Metrik only clips their display to the interface's rounded icon frame. They are used solely to identify the corresponding services, without implying endorsement or partnership.
+
+- `zcode-app-icon.png`：ZCode 桌面应用官方图标（取自本机安装目录 resources/icon.png），仅用于识别对应服务。

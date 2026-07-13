@@ -21,6 +21,7 @@ import {
 } from "@phosphor-icons/react";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import {
   configureSync,
   getClaudeHookStatus,
@@ -70,7 +71,7 @@ const AGENT_META = {
   zcode: {
     label: "ZCode / GLM",
     accent: "#6a5ae0",
-    monogram: "Z",
+    iconSrc: zcodeAppIcon,
     iconClass: "agent-icon--zcode",
   },
   opencode: {
@@ -456,8 +457,10 @@ function CompactWidget({
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
-  const comparisonLabel = period === "today" ? "较近 7 日同时段" : "较前一周期";
-  const flatComparisonLabel = period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  // 标签必须描述快照本身的周期；切换周期的扫描期间不给旧数据贴新标签。
+  const comparisonLabel = snapshot.period === "today" ? "较近 7 日同时段" : "较前一周期";
+  const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
   const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
   const quotaView = quotaEntry.fiveHour.available ? quotaEntry.fiveHour : quotaEntry.weekly;
   const quotaIsSnapshot = quotaView.stale || quotaView.quality === "official_snapshot";
@@ -487,13 +490,18 @@ function CompactWidget({
 
         <section className="widget-primary" aria-label="用量摘要">
           <div className="widget-metric">
-            <span>{selectedAgent === "all" ? "总用量" : AGENT_META[selectedAgent].label}</span>
+            <span>
+              {selectedAgent === "all" ? "总用量" : AGENT_META[selectedAgent].label}
+              {switchingPeriod ? `（${PERIODS.find((item) => item.id === snapshot.period)?.label}）` : ""}
+            </span>
             <div aria-live="polite" aria-atomic="true">
               <strong>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(visibleTokens)}</strong>
               <small>tokens</small>
             </div>
             <p className="widget-comparison">
-              {snapshot.pending ? (
+              {switchingPeriod ? (
+                <>正在统计{PERIODS.find((item) => item.id === period)?.label}数据…</>
+              ) : snapshot.pending ? (
                 <>正在建立本地索引</>
               ) : snapshot.loadError ? (
                 <>本地数据读取失败</>
@@ -1137,8 +1145,10 @@ export function App() {
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
-  const comparisonLabel = period === "today" ? "比近 7 日同时段" : "比前一周期";
-  const flatComparisonLabel = period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  // 标签跟随快照的实际周期；切换周期扫描期间显式提示，不给旧数据贴新标签。
+  const comparisonLabel = snapshot.period === "today" ? "比近 7 日同时段" : "比前一周期";
+  const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
 
   const handleNavChange = (next) => {
     if (next === "sources") {
@@ -1258,13 +1268,18 @@ export function App() {
             <PeriodControl period={period} onChange={setPeriod} />
             <main className="dashboard">
               <header className="hero-copy">
-                <span className="section-kicker">{PERIODS.find((item) => item.id === period)?.label}</span>
+                <span className="section-kicker">{PERIODS.find((item) => item.id === snapshot.period)?.label}</span>
                 <div className="metric-line" aria-live="polite" aria-atomic="true">
                   <h1>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(visibleTokens)}</h1>
                   <span>tokens</span>
                 </div>
                 <p className="comparison">
-                  {snapshot.pending ? (
+                  {switchingPeriod ? (
+                    <>
+                      <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
+                      正在统计{PERIODS.find((item) => item.id === period)?.label}数据，暂显示{PERIODS.find((item) => item.id === snapshot.period)?.label}
+                    </>
+                  ) : snapshot.pending ? (
                     <>
                       <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
                       正在建立本地索引，窗口仍可操作

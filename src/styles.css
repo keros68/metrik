@@ -197,19 +197,29 @@ button:focus-visible {
 }
 
 .app-shell--transparent .inspector {
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.72);
   box-shadow:
-    0 0 0 1px rgba(29, 31, 34, 0.07),
-    0 20px 56px rgba(31, 33, 36, 0.06),
-    inset 0 1px rgba(255, 255, 255, 0.8);
+    0 0 0 1px rgba(29, 31, 34, 0.09),
+    0 20px 56px rgba(31, 33, 36, 0.08),
+    inset 0 1px rgba(255, 255, 255, 0.9);
+}
+
+.app-shell--transparent .quota-group {
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 0 0 1px rgba(31, 33, 36, 0.06),
+    inset 0 1px rgba(255, 255, 255, 0.85);
 }
 
 .app-shell--transparent .settings-card,
-.app-shell--transparent .settings-device-list li { background: rgba(255, 255, 255, 0.55); }
+.app-shell--transparent .settings-device-list li {
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 1px rgba(31, 33, 36, 0.07), inset 0 1px rgba(255, 255, 255, 0.9);
+}
 
 .app-shell--transparent .sidebar {
-  background: rgba(255, 255, 255, 0.3);
-  box-shadow: 1px 0 0 rgba(26, 28, 31, 0.07);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 1px 0 0 rgba(26, 28, 31, 0.08);
 }
 
 .widget-titlebar {
@@ -1216,7 +1226,7 @@ button:focus-visible {
 .quota-bar-track {
   height: 5px;
   overflow: hidden;
-  background: rgba(36, 107, 219, 0.11);
+  background: rgba(36, 107, 219, 0.16);
   border-radius: 999px;
 }
 
