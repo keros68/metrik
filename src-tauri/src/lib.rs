@@ -400,6 +400,104 @@ async fn configure_sync(
     .map_err(|error| format!("sync configuration task failed: {error}"))?
 }
 
+/// Windows 的 SWCA Acrylic：与 Win11 的 DWM Acrylic 不同，它接受自定义
+/// tint 颜色，磨砂更通透、可控（CodexBar 式亮玻璃在 Windows 上的对应物）。
+#[cfg(windows)]
+mod swca {
+    #[repr(C)]
+    struct AccentPolicy {
+        accent_state: u32,
+        accent_flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+
+    #[repr(C)]
+    struct WindowCompositionAttribData {
+        attrib: u32,
+        pv_data: *mut core::ffi::c_void,
+        cb_data: usize,
+    }
+
+    const WCA_ACCENT_POLICY: u32 = 19;
+    const ACCENT_DISABLED: u32 = 0;
+    const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryA(name: *const u8) -> isize;
+        fn GetProcAddress(module: isize, name: *const u8) -> *const core::ffi::c_void;
+    }
+
+    type SetWindowCompositionAttributeFn =
+        unsafe extern "system" fn(isize, *mut WindowCompositionAttribData) -> i32;
+
+    /// 未文档化导出，不在 user32 的导入库里，必须运行时解析。
+    fn set_window_composition_attribute() -> Option<SetWindowCompositionAttributeFn> {
+        unsafe {
+            let module = LoadLibraryA(c"user32.dll".as_ptr().cast());
+            if module == 0 {
+                return None;
+            }
+            let proc = GetProcAddress(module, c"SetWindowCompositionAttribute".as_ptr().cast());
+            if proc.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<
+                    *const core::ffi::c_void,
+                    SetWindowCompositionAttributeFn,
+                >(proc))
+            }
+        }
+    }
+
+    pub fn set_acrylic(hwnd: isize, tint: Option<[u8; 4]>) {
+        let Some(set_attribute) = set_window_composition_attribute() else {
+            return;
+        };
+        let (state, color) = match tint {
+            Some([r, g, b, a]) => (
+                ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | ((a as u32) << 24),
+            ),
+            None => (ACCENT_DISABLED, 0),
+        };
+        let mut policy = AccentPolicy {
+            accent_state: state,
+            accent_flags: 2,
+            gradient_color: color,
+            animation_id: 0,
+        };
+        let mut data = WindowCompositionAttribData {
+            attrib: WCA_ACCENT_POLICY,
+            pv_data: &mut policy as *mut _ as *mut core::ffi::c_void,
+            cb_data: std::mem::size_of::<AccentPolicy>(),
+        };
+        unsafe {
+            set_attribute(hwnd, &mut data);
+        }
+    }
+}
+
+#[tauri::command]
+fn set_glass_backdrop(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    tint: [u8; 4],
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
+        swca::set_acrylic(hwnd, enabled.then_some(tint));
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, enabled, tint);
+        Err("SWCA acrylic 仅适用于 Windows".into())
+    }
+}
+
 #[tauri::command]
 async fn claude_hook_status() -> Result<claude_hook::ClaudeHookStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -542,7 +640,8 @@ pub fn run() {
             sync_settings,
             configure_sync,
             claude_hook_status,
-            set_claude_hook
+            set_claude_hook,
+            set_glass_backdrop
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

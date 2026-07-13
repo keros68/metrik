@@ -56,7 +56,13 @@ pub fn build_snapshot(
             storage::upsert_quota(&connection, sample)?;
         }
     }
-    for sample in ClaudeHook::detected().quota_samples() {
+    let hook_samples = ClaudeHook::detected().quota_samples();
+    if !hook_samples.is_empty() {
+        // 钩子文件是 Claude 配额的唯一来源：整体替换，来源里消失的窗口
+        // （或旧版 primary/secondary 键）不得滞留在展示里。
+        connection.execute("DELETE FROM quota_snapshot WHERE adapter_id = 'claude'", [])?;
+    }
+    for sample in hook_samples {
         storage::upsert_quota(&connection, &sample)?;
     }
 
@@ -342,8 +348,7 @@ fn query_snapshot_at(
             .map(|agent| {
                 Ok(AgentQuotaView {
                     agent: (*agent).to_owned(),
-                    five_hour: load_quota(connection, agent, "primary")?,
-                    weekly: load_quota(connection, agent, "secondary")?,
+                    windows: load_agent_quota_windows(connection, agent)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?,
@@ -425,6 +430,59 @@ fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Re
             |row| row.get(0),
         )
         .context("failed to calculate comparison usage")
+}
+
+fn quota_window_rank(key: &str) -> (u8, String) {
+    match key {
+        "five_hour" | "primary" => (0, String::new()),
+        "seven_day" | "secondary" => (1, String::new()),
+        other => (2, other.to_owned()),
+    }
+}
+
+fn quota_window_label(adapter_id: &str, key: &str) -> String {
+    match key {
+        "five_hour" | "primary" => "Session".into(),
+        "seven_day" | "secondary" => {
+            if adapter_id == "claude" {
+                "每周 · 全模型".into()
+            } else {
+                "每周".into()
+            }
+        }
+        other => {
+            let model = other.strip_prefix("seven_day_").unwrap_or(other);
+            let mut chars = model.chars();
+            let pretty = chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_else(|| other.to_owned());
+            format!("每周 · {pretty}")
+        }
+    }
+}
+
+/// 按短窗 → 长窗 → 其余（字母序）返回一个 Agent 的全部官方窗口。
+fn load_agent_quota_windows(
+    connection: &Connection,
+    adapter_id: &str,
+) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
+    let mut statement = connection
+        .prepare("SELECT window_key FROM quota_snapshot WHERE adapter_id = ?1")?;
+    let mut keys = statement
+        .query_map([adapter_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    keys.sort_by_key(|key| quota_window_rank(key));
+
+    keys.into_iter()
+        .map(|key| {
+            Ok(crate::domain::AgentQuotaWindow {
+                label: quota_window_label(adapter_id, &key),
+                view: load_quota(connection, adapter_id, &key)?,
+                key,
+            })
+        })
+        .collect()
 }
 
 fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
@@ -1079,9 +1137,9 @@ mod tests {
             snapshot.total_tokens,
             snapshot.agents[0].tokens,
             snapshot.agents[1].tokens,
-            snapshot.agent_quotas[0].five_hour.available,
-            snapshot.agent_quotas[0].five_hour.remaining_percent,
-            snapshot.agent_quotas[0].five_hour.source_label
+            snapshot.agent_quotas[0].windows.first().map(|w| w.view.available).unwrap_or(false),
+            snapshot.agent_quotas[0].windows.first().map(|w| w.view.remaining_percent).unwrap_or(0.0),
+            snapshot.agent_quotas[0].windows.first().map(|w| w.view.source_label.clone()).unwrap_or_default()
         );
         assert!(!snapshot.is_demo);
         assert!((1..=24).contains(&snapshot.series.len()));

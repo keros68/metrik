@@ -230,7 +230,7 @@ fn parse_quota_windows(rate_limits: RateLimits, timestamp: i64, source: &str) ->
         let used = window.used_percent?;
         Some(QuotaSample {
             adapter_id: "codex",
-            window_key,
+            window_key: window_key.to_owned(),
             remaining_percent: (100.0 - used).clamp(0.0, 100.0),
             resets_at_ms: window.resets_at.map(|value| value * 1000),
             collected_at_ms: timestamp,

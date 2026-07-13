@@ -8,12 +8,13 @@ Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。当前支持
 
 - ChatGPT / Codex Agent、Claude Code、ZCode / GLM 与 OpenCode 的今日、7 天和 30 天 Token 统计
 - 默认 320 × 320 桌面小插件，一键展开完整统计
-- 标准与深色玻璃两种材质；玻璃模式为系统级毛玻璃（Windows Acrylic / macOS Vibrancy）加深色 HUD 分层，偏好保存在本机，Windows 已在明暗桌面实机验证
+- 小插件提供标准与玻璃两种材质，玻璃跟随系统明暗主题（Windows 走可调 tint 的 SWCA Acrylic，macOS 走 popover 材质）；完整视图固定为标准实底。偏好保存在本机
+- 小插件支持屏幕上缘挂靠：拖到屏幕顶端自动收起只留细边，鼠标碰到细边弹出、移开自动收回，拖离顶端恢复普通窗口
 - ChatGPT 与 Claude Code 使用各自官方应用图标，仅用于识别对应服务
 - 可选置顶、展开后收起回原位；前台紧凑态每 5 分钟、完整态每 60 秒刷新，重新获得焦点时立即刷新
 - 系统托盘常驻：不占任务栏（Windows）/ Dock（macOS），关闭按钮收进托盘，左键图标切换显示，右键菜单退出；Windows 已实测，macOS 菜单栏行为待实机验收
 - 可选的多设备同步：在设置页指定一个共享文件夹（坚果云 / OneDrive / Syncthing 等），各设备导出近 30 天统计事件并自动合并；导出只含事件标识、Agent、时间与 token 数，关闭同步会清除已合并的远端统计
-- 每个 Agent 的官方配额显示 5 小时与 7 天两个窗口；桌面小插件的配额卡点击可在有数据的 Agent 间切换，完整视图并列展示全部 Agent
+- 每个 Agent 的官方配额按窗口列表展示（Session、每周及来源推送的任何模型专属窗口）；桌面小插件的配额卡显示前两个窗口、点击在有数据的 Agent 间切换，完整视图展示全部窗口
 - Claude Code 官方配额来自可选的 statusLine 钩子（设置页一键安装/卸载）：Claude Code 自身把官方额度推给钩子脚本落地成本地文件，零网络请求、零凭据；已有自定义 statusLine 时拒绝覆盖
 - Agent 筛选、趋势悬停和数据来源说明
 - Windows 已构建和实测；macOS、Linux 共用 Tauri/Rust 代码基础，仍需各自机器验收
@@ -38,7 +39,7 @@ Metrik 不把所有数字混成一个“用量”。
 | ChatGPT / Codex 配额 | 本机 `codex app-server` | 官方滚动窗口；失败时回退到日志内的官方快照 |
 | ChatGPT / Codex Token | `~/.codex/sessions` 与 `archived_sessions` | 累计快照转正增量；相同会话跨路径去重 |
 | Claude Code Token | `~/.claude/projects` | 按 provider `message.id` 跨会话合并，字段取最大值；`requestId` 与模型只做冲突检测，冲突消息会拒绝并标记“部分覆盖” |
-| Claude Code 配额 | 可选 statusLine 钩子写入的本地文件 | 官方 5 小时 / 7 天窗口；未开启钩子时显示不可用，不猜测 |
+| Claude Code 配额 | 可选 statusLine 钩子写入的本地文件 | Claude Code 推送的全部官方窗口（当前为 Session 与每周全模型；模型专属周限官方未推送则不显示、不猜测） |
 | ZCode / GLM Token | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | 逐请求计数按请求标识去重；只读统计列，不读消息内容表 |
 | OpenCode Token | `~/.local/share/opencode/storage` | 每条 assistant 消息一个 JSON 文件，按消息标识去重 |
 | 其他设备统计 | 用户指定的同步文件夹 | 各设备导出统计事件，按设备 + 事件标识合并，不参与本机去重 |

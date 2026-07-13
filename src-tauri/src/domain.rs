@@ -102,7 +102,7 @@ impl UsageEvent {
 #[derive(Clone, Debug)]
 pub struct QuotaSample {
     pub adapter_id: &'static str,
-    pub window_key: &'static str,
+    pub window_key: String,
     pub remaining_percent: f64,
     pub resets_at_ms: Option<i64>,
     pub collected_at_ms: i64,
@@ -144,13 +144,21 @@ pub struct SeriesPoint {
     pub tokens: BTreeMap<String, i64>,
 }
 
-/// 一个 Agent 的两个官方滚动窗口：短窗（5 小时）与长窗（7 天/周）。
+/// 一个 Agent 的全部官方滚动窗口（Session、每周、模型专属周限等），
+/// 按短窗→长窗→其余的顺序排列；来源没有的窗口不臆造。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuotaView {
     pub agent: String,
-    pub five_hour: QuotaView,
-    pub weekly: QuotaView,
+    pub windows: Vec<AgentQuotaWindow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuotaWindow {
+    pub key: String,
+    pub label: String,
+    pub view: QuotaView,
 }
 
 #[derive(Clone, Debug, Serialize)]

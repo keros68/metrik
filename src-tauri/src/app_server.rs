@@ -256,7 +256,7 @@ fn parse_rate_limits(result: &Value) -> Vec<QuotaSample> {
                 .map(|value| value * 1000);
             Some(QuotaSample {
                 adapter_id: "codex",
-                window_key,
+                window_key: window_key.to_owned(),
                 remaining_percent: (100.0 - used).clamp(0.0, 100.0),
                 resets_at_ms,
                 collected_at_ms: now,

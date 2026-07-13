@@ -26,11 +26,11 @@ $rl = $data.rate_limits
 $payload = @{ receivedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 if ($null -ne $rl) {
   $windows = @{}
-  foreach ($key in @('five_hour', 'seven_day')) {
-    $entry = $rl.$key
+  foreach ($prop in $rl.PSObject.Properties) {
+    $entry = $prop.Value
     if ($null -ne $entry -and $null -ne $entry.used_percentage) {
-      $windows[$key] = @{ usedPercentage = [double]$entry.used_percentage }
-      if ($null -ne $entry.resets_at) { $windows[$key].resetsAt = [double]$entry.resets_at }
+      $windows[$prop.Name] = @{ usedPercentage = [double]$entry.used_percentage }
+      if ($null -ne $entry.resets_at) { $windows[$prop.Name].resetsAt = [double]$entry.resets_at }
     }
   }
   $payload.windows = $windows
@@ -59,9 +59,8 @@ except Exception:
 payload = {"receivedAtMs": int(time.time() * 1000)}
 rl = data.get("rate_limits") or {}
 windows = {}
-for key in ("five_hour", "seven_day"):
-    entry = rl.get(key) or {}
-    if entry.get("used_percentage") is not None:
+for key, entry in rl.items():
+    if isinstance(entry, dict) and entry.get("used_percentage") is not None:
         windows[key] = {"usedPercentage": float(entry["used_percentage"])}
         if entry.get("resets_at") is not None:
             windows[key]["resetsAt"] = float(entry["resets_at"])
@@ -97,13 +96,7 @@ struct QuotaFile {
     #[serde(rename = "receivedAtMs")]
     received_at_ms: i64,
     #[serde(default)]
-    windows: QuotaWindows,
-}
-
-#[derive(Deserialize, Default)]
-struct QuotaWindows {
-    five_hour: Option<QuotaWindow>,
-    seven_day: Option<QuotaWindow>,
+    windows: std::collections::BTreeMap<String, QuotaWindow>,
 }
 
 #[derive(Deserialize)]
@@ -251,29 +244,24 @@ impl ClaudeHook {
         serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
     }
 
-    /// 把钩子落地的官方窗口转换成 QuotaSample；文件缺失或格式异常返回空，
-    /// 不猜测、不沿用陈旧文件之外的任何来源。
+    /// 把钩子落地的全部官方窗口转换成 QuotaSample（原始窗口名作 key）；
+    /// 文件缺失或格式异常返回空，不猜测、不沿用陈旧文件之外的任何来源。
     pub fn quota_samples(&self) -> Vec<QuotaSample> {
         let Some(file) = self.read_quota_file() else {
             return Vec::new();
         };
-        let mut samples = Vec::new();
-        let mut push = |window: &Option<QuotaWindow>, key: &'static str| {
-            if let Some(window) = window {
-                samples.push(QuotaSample {
-                    adapter_id: "claude",
-                    window_key: key,
-                    remaining_percent: (100.0 - window.used_percentage).clamp(0.0, 100.0),
-                    resets_at_ms: window.resets_at.map(|value| (value * 1000.0) as i64),
-                    collected_at_ms: file.received_at_ms,
-                    source_label: "statusLine 钩子".into(),
-                    quality: "official_snapshot",
-                });
-            }
-        };
-        push(&file.windows.five_hour, "primary");
-        push(&file.windows.seven_day, "secondary");
-        samples
+        file.windows
+            .iter()
+            .map(|(key, window)| QuotaSample {
+                adapter_id: "claude",
+                window_key: key.clone(),
+                remaining_percent: (100.0 - window.used_percentage).clamp(0.0, 100.0),
+                resets_at_ms: window.resets_at.map(|value| (value * 1000.0) as i64),
+                collected_at_ms: file.received_at_ms,
+                source_label: "statusLine 钩子".into(),
+                quality: "official_snapshot",
+            })
+            .collect()
     }
 }
 
@@ -379,10 +367,10 @@ mod tests {
 
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].adapter_id, "claude");
-        assert_eq!(samples[0].window_key, "primary");
+        assert_eq!(samples[0].window_key, "five_hour");
         assert!((samples[0].remaining_percent - 94.0).abs() < f64::EPSILON);
         assert_eq!(samples[0].resets_at_ms, Some(1_783_003_600_500));
-        assert_eq!(samples[1].window_key, "secondary");
+        assert_eq!(samples[1].window_key, "seven_day");
         assert!((samples[1].remaining_percent - 58.5).abs() < f64::EPSILON);
         assert_eq!(samples[1].resets_at_ms, None);
 

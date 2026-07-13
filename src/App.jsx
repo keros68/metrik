@@ -36,6 +36,7 @@ import {
   minimizeWindow,
   setWindowGlass,
   setWindowPinned,
+  startEdgeDock,
 } from "./windowClient";
 
 const UsagePlot = lazy(() =>
@@ -161,14 +162,28 @@ function agentQuotaFor(snapshot, agentId) {
   return (
     snapshot.agentQuotas?.find((entry) => entry.agent === agentId) || {
       agent: agentId,
-      fiveHour: UNAVAILABLE_QUOTA,
-      weekly: UNAVAILABLE_QUOTA,
+      windows: [],
     }
   );
 }
 
 function quotaHasData(entry) {
-  return Boolean(entry && (entry.fiveHour.available || entry.weekly.available));
+  return Boolean(entry?.windows?.some((window) => window.view.available));
+}
+
+function shortWindowLabel(key) {
+  if (key === "five_hour" || key === "primary") return "5h";
+  if (key === "seven_day" || key === "secondary") return "7d";
+  return key.replace(/^seven_day_/, "").slice(0, 4);
+}
+
+// 小插件配额卡固定两行：优先取来源的前两个窗口，缺则补占位。
+function compactQuotaWindows(entry) {
+  const placeholders = [
+    { key: "five_hour", label: "Session", view: UNAVAILABLE_QUOTA },
+    { key: "seven_day", label: "每周", view: UNAVAILABLE_QUOTA },
+  ];
+  return [0, 1].map((index) => entry.windows?.[index] || placeholders[index]);
 }
 
 function quotaUsedPercent(view) {
@@ -317,7 +332,7 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
           const hasData = quotaHasData(entry);
           // 没有配额来源的可选 Agent 不占版面；Codex 与 Claude 始终显示。
           if (!hasData && !["codex", "claude"].includes(agentId)) return null;
-          const provenanceView = entry.fiveHour.available ? entry.fiveHour : entry.weekly;
+          const provenanceView = entry.windows?.find((window) => window.view.available)?.view;
           return (
             <section className="quota-group" key={agentId}>
               <header>
@@ -330,12 +345,10 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
                       : "暂无可靠来源"}
                 </small>
               </header>
-              {hasData && (
-                <>
-                  <QuotaBarRow label="Session" view={entry.fiveHour} />
-                  <QuotaBarRow label="每周" view={entry.weekly} />
-                </>
-              )}
+              {hasData &&
+                entry.windows.map((window) => (
+                  <QuotaBarRow key={window.key} label={window.label} view={window.view} />
+                ))}
             </section>
           );
         })}
@@ -395,16 +408,18 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
           <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
         </button>
       )}
-      <button
-        type="button"
-        className={`window-action ${transparent ? "window-action--active" : ""}`}
-        onClick={onToggleTransparent}
-        aria-label={transparent ? "关闭玻璃材质" : "使用玻璃材质"}
-        aria-pressed={transparent}
-        title={transparent ? "关闭玻璃材质" : "玻璃材质"}
-      >
-        <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
-      </button>
+      {mode === "compact" && (
+        <button
+          type="button"
+          className={`window-action ${transparent ? "window-action--active" : ""}`}
+          onClick={onToggleTransparent}
+          aria-label={transparent ? "关闭玻璃材质" : "使用玻璃材质"}
+          aria-pressed={transparent}
+          title={transparent ? "关闭玻璃材质" : "玻璃材质"}
+        >
+          <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
+        </button>
+      )}
       <button
         type="button"
         className={`window-action ${pinned ? "window-action--active" : ""}`}
@@ -462,7 +477,8 @@ function CompactWidget({
   const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
   const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
   const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
-  const quotaView = quotaEntry.fiveHour.available ? quotaEntry.fiveHour : quotaEntry.weekly;
+  const quotaWindows = compactQuotaWindows(quotaEntry);
+  const quotaView = quotaWindows.find((window) => window.view.available)?.view || UNAVAILABLE_QUOTA;
   const quotaIsSnapshot = quotaView.stale || quotaView.quality === "official_snapshot";
   const dataUnavailable = snapshot.pending || snapshot.loadError;
   const partial = snapshotIsPartial(snapshot);
@@ -535,18 +551,15 @@ function CompactWidget({
             title="点击切换配额 Agent"
           >
             <span>{AGENT_META[quotaAgent].label} 已用</span>
-            {["fiveHour", "weekly"].map((key) => {
-              const view = quotaEntry[key];
-              return (
-                <div className="widget-quota-window" key={key}>
-                  <small>{key === "fiveHour" ? "5h" : "7d"}</small>
-                  <div className="widget-quota-track" aria-hidden="true">
-                    <i style={{ transform: `scaleX(${view.available ? quotaUsedPercent(view) / 100 : 0})` }} />
-                  </div>
-                  <em>{view.available ? `${Math.round(quotaUsedPercent(view))}%` : "--"}</em>
+            {quotaWindows.map((window) => (
+              <div className="widget-quota-window" key={window.key}>
+                <small>{shortWindowLabel(window.key)}</small>
+                <div className="widget-quota-track" aria-hidden="true">
+                  <i style={{ transform: `scaleX(${window.view.available ? quotaUsedPercent(window.view) / 100 : 0})` }} />
                 </div>
-              );
-            })}
+                <em>{window.view.available ? `${Math.round(quotaUsedPercent(window.view))}%` : "--"}</em>
+              </div>
+            ))}
             <small>
               {quotaView.quality === "demo"
                 ? quotaProvenance(quotaView)
@@ -1109,7 +1122,31 @@ export function App() {
 
   useEffect(() => {
     if (pinned) runWindowAction(() => setWindowPinned(true));
-    if (transparent) runWindowAction(() => setWindowGlass(true));
+  }, []);
+
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
+
+  // 玻璃只作用于小插件形态；系统明暗主题切换时重发对应 tint。
+  useEffect(() => {
+    const apply = () => runWindowAction(() => setWindowGlass(transparent && viewMode === "compact"));
+    apply();
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    media?.addEventListener?.("change", apply);
+    return () => media?.removeEventListener?.("change", apply);
+  }, [transparent, viewMode]);
+
+  // 边缘挂靠：拖到屏幕上缘自动收起，鼠标碰边弹出。
+  useEffect(() => {
+    const stopPromise = startEdgeDock({
+      getMode: () => viewModeRef.current,
+      getPinned: () => pinnedRef.current,
+    });
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
   }, []);
 
   useEffect(() => {
@@ -1177,7 +1214,6 @@ export function App() {
     setTransparent((current) => {
       const next = !current;
       localStorage.setItem("metrik:transparent", String(next));
-      runWindowAction(() => setWindowGlass(next));
       return next;
     });
   }, []);
@@ -1251,15 +1287,13 @@ export function App() {
 
   return (
     <>
-      <div className={`app-shell app-shell--expanded ${transparent ? "app-shell--transparent" : ""} ${appBusy ? "is-loading" : ""}`}>
+      <div className={`app-shell app-shell--expanded ${appBusy ? "is-loading" : ""}`}>
         <div className="expanded-drag-region" data-tauri-drag-region aria-hidden="true" />
         <WindowActions
           mode="expanded"
           pinned={pinned}
-          transparent={transparent}
           onToggleMode={handleWindowMode}
           onTogglePinned={handleTogglePinned}
-          onToggleTransparent={handleToggleTransparent}
         />
         <Sidebar activeNav={activeNav} onNavChange={handleNavChange} snapshot={snapshot} loading={appBusy} />
 

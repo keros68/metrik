@@ -53,6 +53,19 @@ function demoSeries(period) {
   });
 }
 
+function demoQuotaView(remainingPercent, resetsInMinutes) {
+  return {
+    available: true,
+    remainingPercent,
+    resetsInMinutes,
+    ageMinutes: 0,
+    stale: false,
+    resetExpired: false,
+    sourceLabel: "演示配额",
+    quality: "demo",
+  };
+}
+
 function demoSnapshot(period = "today") {
   const scale = PERIOD_SCALE[period]?.factor || 1;
   const codexTokens = Math.round(892_400 * scale);
@@ -73,13 +86,18 @@ function demoSnapshot(period = "today") {
     agentQuotas: [
       {
         agent: "codex",
-        fiveHour: { available: true, remainingPercent: 72, resetsInMinutes: 198, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
-        weekly: { available: true, remainingPercent: 86, resetsInMinutes: 8_940, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+        windows: [
+          { key: "primary", label: "Session", view: demoQuotaView(72, 198) },
+          { key: "secondary", label: "每周", view: demoQuotaView(86, 8_940) },
+        ],
       },
       {
         agent: "claude",
-        fiveHour: { available: true, remainingPercent: 94, resetsInMinutes: 102, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
-        weekly: { available: true, remainingPercent: 58, resetsInMinutes: 6_180, ageMinutes: 0, stale: false, resetExpired: false, sourceLabel: "演示配额", quality: "demo" },
+        windows: [
+          { key: "five_hour", label: "Session", view: demoQuotaView(94, 102) },
+          { key: "seven_day", label: "每周 · 全模型", view: demoQuotaView(67, 6_180) },
+          { key: "seven_day_fable", label: "每周 · Fable", view: demoQuotaView(52, 6_180) },
+        ],
       },
     ],
     agents: [
