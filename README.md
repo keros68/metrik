@@ -28,8 +28,9 @@ Windows 安装包：[下载最新版](https://github.com/keros68/metrik/releases
 | ZCode / 智谱 GLM | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | — |
 | OpenCode | `~/.local/share/opencode/storage` | — |
 | Kimi | `~/.kimi-code` 与 `~/.kimi` 的 `wire.jsonl` | — |
+| Antigravity | 本机 language server 实时 RPC（IDE 需运行） | ✅ RPC 官方配额 |
 
-Gemini CLI 明确不在支持范围。Cursor 与 Antigravity 见[路线](#路线)。
+Gemini CLI 明确不在支持范围。Cursor 见[路线](#路线)。
 
 ## 主要功能
 
@@ -109,8 +110,8 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture
 
 ## 当前验收边界
 
-- 仅在 **Windows 10/11 x64** 实机构建与验收。macOS、Linux 共用同一套 Tauri/Rust 代码，但没有对应产物和实机结论。
-- **Kimi 适配尚未实机验收**：格式依据官方 wire 协议文档与既有工具核实、并有测试夹具覆盖，但作者本机未安装 Kimi。装了 Kimi 的用户请核对数字，发现偏差欢迎提 issue。
+- **Windows 10/11 x64** 是唯一实机验收过的平台。macOS 提供 `.dmg`（Intel + Apple Silicon 通用包）且 CI 编译测试通过，但托盘、玻璃材质、边缘挂靠、开机启动这些交互行为走的是另一套原生 API，**尚未在真机验收**——欢迎 Mac 用户反馈。Linux 共用代码但无产物。
+- **Kimi 与 Antigravity 适配尚未实机验收**：格式依据官方协议/既有工具交叉核实、并有测试夹具覆盖，但作者本机未安装。装了的用户请核对数字，发现偏差欢迎提 issue。Antigravity 需要 IDE 正在运行才能读到用量（它没有本地日志）。
 - 安装包**没有微软代码签名证书**，Windows 首次运行会弹 SmartScreen 提示。这是未签名开源软件的正常表现——点「更多信息」→「仍要运行」即可，Release 页面附有 SHA256 校验值可核对文件完整性。（应用内更新用的 minisign 签名是另一回事，它保证更新包没被掉包，但不影响 SmartScreen。）
 - 目标机未安装 WebView2 时，默认安装器需要联网获取运行时。
 - **v0.1.0 无法自动更新到后续版本**：更新器是 v0.2.0 才加的，装了 v0.1.0 的用户需要手动下载一次新版；之后的版本之间才能自动更新。
@@ -120,10 +121,9 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture
 ## 路线
 
 1. 真正的追加游标（避免大日志整文件重扫）
-2. macOS / Linux 构建与实机验收
+2. macOS 实机验收（已有 dmg 与 CI，缺真机结论）；Linux 构建
 3. 端到端加密的中继同步（当前为共享文件夹方案）
-4. **Antigravity**：token 数据只存在于本机 language server 的私有 RPC 后面（需 IDE 常驻），模型名是随版本变化的占位符别名，且现有参考实现均不支持 Windows。在拿到真机上的确切响应之前不接入——照文档猜着写只会产出看起来对、实际错的数字。
-5. **Cursor**：依赖云端 API + 本地凭据提取，需要先设计显式的凭据授权机制。
+4. **Cursor**：依赖云端 API + 本地凭据提取，需要先设计显式的凭据授权机制。
 
 架构与去重逻辑见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，视觉对照见 [design-qa.md](design-qa.md)，Windows 验收证据见 [ACCEPTANCE.md](ACCEPTANCE.md)。
 
