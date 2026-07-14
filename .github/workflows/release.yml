@@ -10,7 +10,20 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+          # Intel + Apple Silicon 通用包。macOS 尚未实机验收，Release 说明里
+          # 必须标明这一点。
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,17 +33,20 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.rust-targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.platform }}
 
       - name: Install frontend dependencies
         run: npm ci
 
-      # 安装包没有微软代码签名证书：目标机会提示"未知发布者"，这是已知且在
-      # README 声明的边界。下面这对密钥是 Tauri 更新器自己的 minisign 签名，
-      # 只用于保证更新包在分发链路上没被掉包，与 SmartScreen 无关。
+      # 安装包没有代码签名证书（Windows 会提示"未知发布者"，macOS 会提示
+      # 无法验证开发者），这是已知且在 README 声明的边界。下面这对密钥是
+      # Tauri 更新器自己的 minisign 签名，只保证更新包在分发链路上没被掉包。
       # 同时会生成 latest.json（更新器的检查端点）并一并上传到 Release。
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -43,3 +59,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+          args: ${{ matrix.args }}
