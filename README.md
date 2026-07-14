@@ -110,7 +110,7 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture
 
 ## 当前验收边界
 
-- **Windows 10/11 x64** 是唯一实机验收过的平台。macOS 提供 `.dmg`（Intel + Apple Silicon 通用包）且 CI 编译测试通过，但托盘、玻璃材质、边缘挂靠、开机启动这些交互行为走的是另一套原生 API，**尚未在真机验收**——欢迎 Mac 用户反馈。Linux 共用代码但无产物。
+- **Windows 10/11 x64** 是唯一实机验收过的平台。macOS 上 Metrik 是**菜单栏应用**：面板贴着菜单栏图标弹出、不抢焦点、点击别处收起，完整视图是带原生红绿灯的独立窗口。`.dmg` 为 Intel + Apple Silicon 通用包，CI 编译测试通过，但**面板弹出位置、失焦收起、vibrancy 观感、菜单栏图标这些交互行为尚未在真机验收**——欢迎 Mac 用户反馈。Linux 共用代码但无产物。
 - **Kimi 与 Antigravity 适配尚未实机验收**：格式依据官方协议/既有工具交叉核实、并有测试夹具覆盖，但作者本机未安装。装了的用户请核对数字，发现偏差欢迎提 issue。Antigravity 需要 IDE 正在运行才能读到用量（它没有本地日志）。
 - 安装包**没有微软代码签名证书**，Windows 首次运行会弹 SmartScreen 提示。这是未签名开源软件的正常表现——点「更多信息」→「仍要运行」即可，Release 页面附有 SHA256 校验值可核对文件完整性。（应用内更新用的 minisign 签名是另一回事，它保证更新包没被掉包，但不影响 SmartScreen。）
 - 目标机未安装 WebView2 时，默认安装器需要联网获取运行时。
