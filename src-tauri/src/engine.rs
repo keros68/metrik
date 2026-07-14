@@ -16,6 +16,7 @@ use crate::sync;
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use rusqlite::{params, Connection};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -233,7 +234,7 @@ fn report_at(connection: &Connection, local_now: chrono::DateTime<Local>) -> Res
             share: share(tokens),
         })
         .collect();
-    top_models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    top_models.sort_by_key(|model| Reverse(model.tokens));
     top_models.truncate(10);
 
     let agents = AGENT_IDS
@@ -371,7 +372,7 @@ fn sessions_at(
         })
         .collect();
 
-    sessions.sort_by(|a, b| b.end_ms.cmp(&a.end_ms));
+    sessions.sort_by_key(|session| Reverse(session.end_ms));
     let total_sessions = sessions.len() as i64;
     let truncated = sessions.len() > MAX_SESSIONS;
     sessions.truncate(MAX_SESSIONS);
@@ -809,7 +810,7 @@ fn query_snapshot_at(
             share: share(tokens),
         })
         .collect();
-    models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    models.sort_by_key(|model| Reverse(model.tokens));
 
     Ok(UsageSnapshot {
         generated_at: Utc::now().to_rfc3339(),
