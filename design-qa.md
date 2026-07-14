@@ -203,3 +203,15 @@ final result: passed
 - 结论：等用户实机安装后现场探测真实 RPC 响应再实现；强行按文档猜测实现会重蹈 Codex 窗口语义硬编码的覆辙。
 
 cargo test 96 通过 / 2 忽略；clippy -D warnings 干净；fmt 干净；npm build 通过。
+
+## 2026-07-14（八）任务栏修复、报告卡片统一、macOS 上 CI、Antigravity 接入
+
+- **任务栏真根因**：窗口是无边框（decorations:false），Windows 下这类窗口默认无任务栏按钮——由 WS_EX_APPWINDOW 决定，而 setSkipTaskbar 只动 WS_EX_TOOLWINDOW，补不上。新增 set_taskbar_button 命令直接改扩展样式（隐藏态改、重显后 shell 重读）。之前两次"先藏后显"没用就是因为动错了标志。
+- **报告卡片忽大忽小**：三视图自然高度差大（折线 SVG 按 viewBox 撑高）。加固定高度容器 .report-view-body（272px），折线 SVG 改 height:100% + max-height。
+- **macOS 上 CI**：加 macos-latest 到 CI/Release 矩阵。**实测 macOS 编译通过、95 项测试全绿**（比预期乐观：玻璃走 setEffects、托盘走 Accessory，路径都是跨平台的）。唯一失败是 setup-node 的 npm 缓存后置步骤，去掉 cache:npm 即绿。Release 出 universal-apple-darwin 的 dmg。macOS 仍未实机验收（托盘/边缘挂靠/开机启动行为待核）。
+- **Antigravity 接入**（上次结论被推翻）：tokscale（Rust，今日仍在维护）证明 Windows 进程/端口发现可行（Get-CimInstance + netstat）。字段路径经 tokscale/CodexBar/antigravity-token-monitor 三方交叉核实。
+  - 架构：RPC 轮询套进 AgentAdapter（discover=列 cascade+配额入口，parse=取会话 generatorMetadata）。每次全量返回→按 responseId 去重，storage 新增 antigravity "response:" 键走渐进合并（与 Claude 同型）。
+  - TLS：rustls dangerous verifier 接受自签证书，仅连 127.0.0.1。
+  - 口径风险（均已编码 + 标注，未真机验证）：无进程=0 不估算（45s 负缓存防高频扫描）；cache_write 无证据恒 0；thinking 作 output 子项不重复计入（tokscale 相反假设，真机对不上就改这里）；占位符模型查表转真名，未知原样保留。
+  - Windows/macOS/Linux 三平台进程发现都实现了；均未实机验收（本机无 Antigravity）。
+- cargo test 101 通过 / 2 忽略；clippy 干净；fmt 干净；npm build 通过。
