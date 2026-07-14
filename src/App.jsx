@@ -1983,6 +1983,8 @@ function ReportsSection({ report }) {
             </button>
           ))}
         </div>
+        {/* 固定高度：三种视图内容高度不同，卡片会随切换忽大忽小。 */}
+        <div className="report-view-body">
         {view === "trend" ? (
           <ReportTrendChart days={data.days} />
         ) : view === "share" ? (
@@ -2018,6 +2020,7 @@ function ReportsSection({ report }) {
         </div>
           </>
         )}
+        </div>
       </section>
 
       <div className="report-grid">

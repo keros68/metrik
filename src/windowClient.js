@@ -109,9 +109,11 @@ async function applyWindowMode(mode) {
 
   if (mode === "expanded") {
     // 小插件不占任务栏；完整视图是常规窗口，要出现在任务栏里。
-    // Windows 任务栏只在窗口重新显示时重读该样式，必须先藏后显才生效。
+    // 无边框窗口的任务栏按钮由 WS_EX_APPWINDOW 决定，setSkipTaskbar 补不上它，
+    // 所以走后端改窗口样式；样式必须在隐藏状态下改，重新显示后 shell 才重读。
     await appWindow.hide().catch(() => {});
     await appWindow.setSkipTaskbar(false).catch(() => {});
+    await invoke("set_taskbar_button", { visible: true }).catch(() => {});
     compactPosition = await appWindow.outerPosition().catch(() => null);
     const monitor = await api.currentMonitor().catch(() => null);
     const workArea = monitor?.workArea?.size?.toLogical(monitor.scaleFactor);
@@ -135,6 +137,7 @@ async function applyWindowMode(mode) {
   }
   await appWindow.hide().catch(() => {});
   await appWindow.setSkipTaskbar(true).catch(() => {});
+  await invoke("set_taskbar_button", { visible: false }).catch(() => {});
   await appWindow.setMinSize(null);
   await appWindow.setMaximizable(false);
   await appWindow.setSize(new api.LogicalSize(size.width, size.height));

@@ -794,6 +794,55 @@ mod host_backdrop {
     }
 }
 
+/// 无边框窗口（decorations: false）在 Windows 上默认不进任务栏：任务栏按钮
+/// 由 WS_EX_APPWINDOW 决定，而 Tauri 的 setSkipTaskbar 只管 WS_EX_TOOLWINDOW，
+/// 补不上这个样式。样式必须在窗口隐藏时改，重新显示后 shell 才会重读。
+#[cfg(windows)]
+mod taskbar {
+    use core::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    pub fn set_button(hwnd: isize, visible: bool) {
+        let handle = HWND(hwnd as *mut c_void);
+        unsafe {
+            let current = GetWindowLongPtrW(handle, GWL_EXSTYLE) as u32;
+            let updated = if visible {
+                (current | WS_EX_APPWINDOW.0) & !WS_EX_TOOLWINDOW.0
+            } else {
+                (current & !WS_EX_APPWINDOW.0) | WS_EX_TOOLWINDOW.0
+            };
+            if updated != current {
+                SetWindowLongPtrW(handle, GWL_EXSTYLE, updated as isize);
+            }
+        }
+    }
+}
+
+/// 完整视图要出现在任务栏，小组件不要。调用方负责在隐藏状态下调用并随后重新显示。
+#[tauri::command]
+async fn set_taskbar_button(window: tauri::WebviewWindow, visible: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        window
+            .run_on_main_thread(move || {
+                taskbar::set_button(hwnd, visible);
+                let _ = sender.send(());
+            })
+            .map_err(|error| error.to_string())?;
+        let _ = receiver.recv_timeout(std::time::Duration::from_secs(2));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (&window, visible);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn set_glass_backdrop(
     window: tauri::WebviewWindow,
@@ -1025,6 +1074,7 @@ pub fn run() {
             set_claude_hook,
             claude_oauth_status,
             set_claude_oauth,
+            set_taskbar_button,
             set_glass_backdrop
         ])
         .run(tauri::generate_context!())
