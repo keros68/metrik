@@ -27,10 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 不开 npm 缓存：它的 post 步骤会在 macOS 上失败，把已经构建成功、产物也传完
+      # 的 job 标红（0.3.0、0.4.0 各误报一次）。发布不频繁，不值得为这点缓存收益
+      # 换一个会骗人的红叉。
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
