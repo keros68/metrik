@@ -13,10 +13,14 @@
 
 ```text
 Codex JSONL ─────┐
-                 ├─ adapter ─ normalized event ─ SQLite ledger ─ period query ─ UI
-Claude JSONL ────┘
+Claude JSONL ────┤
+ZCode SQLite ────┼─ adapter ─ normalized event ─ SQLite ledger ─ period query ─ UI
+OpenCode JSON ───┤
+Kimi wire.jsonl ─┘
 
-Codex app-server ─ official quota snapshot ────────────────────────┘
+Codex app-server ────────┐
+Claude statusLine hook ──┼─ official quota snapshot ──────────────┘
+Claude OAuth (opt-in) ───┘
 ```
 
 The UI invokes one asynchronous Tauri command, `usage_snapshot(period)`. Blocking discovery, parsing, SQLite work, and the local quota subprocess run inside `spawn_blocking`, guarded by a single scan lock. On each request the engine:
@@ -36,7 +40,15 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 
 - Codex: session ID plus timestamp and cumulative-token fingerprint.
 - Claude Code: provider message ID only. Request ID and model are validation metadata; a conflict rejects that message and marks partial coverage without poisoning the rest of the source. Session ID remains metadata and does not prevent cross-session deduplication.
+- Kimi: new-format records use the session path plus timestamp and component fingerprint; legacy StatusUpdates use the provider `message_id`.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
+
+### Replayed history is not new usage
+
+Two sources replay counters that are already ledgered elsewhere. Counting them is the single most expensive class of bug in this system, because the totals stay plausible:
+
+- **Codex fork/subagent rollouts** carry `session_meta.forked_from_id` and replay the parent thread's cumulative `token_count` events before their first `turn_context`. Those counters belong to the parent session. The adapter skips them while still advancing the delta baseline, so the fork's first live delta counts only its own increment.
+- **Kimi** emits both `usageScope: "turn"` (a single turn's delta) and `usageScope: "session"` (the running session total). Only `turn` records are counted.
 
 `event_observation` allows the same logical event to be seen in more than one source without being counted twice. Progressive Claude usage updates merge component-wise maxima; non-Claude identity collisions still fail hard.
 
@@ -52,6 +64,16 @@ Codex exposes cumulative counters. The adapter records the first snapshot, then 
 
 Claude Code can repeat and progressively update the same assistant message. The adapter groups by message identity and keeps component-wise maxima.
 
+Kimi legacy StatusUpdates carry no scope marker and it is not documented whether they progressively update. The adapter merges them by `message_id` taking component-wise maxima, which is correct either way: true deltas appear once per id, and progressive updates collapse to the final value instead of summing.
+
+## Quota
+
+Quota rows are replaced wholesale, never merged, so a window a plan no longer has cannot linger as a stale row:
+
+- **Codex**: `primary` and `secondary` are slots, not window semantics — a plan may carry a weekly window in the `primary` slot and have no `secondary` at all. Windows are classified by `windowDurationMins` (≤ 1440 minutes is a session window, otherwise weekly); the slot name is only a fallback when the duration is absent. A successful `app-server` read replaces the whole Codex row set.
+- **Claude**: the statusLine hook file is the zero-credential source. The opt-in OAuth source (off by default) reads the token Claude Code already stores and queries the official usage endpoint; the token is never persisted, uploaded, or logged. A successful read from either source replaces the whole Claude row set; a failed OAuth read falls back to the hook file rather than to a guess.
+- A window whose reset time has passed without fresh data renders as `--`, not as its last known percentage.
+
 ## Storage
 
 - `scan_source`: local locator, file state, parser version, and covered time horizon
@@ -59,7 +81,9 @@ Claude Code can repeat and progressively update the same assistant message. The 
 - `event_observation`: relation between logical facts and local files
 - `quota_snapshot`: latest official quota per rolling window
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. `PARSER_VERSION` is currently 3; version changes force retained-history reconciliation. On upgrade from the earlier Windows layout, the legacy Roaming database and SQLite sidecars are staged and copied only when no local database exists; legacy files are retained.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. `PARSER_VERSION` is currently 4; version changes force retained-history reconciliation.
+
+Read-only queries (report, session stream) open the database with `SQLITE_OPEN_READ_ONLY` and skip `ensure_schema`. Running the schema check would issue `PRAGMA user_version` — a write — which blocks behind the scanner's writer and stalls those pages. On upgrade from the earlier Windows layout, the legacy Roaming database and SQLite sidecars are staged and copied only when no local database exists; legacy files are retained.
 
 Migration conflicts fall back to a separately named recovery ledger without overwriting either side. If application-data path resolution and recovery reservation both fail, startup selects a unique temporary ledger path so the window can still open; an unwritable temporary directory then degrades the data command to the UI's explicit unavailable state instead of aborting setup.
 
@@ -80,7 +104,9 @@ trait AgentAdapter {
 }
 ```
 
-The current test suite covers cumulative Codex deltas, Claude progressive updates and cross-session identity, source rewrites, narrow-coverage preservation, malformed/unreadable lines, quota freshness, time buckets, timeout cleanup, and database migration. Future adapters must add their own fixtures for identity, partial input, time boundaries, and cache-token semantics before being enabled.
+The current test suite covers cumulative Codex deltas, fork replay, Claude progressive updates and cross-session identity, Kimi turn/session scoping and legacy merging, quota window classification by duration, source rewrites, narrow-coverage preservation, malformed/unreadable lines, quota freshness, time buckets, timeout cleanup, and database migration. Future adapters must add their own fixtures for identity, partial input, time boundaries, and cache-token semantics before being enabled.
+
+An adapter is only trustworthy once its field *semantics* are confirmed against real data, not just its field names. Both classes of bug this codebase has hit — Codex fork replay counted as new usage, and a weekly quota window labeled as a five-hour one — came from assuming a plausible meaning for a field that the source defines differently. When a source cannot be observed on a real machine, prefer leaving the agent unimplemented over shipping a parser whose numbers look right.
 
 ## Runtime boundary
 

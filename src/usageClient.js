@@ -34,6 +34,7 @@ function demoSeries(period) {
         claude: Math.round(total * 0.245),
         zcode: Math.round(total * 0.04),
         opencode: Math.round(total * 0.06),
+        kimi: Math.round(total * 0.03),
       },
     }));
   }
@@ -48,6 +49,7 @@ function demoSeries(period) {
         claude: Math.round(392_160 * config.factor * (1.14 - (index % 4) / 18) * weekend / config.points),
         zcode: Math.round(52_800 * config.factor * (0.8 + (index % 5) / 12) * weekend / config.points),
         opencode: Math.round(76_400 * config.factor * (0.9 + (index % 3) / 10) * weekend / config.points),
+        kimi: Math.round(38_200 * config.factor * (0.85 + (index % 4) / 14) * weekend / config.points),
       },
     };
   });
@@ -85,7 +87,8 @@ function demoSnapshot(period = "today") {
   const claudeTokens = Math.round(392_160 * scale);
   const zcodeTokens = Math.round(52_800 * scale);
   const opencodeTokens = Math.round(76_400 * scale);
-  const totalTokens = codexTokens + claudeTokens + zcodeTokens + opencodeTokens;
+  const kimiTokens = Math.round(38_200 * scale);
+  const totalTokens = codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -118,18 +121,21 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("claude", claudeTokens, totalTokens),
       demoAgentSummary("zcode", zcodeTokens, totalTokens),
       demoAgentSummary("opencode", opencodeTokens, totalTokens),
+      demoAgentSummary("kimi", kimiTokens, totalTokens),
     ],
     cost: {
       available: true,
       // 演示值按 gpt-5.2 / claude 价目的量级粗算。
       totalUsd: 5.62 * scale,
-      unpricedTokens: zcodeTokens + opencodeTokens,
+      // ZCode / OpenCode / Kimi 未计价：演示数据也如实反映这一点。
+      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens,
       pricingAsOf: "2026-07-13",
       byAgent: [
         { agent: "codex", usd: 2.31 * scale, unpricedTokens: 0 },
         { agent: "claude", usd: 3.31 * scale, unpricedTokens: 0 },
         { agent: "zcode", usd: 0, unpricedTokens: zcodeTokens },
         { agent: "opencode", usd: 0, unpricedTokens: opencodeTokens },
+        { agent: "kimi", usd: 0, unpricedTokens: kimiTokens },
       ],
     },
     models: [
@@ -139,6 +145,7 @@ function demoSnapshot(period = "today") {
       { model: "gpt-5.2", agent: "codex", tokens: Math.round(codexTokens * 0.1), share: (codexTokens * 0.1 / totalTokens) * 100 },
       { model: "glm-5", agent: "zcode", tokens: zcodeTokens, share: (zcodeTokens / totalTokens) * 100 },
       { model: "unknown", agent: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
+      { model: "kimi-for-coding", agent: "kimi", tokens: kimiTokens, share: (kimiTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
@@ -146,6 +153,7 @@ function demoSnapshot(period = "today") {
       { id: "claude-local", kind: "local", label: "Claude Code 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。", quality: "exact", qualityLabel: "精确解析" },
       { id: "zcode-local", kind: "local", label: "ZCode / GLM 本地 Token", detail: "读取 model_usage 统计表的逐请求计数；不读取消息内容。", quality: "exact", qualityLabel: "精确解析" },
       { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
     ],
   };
 }

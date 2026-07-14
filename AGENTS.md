@@ -15,3 +15,4 @@ When implementing from a selected generated mock, treat that image as the source
 - Statistics must distinguish official quota, locally parsed usage, and estimated cost. Never present estimates as official billing.
 - Never synthesize a comparison curve or silently replace a failed desktop read with demo numbers. Missing or stale data must be labeled explicitly.
 - The product is local-first. Multi-device sync is optional and must not upload prompts, conversation text, credentials, or raw tool output.
+- On Windows, compact transparency must come from a native whole-window system backdrop; do not simulate glass by only lowering the opacity of Metrik's own background. The expanded window stays opaque and owns its light/dark theme independently.

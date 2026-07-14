@@ -1,110 +1,126 @@
 # Metrik
 
-Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。当前支持 ChatGPT / Codex Agent、Claude Code、ZCode（智谱 GLM coding plan）和 OpenCode，明确区分官方配额、本地 Token 记录和估算值。
+Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。它读取本机 Agent 留下的日志，把**官方配额**、**本地解析的 Token**、**按公开价目估算的成本**三类事实分开呈现——估算永远不冒充账单，读不到就显示"不可用"，绝不用零值或演示数字顶替。
 
-![Metrik desktop widget](design/metrik-compact-standard-final.png)
+默认形态是 320 × 320 的桌面小组件，一键展开为完整统计视图。
 
-## 现在已经具备
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app/)
+[![Platform](https://img.shields.io/badge/Windows-10%2F11%20x64-0078D6.svg)](#当前验收边界)
 
-- ChatGPT / Codex Agent、Claude Code、ZCode / GLM 与 OpenCode 的今日、7 天和 30 天 Token 统计
-- 默认 320 × 320 桌面小插件，一键展开完整统计
-- 小插件提供标准与玻璃两种材质，玻璃跟随系统明暗主题（Windows 走可调 tint 的 SWCA Acrylic，macOS 走 popover 材质）；完整视图固定为标准实底。偏好保存在本机
-- 小插件支持屏幕上缘挂靠：拖到屏幕顶端自动收起只留细边，鼠标碰到细边弹出、移开自动收回，拖离顶端恢复普通窗口
-- ChatGPT 与 Claude Code 使用各自官方应用图标，仅用于识别对应服务
-- 可选置顶、展开后收起回原位；前台紧凑态每 5 分钟、完整态每 60 秒刷新，重新获得焦点时立即刷新
-- 系统托盘常驻：不占任务栏（Windows）/ Dock（macOS），关闭按钮收进托盘，左键图标切换显示，右键菜单退出；Windows 已实测，macOS 菜单栏行为待实机验收
-- 可选的多设备同步：在设置页指定一个共享文件夹（坚果云 / OneDrive / Syncthing 等），各设备导出近 30 天统计事件并自动合并；导出只含事件标识、Agent、时间与 token 数，关闭同步会清除已合并的远端统计
-- 每个 Agent 的官方配额按窗口列表展示（Session、每周及来源推送的任何模型专属窗口）；桌面小插件的配额卡显示前两个窗口、点击在有数据的 Agent 间切换，完整视图展示全部窗口
-- Claude Code 官方配额来自可选的 statusLine 钩子（设置页一键安装/卸载）：Claude Code 自身把官方额度推给钩子脚本落地成本地文件，零网络请求、零凭据；已有自定义 statusLine 时拒绝覆盖
-- Agent 筛选、趋势悬停和数据来源说明
-- Windows 已构建和实测；macOS、Linux 共用 Tauri/Rust 代码基础，仍需各自机器验收
-- 本地 SQLite 事件账本，重复扫描不会重复入账
-- 坏行或读取异常会把对应来源降级为“部分覆盖”，不会继续伪装成精确结果
-- 数据库使用系统本机数据目录，并从旧的漫游目录安全复制；旧库不删除、本机新库不覆盖
-- 单实例运行；重复启动只会唤回已有窗口，不会再开一套扫描进程
-- 旧版或不兼容的派生账本会做 schema 检查并从本机 Agent 日志安全重建，不要求用户手删数据库
-- 数据来源抽屉提供两步确认的“重建本地账本”；只清理 Metrik 的派生统计表，不改写 Agent 原始日志或无关数据表
-- 即使旧库迁移和恢复库创建都失败，应用也会退到唯一的临时账本继续启动，不因存储目录异常直接闪退
-- 浏览器预览显式使用演示数据；桌面读取失败时显示不可用，不用演示数字冒充真实值
-- 紧凑态不加载完整图表，扫描在后台线程执行，不阻塞窗口操作
+<p align="center">
+  <img src="design/shot-widget.png" width="320" alt="Metrik 桌面小组件">
+</p>
 
-Gemini CLI 不在支持范围内。
+![完整视图 · 概览](design/shot-overview.png)
+
+> 截图为浏览器演示数据，不是真实用量。
+
+## 支持的 Agent
+
+| Agent | Token 来源 | 官方配额 |
+| --- | --- | --- |
+| ChatGPT / Codex | `~/.codex/sessions` 的会话日志 | ✅ 本机 `codex app-server` |
+| Claude | `~/.claude/projects` 的会话日志 | ✅ statusLine 钩子（零凭据）或 OAuth 直连（需显式开启） |
+| ZCode / 智谱 GLM | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | — |
+| OpenCode | `~/.local/share/opencode/storage` | — |
+| Kimi | `~/.kimi-code` 与 `~/.kimi` 的 `wire.jsonl` | — |
+
+Gemini CLI 明确不在支持范围。Cursor 与 Antigravity 见[路线](#路线)。
+
+## 主要功能
+
+- **桌面小组件**：深色 HUD 玻璃（浓度可调），显示总用量与你选定的 Agent；固定后锁在原位，位置跨重启记忆；拖到屏幕上缘可挂靠自动收起。
+- **配额三行元语**：窗口名 → 进度条 → 已用百分比 + 重置倒计时，外加消耗节奏预测（按当前速度能否撑到重置）。数据陈旧或窗口已重置时显式标注，不显示过期数字。
+- **报告**：26 周热力图 / 周趋势折线 / Agent 构成环形，可切换。
+- **用量**：按天分组的会话明细流，支持 Agent 与模型筛选、CSV 导出、一键复制会话 ID（方便 resume）。
+- **成本估算**：静态价目表按 Token 分量计价。**没有价目的模型如实归入"未计价"，不猜**。
+- **多设备同步**：指向一个共享文件夹（坚果云 / OneDrive / Syncthing 均可），各设备导出近 30 天的统计事件并自动合并。
+- 托盘常驻、可选开机启动、单实例运行。
+
+<details>
+<summary>更多截图（报告 / 用量 / 设置）</summary>
+
+![报告](design/shot-reports.png)
+![用量](design/shot-usage.png)
+![设置](design/shot-settings.png)
+
+</details>
 
 ## 数据口径
 
-Metrik 不把所有数字混成一个“用量”。
+首页的数字是**处理量**：`未缓存输入 + 缓存读取 + 缓存写入 + 输出`。推理 token 是输出的子项，不重复叠加。**它不是账单金额。**
 
-| 类型 | 来源 | 处理方式 |
-| --- | --- | --- |
-| ChatGPT / Codex 配额 | 本机 `codex app-server` | 官方滚动窗口；失败时回退到日志内的官方快照 |
-| ChatGPT / Codex Token | `~/.codex/sessions` 与 `archived_sessions` | 累计快照转正增量；相同会话跨路径去重 |
-| Claude Code Token | `~/.claude/projects` | 按 provider `message.id` 跨会话合并，字段取最大值；`requestId` 与模型只做冲突检测，冲突消息会拒绝并标记“部分覆盖” |
-| Claude Code 配额 | 可选 statusLine 钩子写入的本地文件 | Claude Code 推送的全部官方窗口（当前为 Session 与每周全模型；模型专属周限官方未推送则不显示、不猜测） |
-| ZCode / GLM Token | `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表 | 逐请求计数按请求标识去重；只读统计列，不读消息内容表 |
-| OpenCode Token | `~/.local/share/opencode/storage` | 每条 assistant 消息一个 JSON 文件，按消息标识去重 |
-| 其他设备统计 | 用户指定的同步文件夹 | 各设备导出统计事件，按设备 + 事件标识合并，不参与本机去重 |
+三类事实永远分开：
 
-首页显示的是处理总量：未缓存输入 + 缓存读取 + 缓存写入 + 输出。缓存读取会计入处理量，但缓存/推理子项不会再次叠加。它不是账单金额。
+| 类型 | 含义 |
+| --- | --- |
+| 官方配额 | Agent 官方推送的窗口用量百分比与重置时间 |
+| 本地 Token | 从本机日志逐事件解析、去重后的处理量 |
+| 估算成本 | 按公开 API 价目对本地 Token 的折算，**不是你的账单** |
 
-## 隐私
+解析中遇到坏行或读取异常，对应来源会降级为"部分覆盖"，而不是继续伪装成精确结果。
 
-Metrik 会在本机顺序扫描 JSONL 日志，但只反序列化并保存统计所需字段。数据库不保存：
+## 不做什么
 
-- 对话正文和 Prompt
-- 工具输出
-- 登录凭据和 API Key
-- 原始文件内容
+- **不猜数字。** 读不到就显示"不可用"；模型没有价目就归入"未计价"；配额窗口已重置而新数据未到，显示 `--` 而不是旧百分比。
+- **不存对话内容。** 数据库只保存时间、Agent、模型、会话标识和源文件定位。不存 Prompt、回复正文、工具输出、凭据或原始文件内容。
+- **不上传。** 本地优先。多设备同步只经由你自己指定的文件夹，导出内容仅含统计字段。
+- **不默认碰凭据。** Claude 官方额度的默认来源是零凭据的 statusLine 钩子。OAuth 直连是可选项，默认关闭，开启前会告知条款风险（见下）。
 
-SQLite 会保存用量时间、Agent、模型、会话标识和本机源文件定位信息；当前没有应用层静态加密。这些数据不会上传，首版也没有远程同步服务。
+## Claude 额度的两种来源
 
-## 当前验收边界
+1. **statusLine 钩子**（推荐，默认）：Claude Code 本身会把官方额度推给状态栏脚本，钩子只提取额度数字落地成本地文件。零网络请求、零凭据。已有自定义 statusLine 时会**自动串联**——你原来的状态栏照常显示，额度追加在行尾，卸载时原样恢复。
+   局限：只有在终端里渲染出状态栏的交互式会话才会刷新。你若主要在 IDE 或网页里用 Claude，额度会停更。
 
-- 当前安装包仅在 Windows 10/11 x64 实机构建和验收。macOS、Linux 与 Windows ARM64 有共同代码基础，但还没有对应产物和实机结论。
-- 多设备同步依赖用户提供的共享文件夹（同步盘由用户自选），当前导出为明文统计 JSON；端到端加密的中继同步仍在路线图上。OpenCode 解析基于其公开存储格式与合成夹具验证，尚未在装有 OpenCode 的真机上验收。
-- 安装包尚未数字签名，Windows 可能提示“未知发布者”。目标机未安装 WebView2 时，默认安装器需要联网获取运行时。
-- Token 统计来自本地 Agent 日志，不是官方账单。若来源页显示“部分覆盖”，当前总量只包含成功解析的记录，可能不完整。
-- 运行内存主要由系统 WebView2 决定。未变化文件会跳过，但持续增长的大型日志当前仍需整文件重扫；首次索引和活跃会话期间可能出现明显 CPU、磁盘与内存占用。
+2. **OAuth 直连**（可选，默认关闭）：读取 Claude Code 已保存的登录凭据，直接查询官方额度接口，覆盖网页版消耗。
+   ⚠️ **条款风险**：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的 OAuth 凭据。目前公开的封禁集中在借订阅做推理的工具，未见只读用量查询被封号的案例，但按条款字面本功能同样属于违规范围。**不愿承担风险请保持关闭。**
 
 ## 本地运行
 
-要求 Node.js 22+、Rust 1.88+，以及对应系统的 Tauri 依赖。
+要求 Node.js 22+、Rust 1.88+。
 
 ```bash
 npm install
-npm run desktop:dev
+npm run desktop:dev    # 桌面开发模式（读取真实本机日志）
+npm run dev            # 仅浏览器预览（演示数据，显式标注）
+npm run desktop:build  # 构建安装包
 ```
-
-只预览界面：
-
-```bash
-npm run dev
-```
-
-浏览器预览不会读取 Agent 日志，会明确显示演示模式。
 
 ## 验证
 
 ```bash
 npm run build
 cd src-tauri
-cargo test
+cargo test                    # 96 项通过，2 项真实环境烟测默认忽略
+cargo clippy -- -D warnings
+cargo fmt --check
 ```
 
-当前自动化结果为 48 项通过、2 项真实环境烟测默认忽略；发布前另运行严格 Clippy、格式检查和前端生产构建。
-
-读取当前机器真实日志的烟测默认被忽略，需要手动运行：
+读取当前机器真实日志的烟测需手动运行：
 
 ```bash
 cargo test live_snapshot_smoke_test -- --ignored --nocapture
 ```
 
-视觉对照记录见 [design-qa.md](design-qa.md)，Windows x64 安装包、对账、资源与原生交互证据见 [ACCEPTANCE.md](ACCEPTANCE.md)。
+## 当前验收边界
+
+- 仅在 **Windows 10/11 x64** 实机构建与验收。macOS、Linux 共用同一套 Tauri/Rust 代码，但没有对应产物和实机结论。
+- **Kimi 适配尚未实机验收**：格式依据官方 wire 协议文档与既有工具核实、并有测试夹具覆盖，但作者本机未安装 Kimi。装了 Kimi 的用户请核对数字，发现偏差欢迎提 issue。
+- 安装包未数字签名，Windows 可能提示"未知发布者"。目标机未安装 WebView2 时，默认安装器需要联网获取运行时。
+- Token 统计来自本地日志而非官方账单。来源页显示"部分覆盖"时，总量只包含成功解析的记录。
+- 持续增长的大型日志目前仍需整文件重扫；首次索引期间可能出现明显 CPU 与磁盘占用。
 
 ## 路线
 
-1. 当前：320 × 320 透明桌面小插件、准确的 ChatGPT / Codex 与 Claude Code 本地统计和可信度说明
-2. 下一步：真正的追加游标、macOS/Linux 构建验收（含托盘/菜单栏行为），再评估开机启动
-3. 再下一步：端到端加密的中继同步（当前为共享文件夹方案），不上传原始对话或凭据
-4. 后续 Agent：Cursor（云端 API + 本地 state.vscdb 凭据）与 Antigravity（本机 language server RPC）在参考实现中均依赖凭据提取或运行中进程，需要单独的凭据同意机制与装有对应软件的实机验收后再接入
+1. 真正的追加游标（避免大日志整文件重扫）
+2. macOS / Linux 构建与实机验收
+3. 端到端加密的中继同步（当前为共享文件夹方案）
+4. **Antigravity**：token 数据只存在于本机 language server 的私有 RPC 后面（需 IDE 常驻），模型名是随版本变化的占位符别名，且现有参考实现均不支持 Windows。在拿到真机上的确切响应之前不接入——照文档猜着写只会产出看起来对、实际错的数字。
+5. **Cursor**：依赖云端 API + 本地凭据提取，需要先设计显式的凭据授权机制。
 
-详细边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+架构与去重逻辑见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，视觉对照见 [design-qa.md](design-qa.md)，Windows 验收证据见 [ACCEPTANCE.md](ACCEPTANCE.md)。
+
+## License
+
+[MIT](LICENSE)

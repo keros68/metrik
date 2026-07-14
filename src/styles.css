@@ -1086,7 +1086,9 @@ button:focus-visible {
 .chart-legend {
   display: flex;
   align-items: center;
-  gap: 31px;
+  /* 5 个以上 Agent 时必须换行，否则末位会被挤出可视区。 */
+  flex-wrap: wrap;
+  gap: 12px 26px;
   margin: 28px 0 0 49px;
   color: #686a6e;
   font-size: 13px;
