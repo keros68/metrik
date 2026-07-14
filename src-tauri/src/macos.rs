@@ -1,8 +1,14 @@
 //! macOS 专属外壳：菜单栏 NSPanel + 独立的完整视图窗口。
 //!
+//! tauri-nspanel 仍绑在已弃用的 cocoa/objc 上（上游未迁 objc2），它的 panel_delegate!
+//! 宏展开里还带着过时的 cfg(cargo-clippy)。两个 lint 只在本文件关掉，不影响其余代码。
+//!
 //! Windows 上 Metrik 是一个会变形的无边框窗口（小插件 ⇄ 完整视图），带自绘窗口按钮。
 //! macOS 的原生形态不同：菜单栏图标点开一个不抢焦点的面板，完整视图是另一个标准窗口。
 //! NSPanel 的样式掩码与可缩放标准窗口互斥，所以这里是两个窗口，而不是一个窗口变形。
+
+#![allow(deprecated)]
+#![allow(unexpected_cfgs)]
 
 use std::sync::Mutex;
 
