@@ -247,8 +247,8 @@ fn parse_rate_limits(result: &Value) -> Vec<QuotaSample> {
     let now = chrono::Utc::now().timestamp_millis();
     ["primary", "secondary"]
         .into_iter()
-        .filter_map(|window_key| {
-            let window = limits.get(window_key)?;
+        .filter_map(|slot| {
+            let window = limits.get(slot)?;
             let used = number(window.get("usedPercent")?)?;
             let resets_at_ms = window
                 .get("resetsAt")
@@ -256,7 +256,10 @@ fn parse_rate_limits(result: &Value) -> Vec<QuotaSample> {
                 .map(|value| value * 1000);
             Some(QuotaSample {
                 adapter_id: "codex",
-                window_key: window_key.to_owned(),
+                window_key: crate::domain::codex_window_key(
+                    window.get("windowDurationMins").and_then(integer),
+                    slot,
+                ),
                 remaining_percent: (100.0 - used).clamp(0.0, 100.0),
                 resets_at_ms,
                 collected_at_ms: now,
@@ -287,14 +290,34 @@ mod tests {
     fn parses_primary_and_secondary_windows() {
         let value = json!({
             "rateLimits": {
-                "primary": { "usedPercent": 26, "resetsAt": 1783831562 },
-                "secondary": { "usedPercent": 9, "resetsAt": 1784371617 }
+                "primary": { "usedPercent": 26, "windowDurationMins": 300, "resetsAt": 1783831562 },
+                "secondary": { "usedPercent": 9, "windowDurationMins": 10080, "resetsAt": 1784371617 }
             }
         });
         let samples = parse_rate_limits(&value);
         assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].window_key, "primary");
         assert_eq!(samples[0].remaining_percent, 74.0);
+        assert_eq!(samples[1].window_key, "secondary");
         assert_eq!(samples[1].remaining_percent, 91.0);
+    }
+
+    #[test]
+    fn weekly_window_in_the_primary_slot_is_classified_by_duration() {
+        // prolite 套餐：primary 槽位装的是 10080 分钟（7 天）的周窗，且没有
+        // secondary。按槽位命名会把周额度标成"5 小时"，必须按时长归类。
+        let value = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": { "usedPercent": 25, "windowDurationMins": 10080, "resetsAt": 1784506589 },
+                    "secondary": null
+                }
+            }
+        });
+        let samples = parse_rate_limits(&value);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "secondary");
+        assert_eq!(samples[0].remaining_percent, 75.0);
     }
 
     #[cfg(windows)]

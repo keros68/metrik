@@ -1,21 +1,28 @@
 use crate::adapters::{
-    AgentAdapter, ClaudeAdapter, CodexAdapter, OpencodeAdapter, ScanDiagnostics, ZcodeAdapter,
+    AgentAdapter, ClaudeAdapter, CodexAdapter, KimiAdapter, OpencodeAdapter, ScanDiagnostics,
+    ZcodeAdapter,
 };
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
+use crate::claude_oauth::{self, ClaudeOauth};
 use crate::domain::{
-    AgentQuotaView, AgentSummary, QuotaSample, QuotaView, SeriesPoint, SourceView, SyncView,
-    UsageSnapshot, AGENT_IDS,
+    AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage, ModelSummary,
+    QuotaSample, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView, UsageReport,
+    UsageSessions, UsageSnapshot, AGENT_IDS,
 };
+use crate::pricing;
 use crate::storage;
 use crate::sync;
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant};
+
+/// 报告窗口固定为 182 天（26 周），与 `usage_snapshot` 的扫描周期无关。
+const REPORT_WINDOW_DAYS: i64 = 182;
 
 #[derive(Default)]
 struct ScanReport {
@@ -38,12 +45,61 @@ struct StoredEvent {
     adapter: String,
     timestamp: i64,
     tokens: i64,
+    model: Option<String>,
+    input_uncached: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+}
+
+/// 一个 Agent 在周期内的 processed token 分量拆解。远端同步事件不带分量，
+/// 按 0 计入，不会伪造精度。
+#[derive(Clone, Copy, Default)]
+struct TokenComponents {
+    input_uncached: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+}
+
+impl TokenComponents {
+    fn processed(&self) -> i64 {
+        self.input_uncached + self.cache_read + self.cache_write + self.output
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.input_uncached += other.input_uncached;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.output += other.output;
+    }
+}
+
+struct StoredSessionEvent {
+    adapter: String,
+    session_id: String,
+    timestamp: i64,
+    model: Option<String>,
+    input_uncached: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+}
+
+#[derive(Default)]
+struct SessionAgg {
+    start_ms: i64,
+    end_ms: i64,
+    totals: TokenComponents,
+    event_count: i64,
+    model_components: HashMap<String, TokenComponents>,
 }
 
 pub fn build_snapshot(
     database_path: &Path,
     period: &str,
     quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
+    claude_quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
 ) -> Result<UsageSnapshot> {
     let mut connection = storage::open_database(database_path)?;
     let now = Utc::now().timestamp_millis();
@@ -51,18 +107,35 @@ pub fn build_snapshot(
     let retention_cutoff = now - Duration::days(65).num_milliseconds();
     let report = ingest_sources(&mut connection, discovery_cutoff, retention_cutoff)?;
 
+    // app-server 是 Codex 额度的权威来源：拉到就整体替换，套餐变更后消失的
+    // 窗口（如 prolite 没有 5 小时窗）不得留着旧日志快照冒充当前额度。
     if let Ok(samples) = cached_live_quota(quota_cache) {
+        if !samples.is_empty() {
+            connection.execute("DELETE FROM quota_snapshot WHERE adapter_id = 'codex'", [])?;
+        }
         for sample in &samples {
             storage::upsert_quota(&connection, sample)?;
         }
     }
-    let hook_samples = ClaudeHook::detected().quota_samples();
-    if !hook_samples.is_empty() {
-        // 钩子文件是 Claude 配额的唯一来源：整体替换，来源里消失的窗口
+    // Claude 官方额度：用户显式开启 OAuth 来源时优先（账户级合并额度，
+    // 不依赖终端状态栏）；拉取失败或未开启时回落到 statusLine 钩子文件。
+    let oauth_enabled =
+        storage::get_app_setting(&connection, claude_oauth::SETTING_KEY)?.as_deref() == Some("1");
+    let mut claude_samples = Vec::new();
+    if oauth_enabled {
+        if let Ok(samples) = cached_claude_oauth_quota(claude_quota_cache) {
+            claude_samples = samples;
+        }
+    }
+    if claude_samples.is_empty() {
+        claude_samples = ClaudeHook::detected().quota_samples();
+    }
+    if !claude_samples.is_empty() {
+        // 当前来源是 Claude 配额的唯一事实：整体替换，来源里消失的窗口
         // （或旧版 primary/secondary 键）不得滞留在展示里。
         connection.execute("DELETE FROM quota_snapshot WHERE adapter_id = 'claude'", [])?;
     }
-    for sample in hook_samples {
+    for sample in claude_samples {
         storage::upsert_quota(&connection, &sample)?;
     }
 
@@ -70,6 +143,305 @@ pub fn build_snapshot(
     storage::prune_old_events(&connection, retention_cutoff)?;
     sync::run_sync(&mut connection, now);
     query_snapshot(&connection, period, report)
+}
+
+/// 只读历史报告：仅查询本地账本已有数据，绝不触发日志扫描或写入，
+/// 保证报告页秒开。
+pub fn build_report(database_path: &Path) -> Result<UsageReport> {
+    let connection = storage::open_database_read_only(database_path)?;
+    report_at(&connection, Local::now())
+}
+
+fn report_at(connection: &Connection, local_now: chrono::DateTime<Local>) -> Result<UsageReport> {
+    let today = local_now.date_naive();
+    let start_date = today - Duration::days(REPORT_WINDOW_DAYS - 1);
+    let start_ms = local_midnight(start_date)?.timestamp_millis();
+    let end_ms = local_now.timestamp_millis() + 1;
+    let events = load_events(connection, start_ms, end_ms)?;
+
+    let (first_event_ms, last_event_ms) = global_event_bounds(connection)?;
+
+    let mut day_totals: BTreeMap<NaiveDate, i64> = BTreeMap::new();
+    let mut day_by_agent: HashMap<NaiveDate, BTreeMap<String, i64>> = HashMap::new();
+    let mut agent_totals: HashMap<&str, i64> = AGENT_IDS.iter().map(|agent| (*agent, 0)).collect();
+    let mut agent_active_days: HashMap<&str, HashSet<NaiveDate>> = AGENT_IDS
+        .iter()
+        .map(|agent| (*agent, HashSet::new()))
+        .collect();
+    let mut model_totals: HashMap<(String, String), i64> = HashMap::new();
+    let mut total_tokens: i64 = 0;
+
+    for event in events {
+        let Some(agent) = AGENT_IDS.iter().find(|agent| **agent == event.adapter) else {
+            continue;
+        };
+        let local = match Local.timestamp_millis_opt(event.timestamp).single() {
+            Some(value) => value,
+            None => continue,
+        };
+        let date = local.date_naive();
+
+        *day_totals.entry(date).or_default() += event.tokens;
+        *day_by_agent
+            .entry(date)
+            .or_default()
+            .entry((*agent).to_owned())
+            .or_default() += event.tokens;
+        *agent_totals.get_mut(agent).expect("registered agent") += event.tokens;
+        agent_active_days
+            .get_mut(agent)
+            .expect("registered agent")
+            .insert(date);
+        total_tokens += event.tokens;
+
+        let model_key = event
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_owned();
+        *model_totals
+            .entry(((*agent).to_owned(), model_key))
+            .or_insert(0) += event.tokens;
+    }
+
+    let streak_days = compute_streak(&day_totals);
+
+    let days: Vec<DayUsage> = day_totals
+        .into_iter()
+        .map(|(date, tokens)| DayUsage {
+            date: date.format("%Y-%m-%d").to_string(),
+            tokens,
+            by_agent: day_by_agent.remove(&date).unwrap_or_default(),
+        })
+        .collect();
+
+    let share = |tokens: i64| {
+        if total_tokens > 0 {
+            tokens as f64 * 100.0 / total_tokens as f64
+        } else {
+            0.0
+        }
+    };
+    let mut top_models: Vec<ModelSummary> = model_totals
+        .into_iter()
+        .map(|((agent, model), tokens)| ModelSummary {
+            model,
+            agent,
+            tokens,
+            share: share(tokens),
+        })
+        .collect();
+    top_models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    top_models.truncate(10);
+
+    let agents = AGENT_IDS
+        .iter()
+        .map(|agent| AgentReportRow {
+            id: (*agent).to_owned(),
+            tokens: agent_totals[agent],
+            active_days: agent_active_days[agent].len() as i64,
+        })
+        .collect();
+
+    Ok(UsageReport {
+        generated_at: Utc::now().to_rfc3339(),
+        days,
+        first_event_ms,
+        last_event_ms,
+        total_tokens,
+        top_models,
+        agents,
+        streak_days,
+    })
+}
+
+const MAX_SESSIONS: usize = 300;
+
+/// 只读会话明细：只查询本地账本已有数据，绝不触发日志扫描，不占用扫描锁。
+/// `remote_usage_event` 没有会话维度，不计入。
+pub fn build_sessions(database_path: &Path, period: &str) -> Result<UsageSessions> {
+    let connection = storage::open_database_read_only(database_path)?;
+    sessions_at(&connection, period, Local::now())
+}
+
+fn sessions_at(
+    connection: &Connection,
+    requested_period: &str,
+    local_now: chrono::DateTime<Local>,
+) -> Result<UsageSessions> {
+    let period = match requested_period {
+        "week" | "month" => requested_period,
+        _ => "today",
+    };
+    let today = local_now.date_naive();
+    let start_date = match period {
+        "week" => today - Duration::days(6),
+        "month" => today - Duration::days(29),
+        _ => today,
+    };
+    let start_ms = local_midnight(start_date)?.timestamp_millis();
+    let end_ms = local_now.timestamp_millis() + 1;
+
+    let events = load_session_events(connection, start_ms, end_ms)?;
+
+    let mut aggregates: HashMap<(String, String), SessionAgg> = HashMap::new();
+    for event in events {
+        let Some(agent) = AGENT_IDS.iter().find(|agent| **agent == event.adapter) else {
+            continue;
+        };
+        let session_id = {
+            let trimmed = event.session_id.trim();
+            if trimmed.is_empty() {
+                "unknown".to_owned()
+            } else {
+                trimmed.to_owned()
+            }
+        };
+        let key = ((*agent).to_owned(), session_id);
+        let agg = aggregates.entry(key).or_insert_with(|| SessionAgg {
+            start_ms: event.timestamp,
+            end_ms: event.timestamp,
+            ..Default::default()
+        });
+        agg.start_ms = agg.start_ms.min(event.timestamp);
+        agg.end_ms = agg.end_ms.max(event.timestamp);
+        agg.event_count += 1;
+        let comps = TokenComponents {
+            input_uncached: event.input_uncached,
+            cache_read: event.cache_read,
+            cache_write: event.cache_write,
+            output: event.output,
+        };
+        agg.totals.add(&comps);
+        if let Some(model) = event
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            agg.model_components
+                .entry(model.to_owned())
+                .or_default()
+                .add(&comps);
+        }
+    }
+
+    let mut sessions: Vec<SessionSummary> = aggregates
+        .into_iter()
+        .map(|((agent, session_id), agg)| {
+            let mut model_totals: Vec<(String, i64)> = agg
+                .model_components
+                .iter()
+                .map(|(model, comps)| (model.clone(), comps.processed()))
+                .collect();
+            model_totals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let model = model_totals.first().map(|(model, _)| model.clone());
+            let models = model_totals.into_iter().map(|(model, _)| model).collect();
+
+            let mut usd_total = 0.0_f64;
+            let mut priced_any = false;
+            for (model, comps) in &agg.model_components {
+                if let Some(price) = pricing::price_for(model) {
+                    priced_any = true;
+                    usd_total += comps.input_uncached as f64 * price.input / 1_000_000.0
+                        + comps.cache_read as f64 * price.cache_read / 1_000_000.0
+                        + comps.cache_write as f64 * price.cache_write / 1_000_000.0
+                        + comps.output as f64 * price.output / 1_000_000.0;
+                }
+            }
+            let usd = priced_any.then_some(usd_total);
+
+            SessionSummary {
+                agent,
+                session_id,
+                start_ms: agg.start_ms,
+                end_ms: agg.end_ms,
+                tokens: agg.totals.processed(),
+                input_uncached: agg.totals.input_uncached,
+                cache_read: agg.totals.cache_read,
+                cache_write: agg.totals.cache_write,
+                output: agg.totals.output,
+                model,
+                models,
+                usd,
+                event_count: agg.event_count,
+            }
+        })
+        .collect();
+
+    sessions.sort_by(|a, b| b.end_ms.cmp(&a.end_ms));
+    let total_sessions = sessions.len() as i64;
+    let truncated = sessions.len() > MAX_SESSIONS;
+    sessions.truncate(MAX_SESSIONS);
+
+    Ok(UsageSessions {
+        period: period.into(),
+        sessions,
+        total_sessions,
+        truncated,
+    })
+}
+
+fn load_session_events(
+    connection: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<StoredSessionEvent>> {
+    let mut statement = connection.prepare(
+        "SELECT adapter_id, session_id, occurred_at_ms, model,
+                input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens
+         FROM usage_event
+         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
+         ORDER BY occurred_at_ms",
+    )?;
+    let rows = statement.query_map(params![start_ms, end_ms], |row| {
+        Ok(StoredSessionEvent {
+            adapter: row.get(0)?,
+            session_id: row.get(1)?,
+            timestamp: row.get(2)?,
+            model: row.get(3)?,
+            input_uncached: row.get(4)?,
+            cache_read: row.get(5)?,
+            cache_write: row.get(6)?,
+            output: row.get(7)?,
+        })
+    })?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// 截至最近一个有数据的日子，向前数连续活跃天数；没有数据返回 0。
+fn compute_streak(day_totals: &BTreeMap<NaiveDate, i64>) -> i64 {
+    let Some((&last_active_date, _)) = day_totals.iter().next_back() else {
+        return 0;
+    };
+    let mut streak = 0_i64;
+    let mut cursor = last_active_date;
+    loop {
+        if !day_totals.contains_key(&cursor) {
+            break;
+        }
+        streak += 1;
+        cursor -= Duration::days(1);
+    }
+    streak
+}
+
+/// 账本中最早/最晚事件时间（本地事件与同步导入事件均计入），不限定报告窗口，
+/// 用于前端标注"数据自 X 起"。
+fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i64>)> {
+    connection
+        .query_row(
+            "SELECT MIN(min_ms), MAX(max_ms) FROM (
+                 SELECT MIN(occurred_at_ms) AS min_ms, MAX(occurred_at_ms) AS max_ms FROM usage_event
+                 UNION ALL
+                 SELECT MIN(occurred_at_ms), MAX(occurred_at_ms) FROM remote_usage_event
+             )",
+            [],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .context("failed to calculate ledger event bounds")
 }
 
 fn discovery_cutoff_ms(period: &str, now_ms: i64) -> i64 {
@@ -110,6 +482,31 @@ fn cached_live_quota(
     }
 }
 
+/// Claude OAuth 官方额度的缓存拉取：成功 120s、失败 300s（限流友好）。
+fn cached_claude_oauth_quota(
+    cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
+) -> Result<Vec<QuotaSample>> {
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("claude quota cache lock poisoned"))?;
+    if let Some((captured, value)) = guard.as_ref() {
+        let ttl = if value.is_empty() { 300 } else { 120 };
+        if captured.elapsed() < StdDuration::from_secs(ttl) {
+            return Ok(value.clone());
+        }
+    }
+    match ClaudeOauth::detected().fetch_quota_samples(StdDuration::from_secs(6)) {
+        Ok(value) => {
+            *guard = Some((Instant::now(), value.clone()));
+            Ok(value)
+        }
+        Err(error) => {
+            *guard = Some((Instant::now(), Vec::new()));
+            Err(error)
+        }
+    }
+}
+
 fn ingest_sources(
     connection: &mut Connection,
     cutoff_ms: i64,
@@ -120,6 +517,7 @@ fn ingest_sources(
         Box::new(ClaudeAdapter::detected()),
         Box::new(ZcodeAdapter::detected()),
         Box::new(OpencodeAdapter::detected()),
+        Box::new(KimiAdapter::detected()),
     ];
     let mut report = ScanReport::default();
 
@@ -261,6 +659,12 @@ fn query_snapshot_at(
         .map(|agent| (*agent, vec![0_i64; bucket_count]))
         .collect();
     let mut totals: HashMap<&str, i64> = AGENT_IDS.iter().map(|agent| (*agent, 0)).collect();
+    let mut components: HashMap<&str, TokenComponents> = AGENT_IDS
+        .iter()
+        .map(|agent| (*agent, TokenComponents::default()))
+        .collect();
+    let mut model_totals: HashMap<(String, String), i64> = HashMap::new();
+    let mut model_components: HashMap<(String, String), TokenComponents> = HashMap::new();
 
     for event in events {
         let Some(agent) = AGENT_IDS.iter().find(|agent| **agent == event.adapter) else {
@@ -280,6 +684,25 @@ fn query_snapshot_at(
         }
         buckets.get_mut(agent).expect("registered agent")[index] += event.tokens;
         *totals.entry(agent).or_default() += event.tokens;
+        let comps = components.get_mut(agent).expect("registered agent");
+        comps.input_uncached += event.input_uncached;
+        comps.cache_read += event.cache_read;
+        comps.cache_write += event.cache_write;
+        comps.output += event.output;
+        let model_key = event
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_owned();
+        let model_map_key = ((*agent).to_owned(), model_key);
+        *model_totals.entry(model_map_key.clone()).or_insert(0) += event.tokens;
+        let model_comp = model_components.entry(model_map_key).or_default();
+        model_comp.input_uncached += event.input_uncached;
+        model_comp.cache_read += event.cache_read;
+        model_comp.cache_write += event.cache_write;
+        model_comp.output += event.output;
     }
 
     if period == "today" {
@@ -335,6 +758,59 @@ fn query_snapshot_at(
         }
     };
 
+    let mut agent_cost_usd: HashMap<&str, f64> =
+        AGENT_IDS.iter().map(|agent| (*agent, 0.0)).collect();
+    let mut agent_unpriced_tokens: HashMap<&str, i64> =
+        AGENT_IDS.iter().map(|agent| (*agent, 0)).collect();
+    let mut total_usd = 0.0_f64;
+    let mut unpriced_tokens = 0_i64;
+    for ((agent, model), comp) in &model_components {
+        let processed = comp.input_uncached + comp.cache_read + comp.cache_write + comp.output;
+        match pricing::price_for(model) {
+            Some(price) => {
+                let usd = comp.input_uncached as f64 * price.input / 1_000_000.0
+                    + comp.cache_read as f64 * price.cache_read / 1_000_000.0
+                    + comp.cache_write as f64 * price.cache_write / 1_000_000.0
+                    + comp.output as f64 * price.output / 1_000_000.0;
+                total_usd += usd;
+                if let Some(entry) = agent_cost_usd.get_mut(agent.as_str()) {
+                    *entry += usd;
+                }
+            }
+            None => {
+                unpriced_tokens += processed;
+                if let Some(entry) = agent_unpriced_tokens.get_mut(agent.as_str()) {
+                    *entry += processed;
+                }
+            }
+        }
+    }
+    let cost = CostSummary {
+        available: true,
+        total_usd,
+        unpriced_tokens,
+        pricing_as_of: pricing::PRICING_AS_OF.to_owned(),
+        by_agent: AGENT_IDS
+            .iter()
+            .map(|agent| AgentCost {
+                agent: (*agent).to_owned(),
+                usd: agent_cost_usd[agent],
+                unpriced_tokens: agent_unpriced_tokens[agent],
+            })
+            .collect(),
+    };
+
+    let mut models: Vec<ModelSummary> = model_totals
+        .into_iter()
+        .map(|((agent, model), tokens)| ModelSummary {
+            model,
+            agent,
+            tokens,
+            share: share(tokens),
+        })
+        .collect();
+    models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+
     Ok(UsageSnapshot {
         generated_at: Utc::now().to_rfc3339(),
         period: period.into(),
@@ -354,13 +830,22 @@ fn query_snapshot_at(
             .collect::<Result<Vec<_>>>()?,
         agents: AGENT_IDS
             .iter()
-            .map(|agent| AgentSummary {
-                id: (*agent).to_owned(),
-                tokens: totals[agent],
-                share: share(totals[agent]),
+            .map(|agent| {
+                let comps = components[agent];
+                AgentSummary {
+                    id: (*agent).to_owned(),
+                    tokens: totals[agent],
+                    input_uncached: comps.input_uncached,
+                    cache_read: comps.cache_read,
+                    cache_write: comps.cache_write,
+                    output: comps.output,
+                    share: share(totals[agent]),
+                }
             })
             .collect(),
+        models,
         sources: source_views(report, sync::sync_view(connection).ok()),
+        cost,
     })
 }
 
@@ -399,12 +884,17 @@ fn period_bucket_count(period: &str, current_hour: u32) -> usize {
 }
 
 fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Vec<StoredEvent>> {
+    // 远端同步事件只带处理量总数，不带模型或分量拆解（见架构约束：同步导出
+    // 只含派生统计字段）；用 NULL/0 补齐列，让这些事件归入 "unknown" 模型、
+    // 分量记 0，而不是被丢弃。
     let mut statement = connection.prepare(
-        "SELECT adapter_id, occurred_at_ms, processed_tokens
+        "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
+                input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          UNION ALL
-         SELECT adapter_id, occurred_at_ms, processed_tokens
+         SELECT adapter_id, occurred_at_ms, processed_tokens, NULL AS model,
+                0, 0, 0, 0
          FROM remote_usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          ORDER BY occurred_at_ms",
@@ -414,6 +904,11 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
             adapter: row.get(0)?,
             timestamp: row.get(1)?,
             tokens: row.get(2)?,
+            model: row.get(3)?,
+            input_uncached: row.get(4)?,
+            cache_read: row.get(5)?,
+            cache_write: row.get(6)?,
+            output: row.get(7)?,
         })
     })?;
     Ok(rows.filter_map(Result::ok).collect())
@@ -467,8 +962,8 @@ fn load_agent_quota_windows(
     connection: &Connection,
     adapter_id: &str,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
-    let mut statement = connection
-        .prepare("SELECT window_key FROM quota_snapshot WHERE adapter_id = ?1")?;
+    let mut statement =
+        connection.prepare("SELECT window_key FROM quota_snapshot WHERE adapter_id = ?1")?;
     let mut keys = statement
         .query_map([adapter_id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -546,9 +1041,11 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
     let codex_diagnostics = diagnostics("codex");
     let claude_diagnostics = diagnostics("claude");
     let opencode_diagnostics = diagnostics("opencode");
+    let kimi_diagnostics = diagnostics("kimi");
     let codex_partial = codex_diagnostics.partial_sources > 0 || errors("codex") > 0;
     let claude_partial = claude_diagnostics.partial_sources > 0 || errors("claude") > 0;
     let opencode_partial = opencode_diagnostics.partial_sources > 0 || errors("opencode") > 0;
+    let kimi_partial = kimi_diagnostics.partial_sources > 0 || errors("kimi") > 0;
     let mut views = vec![
         SourceView {
             id: "codex-quota".into(),
@@ -634,6 +1131,19 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
                 "精确解析"
             }
             .into(),
+        },
+        SourceView {
+            id: "kimi-local".into(),
+            kind: "local".into(),
+            label: "Kimi 本地 Token".into(),
+            detail: format!(
+                "发现 {} 个 wire.jsonl，本次更新 {} 个。{}只计单轮增量（usageScope=turn）与旧版 StatusUpdate（按 message_id 取分量最大值）；未安装 Kimi 时保持为 0，不做推算。尚未在装有 Kimi 的机器上实机验收。",
+                discovered("kimi"),
+                refreshed("kimi"),
+                coverage_detail(&kimi_diagnostics, errors("kimi"))
+            ),
+            quality: if kimi_partial { "partial" } else { "exact" }.into(),
+            quality_label: if kimi_partial { "部分覆盖" } else { "精确解析" }.into(),
         },
     ];
 
@@ -740,6 +1250,422 @@ mod tests {
                 params![event_id, occurred_at_ms, tokens],
             )
             .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_test_usage_full(
+        connection: &Connection,
+        event_id: &str,
+        adapter_id: &str,
+        occurred_at_ms: i64,
+        model: Option<&str>,
+        input_uncached: i64,
+        cache_read: i64,
+        cache_write: i64,
+        output: i64,
+    ) {
+        let processed = input_uncached + cache_read + cache_write + output;
+        connection
+            .execute(
+                "INSERT INTO usage_event (
+                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    model, input_uncached_tokens, cache_read_tokens,
+                    cache_write_tokens, output_tokens, reasoning_tokens,
+                    processed_tokens, quality, payload_hash
+                 ) VALUES (?1, ?2, ?1, ?3, 'session', ?4, ?5, ?6, ?7, ?8, 0, ?9, 'exact', ?1)",
+                params![
+                    event_id,
+                    adapter_id,
+                    occurred_at_ms,
+                    model,
+                    input_uncached,
+                    cache_read,
+                    cache_write,
+                    output,
+                    processed,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_test_session_event(
+        connection: &Connection,
+        event_id: &str,
+        adapter_id: &str,
+        session_id: &str,
+        occurred_at_ms: i64,
+        model: Option<&str>,
+        input_uncached: i64,
+        cache_read: i64,
+        cache_write: i64,
+        output: i64,
+    ) {
+        let processed = input_uncached + cache_read + cache_write + output;
+        connection
+            .execute(
+                "INSERT INTO usage_event (
+                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    model, input_uncached_tokens, cache_read_tokens,
+                    cache_write_tokens, output_tokens, reasoning_tokens,
+                    processed_tokens, quality, payload_hash
+                 ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'exact', ?1)",
+                params![
+                    event_id,
+                    adapter_id,
+                    occurred_at_ms,
+                    session_id,
+                    model,
+                    input_uncached,
+                    cache_read,
+                    cache_write,
+                    output,
+                    processed,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn sessions_aggregate_boundaries_and_component_sums() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        insert_test_session_event(
+            &connection,
+            "codex-s1-a",
+            "codex",
+            "sess-1",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("gpt-5"),
+            10,
+            2,
+            0,
+            3,
+        );
+        insert_test_session_event(
+            &connection,
+            "codex-s1-b",
+            "codex",
+            "sess-1",
+            test_local_time(today, 9).timestamp_millis(),
+            Some("gpt-5"),
+            5,
+            0,
+            1,
+            2,
+        );
+        insert_test_session_event(
+            &connection,
+            "codex-s2",
+            "codex",
+            "sess-2",
+            test_local_time(today, 7).timestamp_millis(),
+            Some("gpt-5"),
+            1,
+            0,
+            0,
+            1,
+        );
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+
+        assert_eq!(result.total_sessions, 2);
+        assert!(!result.truncated);
+        let sess1 = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-1")
+            .unwrap();
+        assert_eq!(sess1.event_count, 2);
+        assert_eq!(sess1.input_uncached, 15);
+        assert_eq!(sess1.cache_read, 2);
+        assert_eq!(sess1.cache_write, 1);
+        assert_eq!(sess1.output, 5);
+        assert_eq!(sess1.tokens, 23);
+        assert_eq!(sess1.start_ms, test_local_time(today, 8).timestamp_millis());
+        assert_eq!(sess1.end_ms, test_local_time(today, 9).timestamp_millis());
+
+        // end_ms 降序：sess-1（09:00）排在 sess-2（07:00）之前。
+        assert_eq!(result.sessions[0].session_id, "sess-1");
+        assert_eq!(result.sessions[1].session_id, "sess-2");
+    }
+
+    #[test]
+    fn dominant_model_is_the_one_with_the_most_session_tokens() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        insert_test_session_event(
+            &connection,
+            "sess-model-a",
+            "claude",
+            "sess-multi",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("claude-sonnet"),
+            100,
+            0,
+            0,
+            0,
+        );
+        insert_test_session_event(
+            &connection,
+            "sess-model-b",
+            "claude",
+            "sess-multi",
+            test_local_time(today, 9).timestamp_millis(),
+            Some("claude-opus"),
+            5,
+            0,
+            0,
+            0,
+        );
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+        let session = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-multi")
+            .unwrap();
+
+        assert_eq!(session.model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(session.models, vec!["claude-sonnet", "claude-opus"]);
+    }
+
+    #[test]
+    fn session_with_no_model_has_none_model_and_no_models() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        insert_test_session_event(
+            &connection,
+            "sess-nomodel",
+            "codex",
+            "sess-blank",
+            test_local_time(today, 8).timestamp_millis(),
+            None,
+            10,
+            0,
+            0,
+            0,
+        );
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+        let session = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-blank")
+            .unwrap();
+
+        assert_eq!(session.model, None);
+        assert!(session.models.is_empty());
+        assert_eq!(session.usd, None);
+    }
+
+    #[test]
+    fn session_cost_matches_pricing_module_and_isolates_unpriced_models() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        // priced model.
+        insert_test_session_event(
+            &connection,
+            "sess-priced",
+            "codex",
+            "sess-cost",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("gpt-5"),
+            2_000_000,
+            0,
+            0,
+            1_000_000,
+        );
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+        let session = result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-cost")
+            .unwrap();
+        let expected_usd = 2.0 * 1.25 + 1.0 * 10.0;
+        assert!((session.usd.unwrap() - expected_usd).abs() < 1e-9);
+
+        // 混合已计价与未计价模型：usd 只求和已计价部分，仍为 Some。
+        let connection2 = Connection::open_in_memory().unwrap();
+        connection2
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        insert_test_session_event(
+            &connection2,
+            "sess-mixed-priced",
+            "claude",
+            "sess-mixed",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("claude-sonnet-4-5"),
+            10,
+            0,
+            0,
+            10,
+        );
+        insert_test_session_event(
+            &connection2,
+            "sess-mixed-unpriced",
+            "claude",
+            "sess-mixed",
+            test_local_time(today, 9).timestamp_millis(),
+            Some("glm-4.7"),
+            10,
+            0,
+            0,
+            10,
+        );
+        let mixed_result = sessions_at(&connection2, "today", local_now).unwrap();
+        let mixed = mixed_result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-mixed")
+            .unwrap();
+        assert!(mixed.usd.is_some());
+        assert!(mixed.usd.unwrap() > 0.0);
+
+        // 全部未计价：usd 必须是 None，不能伪造成 0。
+        let connection3 = Connection::open_in_memory().unwrap();
+        connection3
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        insert_test_session_event(
+            &connection3,
+            "sess-all-unpriced",
+            "claude",
+            "sess-none",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("glm-4.7"),
+            10,
+            0,
+            0,
+            10,
+        );
+        let unpriced_result = sessions_at(&connection3, "today", local_now).unwrap();
+        let unpriced = unpriced_result
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sess-none")
+            .unwrap();
+        assert_eq!(unpriced.usd, None);
+    }
+
+    #[test]
+    fn blank_session_id_merges_into_a_synthetic_unknown_session_per_agent() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        insert_test_session_event(
+            &connection,
+            "codex-blank-a",
+            "codex",
+            "",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("gpt-5"),
+            10,
+            0,
+            0,
+            0,
+        );
+        insert_test_session_event(
+            &connection,
+            "codex-blank-b",
+            "codex",
+            "   ",
+            test_local_time(today, 9).timestamp_millis(),
+            Some("gpt-5"),
+            5,
+            0,
+            0,
+            0,
+        );
+        insert_test_session_event(
+            &connection,
+            "claude-blank",
+            "claude",
+            "",
+            test_local_time(today, 8).timestamp_millis(),
+            Some("claude-sonnet"),
+            1,
+            0,
+            0,
+            0,
+        );
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+
+        let codex_unknown = result
+            .sessions
+            .iter()
+            .find(|s| s.agent == "codex" && s.session_id == "unknown")
+            .unwrap();
+        assert_eq!(codex_unknown.event_count, 2);
+        assert_eq!(codex_unknown.input_uncached, 15);
+
+        let claude_unknown = result
+            .sessions
+            .iter()
+            .find(|s| s.agent == "claude" && s.session_id == "unknown")
+            .unwrap();
+        assert_eq!(claude_unknown.event_count, 1);
+
+        // 两个 agent 的 unknown 会话是分开的合成会话，不合并。
+        assert_eq!(result.total_sessions, 2);
+    }
+
+    #[test]
+    fn sessions_are_truncated_at_300_with_accurate_total_count() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        for index in 0..305 {
+            insert_test_session_event(
+                &connection,
+                &format!("sess-event-{index}"),
+                "codex",
+                &format!("sess-{index}"),
+                test_local_time(today, 8).timestamp_millis() + index,
+                Some("gpt-5"),
+                1,
+                0,
+                0,
+                0,
+            );
+        }
+
+        let result = sessions_at(&connection, "today", local_now).unwrap();
+
+        assert_eq!(result.total_sessions, 305);
+        assert!(result.truncated);
+        assert_eq!(result.sessions.len(), 300);
     }
 
     #[test]
@@ -923,6 +1849,251 @@ mod tests {
         assert_eq!(snapshot.total_tokens, 200);
         assert!(snapshot.comparison_available);
         assert!((snapshot.comparison_percent - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn model_and_component_aggregation_across_multiple_agents() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+
+        insert_test_usage_full(
+            &connection,
+            "codex-gpt5-a",
+            "codex",
+            at,
+            Some("gpt-5"),
+            10,
+            2,
+            0,
+            3,
+        );
+        insert_test_usage_full(
+            &connection,
+            "codex-gpt5-b",
+            "codex",
+            at,
+            Some("gpt-5"),
+            5,
+            0,
+            1,
+            2,
+        );
+        insert_test_usage_full(
+            &connection,
+            "claude-sonnet",
+            "claude",
+            at,
+            Some("claude-sonnet"),
+            7,
+            1,
+            0,
+            4,
+        );
+        insert_test_usage_full(
+            &connection,
+            "claude-unknown",
+            "claude",
+            at,
+            None,
+            1,
+            0,
+            0,
+            1,
+        );
+        insert_test_usage_full(
+            &connection,
+            "claude-blank",
+            "claude",
+            at,
+            Some("   "),
+            0,
+            0,
+            0,
+            1,
+        );
+
+        let snapshot =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+
+        // 分量求和正确：codex 两条 gpt-5 事件的各分量分别相加。
+        let codex_agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        assert_eq!(codex_agent.input_uncached, 15);
+        assert_eq!(codex_agent.cache_read, 2);
+        assert_eq!(codex_agent.cache_write, 1);
+        assert_eq!(codex_agent.output, 5);
+        assert_eq!(codex_agent.tokens, 23);
+        assert_eq!(
+            codex_agent.input_uncached
+                + codex_agent.cache_read
+                + codex_agent.cache_write
+                + codex_agent.output,
+            codex_agent.tokens
+        );
+
+        let claude_agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id == "claude")
+            .unwrap();
+        assert_eq!(claude_agent.input_uncached, 8);
+        assert_eq!(claude_agent.cache_read, 1);
+        assert_eq!(claude_agent.output, 6);
+
+        // 多模型多 agent 聚合正确：同名模型跨事件合并，不同 agent 分开列出。
+        let codex_gpt5 = snapshot
+            .models
+            .iter()
+            .find(|entry| entry.agent == "codex" && entry.model == "gpt-5")
+            .unwrap();
+        assert_eq!(codex_gpt5.tokens, 23);
+        let claude_sonnet = snapshot
+            .models
+            .iter()
+            .find(|entry| entry.agent == "claude" && entry.model == "claude-sonnet")
+            .unwrap();
+        assert_eq!(claude_sonnet.tokens, 12);
+
+        // 空 model（NULL 或空白字符串）归入 unknown，不丢弃事件。
+        let claude_unknown = snapshot
+            .models
+            .iter()
+            .find(|entry| entry.agent == "claude" && entry.model == "unknown")
+            .unwrap();
+        assert_eq!(claude_unknown.tokens, 3);
+
+        // 按 tokens 降序排列。
+        for pair in snapshot.models.windows(2) {
+            assert!(pair[0].tokens >= pair[1].tokens);
+        }
+
+        let total_model_tokens: i64 = snapshot.models.iter().map(|entry| entry.tokens).sum();
+        assert_eq!(total_model_tokens, snapshot.total_tokens);
+    }
+
+    #[test]
+    fn cost_summary_prices_known_models_and_isolates_unpriced_tokens() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+
+        // codex: priced gpt-5 usage (1.25 / 0.125 / 0 / 10.0 per million).
+        insert_test_usage_full(
+            &connection,
+            "codex-gpt5",
+            "codex",
+            at,
+            Some("gpt-5"),
+            2_000_000,
+            0,
+            0,
+            1_000_000,
+        );
+        // codex: an unpriced model must not be silently priced.
+        insert_test_usage_full(
+            &connection,
+            "codex-custom",
+            "codex",
+            at,
+            Some("custom-internal-model"),
+            30,
+            0,
+            0,
+            10,
+        );
+        // codex: "gpt-5.2-codex" must win over the shorter "gpt-5" prefix.
+        insert_test_usage_full(
+            &connection,
+            "codex-gpt52codex",
+            "codex",
+            at,
+            Some("gpt-5.2-codex"),
+            1_000_000,
+            0,
+            0,
+            0,
+        );
+        // claude: dated snapshot resolves via longest-prefix match onto
+        // "claude-sonnet-4-5".
+        insert_test_usage_full(
+            &connection,
+            "claude-sonnet",
+            "claude",
+            at,
+            Some("claude-sonnet-4-5-20250929"),
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+        );
+        // claude: GLM has no reliable published pricing, must stay unpriced.
+        insert_test_usage_full(
+            &connection,
+            "claude-glm",
+            "claude",
+            at,
+            Some("glm-4.7"),
+            100,
+            0,
+            0,
+            50,
+        );
+
+        let snapshot =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+
+        assert!(snapshot.cost.available);
+        assert_eq!(snapshot.cost.pricing_as_of, pricing::PRICING_AS_OF);
+
+        let expected_gpt5_usd = 2.0 * 1.25 + 1.0 * 10.0; // 12.5
+        let expected_gpt52codex_usd = 1.0 * 1.75; // not gpt-5's 1.25
+        let expected_claude_sonnet_usd = 1.0 * 3.0 + 1.0 * 0.3 + 1.0 * 3.75 + 1.0 * 15.0; // 22.05
+        let expected_total_usd =
+            expected_gpt5_usd + expected_gpt52codex_usd + expected_claude_sonnet_usd;
+        let expected_unpriced_tokens = 40 + 150; // custom-internal-model + glm-4.7 processed totals
+
+        assert!((snapshot.cost.total_usd - expected_total_usd).abs() < 1e-9);
+        assert_eq!(snapshot.cost.unpriced_tokens, expected_unpriced_tokens);
+
+        let codex_cost = snapshot
+            .cost
+            .by_agent
+            .iter()
+            .find(|entry| entry.agent == "codex")
+            .unwrap();
+        assert!((codex_cost.usd - (expected_gpt5_usd + expected_gpt52codex_usd)).abs() < 1e-9);
+        assert_eq!(codex_cost.unpriced_tokens, 40);
+
+        let claude_cost = snapshot
+            .cost
+            .by_agent
+            .iter()
+            .find(|entry| entry.agent == "claude")
+            .unwrap();
+        assert!((claude_cost.usd - expected_claude_sonnet_usd).abs() < 1e-9);
+        assert_eq!(claude_cost.unpriced_tokens, 150);
+
+        let by_agent_total_usd: f64 = snapshot.cost.by_agent.iter().map(|entry| entry.usd).sum();
+        let by_agent_total_unpriced: i64 = snapshot
+            .cost
+            .by_agent
+            .iter()
+            .map(|entry| entry.unpriced_tokens)
+            .sum();
+        assert!((by_agent_total_usd - snapshot.cost.total_usd).abs() < 1e-9);
+        assert_eq!(by_agent_total_unpriced, snapshot.cost.unpriced_tokens);
     }
 
     #[test]
@@ -1131,7 +2302,9 @@ mod tests {
             Utc::now().timestamp_millis()
         ));
         let quota_cache = Mutex::new(None);
-        let snapshot = build_snapshot(&database, "today", &quota_cache).unwrap();
+        let claude_quota_cache = Mutex::new(None);
+        let snapshot =
+            build_snapshot(&database, "today", &quota_cache, &claude_quota_cache).unwrap();
         println!(
             "live snapshot: total={}, codex={}, claude={}, quota_available={}, quota_remaining={:.1}, quota_source={}",
             snapshot.total_tokens,
@@ -1149,5 +2322,190 @@ mod tests {
             Some(expected_last_label.as_str())
         );
         std::fs::remove_file(database).ok();
+    }
+
+    #[test]
+    fn report_is_empty_for_an_empty_ledger() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        let report = report_at(&connection, local_now).unwrap();
+
+        assert!(report.days.is_empty());
+        assert_eq!(report.first_event_ms, None);
+        assert_eq!(report.last_event_ms, None);
+        assert_eq!(report.total_tokens, 0);
+        assert!(report.top_models.is_empty());
+        assert_eq!(report.streak_days, 0);
+        for agent in &report.agents {
+            assert_eq!(agent.tokens, 0);
+            assert_eq!(agent.active_days, 0);
+        }
+    }
+
+    #[test]
+    fn report_aggregates_multiple_days_and_agents_across_the_local_day_boundary() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        // Two events land in the same local day just either side of midnight.
+        insert_test_usage_full(
+            &connection,
+            "codex-late",
+            "codex",
+            test_local_time(today - Duration::days(1), 23).timestamp_millis(),
+            Some("gpt-5"),
+            10,
+            0,
+            0,
+            5,
+        );
+        insert_test_usage_full(
+            &connection,
+            "codex-early",
+            "codex",
+            test_local_time(today - Duration::days(1), 1).timestamp_millis(),
+            Some("gpt-5"),
+            4,
+            0,
+            0,
+            1,
+        );
+        insert_test_usage_full(
+            &connection,
+            "claude-today",
+            "claude",
+            test_local_time(today, 9).timestamp_millis(),
+            Some("claude-sonnet"),
+            7,
+            1,
+            0,
+            2,
+        );
+
+        let report = report_at(&connection, local_now).unwrap();
+
+        assert_eq!(report.days.len(), 2);
+        let yesterday_key = (today - Duration::days(1)).format("%Y-%m-%d").to_string();
+        let today_key = today.format("%Y-%m-%d").to_string();
+        let yesterday_row = report
+            .days
+            .iter()
+            .find(|day| day.date == yesterday_key)
+            .unwrap();
+        assert_eq!(yesterday_row.tokens, 20);
+        assert_eq!(yesterday_row.by_agent.get("codex"), Some(&20));
+        let today_row = report
+            .days
+            .iter()
+            .find(|day| day.date == today_key)
+            .unwrap();
+        assert_eq!(today_row.tokens, 10);
+        assert_eq!(today_row.by_agent.get("claude"), Some(&10));
+
+        assert_eq!(report.total_tokens, 30);
+
+        let codex_agent = report.agents.iter().find(|a| a.id == "codex").unwrap();
+        assert_eq!(codex_agent.tokens, 20);
+        assert_eq!(codex_agent.active_days, 1);
+        let claude_agent = report.agents.iter().find(|a| a.id == "claude").unwrap();
+        assert_eq!(claude_agent.tokens, 10);
+        assert_eq!(claude_agent.active_days, 1);
+
+        let codex_model = report
+            .top_models
+            .iter()
+            .find(|m| m.agent == "codex" && m.model == "gpt-5")
+            .unwrap();
+        assert_eq!(codex_model.tokens, 20);
+
+        // Both days are consecutive, so the streak covers both.
+        assert_eq!(report.streak_days, 2);
+    }
+
+    #[test]
+    fn report_streak_stops_at_a_gap_and_counts_from_the_latest_active_day() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+
+        // Active today, yesterday, day-before-yesterday, then a gap, then one
+        // more isolated active day further back.
+        for offset in [0_i64, 1, 2] {
+            insert_test_usage(
+                &connection,
+                &format!("recent-{offset}"),
+                test_local_time(today - Duration::days(offset), 10).timestamp_millis(),
+                50,
+            );
+        }
+        insert_test_usage(
+            &connection,
+            "isolated",
+            test_local_time(today - Duration::days(10), 10).timestamp_millis(),
+            50,
+        );
+
+        let report = report_at(&connection, local_now).unwrap();
+
+        assert_eq!(report.streak_days, 3);
+        assert_eq!(report.days.len(), 4);
+    }
+
+    #[test]
+    fn report_first_and_last_event_ms_span_the_full_ledger_not_just_the_window() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+        let earliest_ms = test_local_time(today, 8).timestamp_millis();
+        let latest_ms = test_local_time(today, 11).timestamp_millis();
+
+        insert_test_usage(&connection, "first", earliest_ms, 10);
+        insert_test_usage(&connection, "last", latest_ms, 20);
+
+        let report = report_at(&connection, local_now).unwrap();
+
+        assert_eq!(report.first_event_ms, Some(earliest_ms));
+        assert_eq!(report.last_event_ms, Some(latest_ms));
+    }
+
+    #[test]
+    fn report_never_touches_scan_source_bookkeeping() {
+        // report_at only issues SELECT queries against usage_event and
+        // remote_usage_event; it must never discover, parse, or write
+        // scan_source rows the way build_snapshot does.
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        insert_test_usage(
+            &connection,
+            "codex-a",
+            test_local_time(today, 10).timestamp_millis(),
+            10,
+        );
+
+        let report = report_at(&connection, test_local_time(today, 12)).unwrap();
+
+        let scan_source_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM scan_source", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(scan_source_rows, 0);
+        assert_eq!(report.total_tokens, 10);
     }
 }

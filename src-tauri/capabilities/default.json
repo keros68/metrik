@@ -17,6 +17,10 @@
     "core:window:allow-set-resizable",
     "core:window:allow-set-size",
     "core:window:allow-start-dragging",
-    "core:window:allow-unmaximize"
+    "core:window:allow-unmaximize",
+    "core:webview:allow-set-webview-background-color",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }

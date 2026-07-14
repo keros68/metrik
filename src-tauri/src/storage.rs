@@ -1,12 +1,16 @@
 use crate::domain::{ParsedSource, QuotaSample, TokenVector, UsageEvent};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use std::path::{Path, PathBuf};
 
 // Version 3 rebuilds Claude sources after provider message identity stopped
 // depending on the optional requestId field.
-pub const PARSER_VERSION: i64 = 3;
+// Version 4 rebuilds Codex sources so fork/subagent replay token_counts stop
+// double-counting the parent thread's usage (and stop showing as unknown model).
+pub const PARSER_VERSION: i64 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReplaceSourceOutcome {
@@ -41,6 +45,27 @@ pub fn open_database(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+/// Opens the ledger for read-only queries (reports, session lists). Unlike
+/// [`open_database`], this never runs schema migrations and never issues the
+/// `PRAGMA user_version` write that migrations require — both would contend
+/// for SQLite's single writer slot with an in-progress log scan and could
+/// stall a page that must stay snappy. `SQLITE_OPEN_READ_ONLY` also refuses
+/// to create a missing database file, so a ledger that hasn't been built yet
+/// surfaces as an explicit error instead of hanging or fabricating a fresh
+/// empty schema.
+pub fn open_database_read_only(path: &Path) -> Result<Connection> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open usage database read-only {}", path.display()))?;
+    // Read-only WAL access never blocks on a concurrent writer's transaction,
+    // but keep a bounded timeout so a wedged database fails fast instead of
+    // hanging the calling command indefinitely.
+    connection.pragma_update(None, "busy_timeout", 5_000_i64)?;
+    Ok(connection)
+}
+
 /// Clears only Metrik's derived ledger rows so the source adapters can rebuild
 /// them from the Agent logs. The database file and any unmanaged tables stay in
 /// place; this function never opens or mutates a stored source locator.
@@ -64,6 +89,26 @@ fn reset_derived_ledger_connection(connection: &mut Connection) -> Result<()> {
     transaction
         .commit()
         .context("failed to commit local ledger reset")?;
+    Ok(())
+}
+
+pub fn get_app_setting(connection: &Connection, key: &str) -> Result<Option<String>> {
+    connection
+        .query_row(
+            "SELECT value FROM app_setting WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .with_context(|| format!("failed to read setting {key}"))
+}
+
+pub fn set_app_setting(connection: &Connection, key: &str, value: &str) -> Result<()> {
+    connection.execute(
+        "INSERT INTO app_setting (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
     Ok(())
 }
 
@@ -449,6 +494,33 @@ mod tests {
     use super::*;
     use crate::domain::{ParsedSource, TokenVector, UsageEvent};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static READ_ONLY_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDbDir(PathBuf);
+
+    impl TestDbDir {
+        fn new(label: &str) -> Self {
+            let sequence = READ_ONLY_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "metrik-storage-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn database_path(&self) -> PathBuf {
+            self.0.join("usage.sqlite3")
+        }
+    }
+
+    impl Drop for TestDbDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn source(source_id: &str, adapter_id: &'static str, events: Vec<UsageEvent>) -> ParsedSource {
         ParsedSource {
@@ -849,5 +921,54 @@ mod tests {
         replace_source(&mut connection, &source("old", "claude", Vec::new()), 0).unwrap();
         assert!(!source_needs_parser_rebuild(&connection, "recent").unwrap());
         assert!(!adapter_has_stale_parser_sources(&connection, "claude").unwrap());
+    }
+
+    #[test]
+    fn read_only_connection_queries_succeed_while_a_writer_holds_a_transaction() {
+        let dir = TestDbDir::new("read-only-concurrent");
+        let path = dir.database_path();
+
+        // Establish the schema (and WAL mode) through the normal write path first.
+        open_database(&path).unwrap();
+
+        let mut writer = Connection::open(&path).unwrap();
+        writer
+            .pragma_update(None, "busy_timeout", 5_000_i64)
+            .unwrap();
+        let write_txn = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        write_txn
+            .execute(
+                "INSERT INTO scan_source (
+                    source_id, adapter_id, logical_key, locator, observed_size,
+                    mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
+                 ) VALUES ('source', 'codex', 'source', 'agent-log.jsonl', 10, 1, 0, 3, 1, NULL)",
+                [],
+            )
+            .unwrap();
+
+        // The writer's transaction is still open (uncommitted) when the
+        // read-only connection queries the ledger. This is the scenario the
+        // report/session pages hit while a background scan is mid-flight.
+        let reader = open_database_read_only(&path).unwrap();
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        write_txn.commit().unwrap();
+    }
+
+    #[test]
+    fn read_only_connection_reports_a_clear_error_for_a_missing_database() {
+        let dir = TestDbDir::new("read-only-missing");
+        let path = dir.database_path();
+
+        let error = open_database_read_only(&path).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("failed to open usage database read-only"));
     }
 }

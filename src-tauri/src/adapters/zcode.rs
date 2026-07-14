@@ -102,8 +102,17 @@ impl AgentAdapter for ZcodeAdapter {
         let mut events = Vec::new();
         let mut diagnostics = ScanDiagnostics::default();
         for row in rows {
-            let Ok((id, session_id, model, occurred_at_ms, input, output, reasoning, cache_write, cache_read)) =
-                row
+            let Ok((
+                id,
+                session_id,
+                model,
+                occurred_at_ms,
+                input,
+                output,
+                reasoning,
+                cache_write,
+                cache_read,
+            )) = row
             else {
                 diagnostics.malformed_lines += 1;
                 continue;

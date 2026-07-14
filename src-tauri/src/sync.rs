@@ -414,13 +414,23 @@ mod tests {
         let now = Utc::now().timestamp_millis();
 
         let device_a = open_test_db();
-        set_setting(&device_a, SETTING_SYNC_DIR, &shared.path().to_string_lossy()).unwrap();
+        set_setting(
+            &device_a,
+            SETTING_SYNC_DIR,
+            &shared.path().to_string_lossy(),
+        )
+        .unwrap();
         insert_local_event(&device_a, "event-a", now - 1_000, 111);
         let mut device_a = device_a;
         run_sync(&mut device_a, now);
 
         let mut device_b = open_test_db();
-        set_setting(&device_b, SETTING_SYNC_DIR, &shared.path().to_string_lossy()).unwrap();
+        set_setting(
+            &device_b,
+            SETTING_SYNC_DIR,
+            &shared.path().to_string_lossy(),
+        )
+        .unwrap();
         insert_local_event(&device_b, "event-b", now - 2_000, 222);
         run_sync(&mut device_b, now);
 
@@ -527,7 +537,11 @@ mod tests {
         let now = Utc::now().timestamp_millis();
         let mut local = open_test_db();
         insert_local_event(&local, "mine", now, 7);
-        configure(&mut local, Some(shared.path().to_string_lossy().into_owned())).unwrap();
+        configure(
+            &mut local,
+            Some(shared.path().to_string_lossy().into_owned()),
+        )
+        .unwrap();
         let (device_id, _) = device_identity(&local).unwrap();
         assert!(shared.path().join(export_file_name(&device_id)).exists());
 
@@ -553,8 +567,8 @@ mod tests {
     fn configure_rejects_a_missing_directory() {
         let mut local = open_test_db();
         let missing = std::env::temp_dir().join("metrik-sync-definitely-missing-dir");
-        let error = configure(&mut local, Some(missing.to_string_lossy().into_owned()))
-            .unwrap_err();
+        let error =
+            configure(&mut local, Some(missing.to_string_lossy().into_owned())).unwrap_err();
         assert!(error.to_string().contains("不存在"));
     }
 }

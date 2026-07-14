@@ -1,10 +1,12 @@
 mod claude;
 mod codex;
+mod kimi;
 mod opencode;
 mod zcode;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use kimi::KimiAdapter;
 pub use opencode::OpencodeAdapter;
 pub use zcode::ZcodeAdapter;
 

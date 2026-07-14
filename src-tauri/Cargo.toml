@@ -22,10 +22,23 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2.5.1"
+ureq = "2"
 walkdir = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = [
+  "System",
+  "UI_Composition",
+  "UI_Composition_Desktop",
+  "Win32_Foundation",
+  "Win32_System_WinRT",
+  "Win32_System_WinRT_Composition",
+] }
+windows-numerics = "0.2"
 
 [profile.release]
 codegen-units = 1
