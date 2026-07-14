@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   X,
 } from "@phosphor-icons/react";
+import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
@@ -103,6 +104,12 @@ const AGENT_META = {
     accent: "#3f74f2",
     iconSrc: kimiAppIcon,
     iconClass: "agent-icon--kimi",
+  },
+  antigravity: {
+    label: "Antigravity",
+    accent: "#4d84f0",
+    iconSrc: antigravityAppIcon,
+    iconClass: "agent-icon--antigravity",
   },
 };
 
@@ -1783,6 +1790,7 @@ const CHART_LINE_COLORS = {
   zcode: "#8b80d9",
   opencode: "#4aa392",
   kimi: "#6f8fd6",
+  antigravity: "#6b8fe4",
 };
 
 function chartColor(id) {

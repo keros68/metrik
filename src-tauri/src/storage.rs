@@ -315,6 +315,12 @@ fn insert_or_merge_usage_event(
     // Fallback Claude keys and all other adapters keep strict payload matching.
     let mergeable_claude_message =
         event.adapter_id == "claude" && event.event_key.starts_with("message:");
+    // Antigravity has no log: every poll re-reads the live session and returns a
+    // full snapshot, so an in-flight generation is observed repeatedly with
+    // growing counts. Same shape as Claude — merge component-wise maxima.
+    let mergeable_antigravity_response =
+        event.adapter_id == "antigravity" && event.event_key.starts_with("response:");
+    let mergeable = mergeable_claude_message || mergeable_antigravity_response;
     // A contradictory model makes the provider message ambiguous. Reject only
     // this observation; the caller will commit the source's other valid events
     // and surface partial coverage through scan diagnostics.
@@ -327,12 +333,11 @@ fn insert_or_merge_usage_event(
             }
         }
     }
-    let fills_missing_model =
-        mergeable_claude_message && stored.model.is_none() && event.model.is_some();
+    let fills_missing_model = mergeable && stored.model.is_none() && event.model.is_some();
     if stored.payload_hash == event.payload_hash && !fills_missing_model {
         return Ok(EventWriteOutcome::Accepted);
     }
-    if !mergeable_claude_message {
+    if !mergeable {
         return Err(anyhow!(
             "event identity collision for {} from {}",
             event.event_id,

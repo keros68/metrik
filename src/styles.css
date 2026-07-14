@@ -1256,6 +1256,7 @@ button:focus-visible {
 .legend-line--opencode { background: #4aa392; }
 .legend-line--zcode { background: #8b80d9; }
 .legend-line--kimi { background: #6f8fd6; }
+.legend-line--antigravity { background: #6b8fe4; }
 
 .inspector-zone {
   min-width: 0;
@@ -1457,7 +1458,8 @@ button:focus-visible {
 .agent-icon--codex,
 .agent-icon--claude,
 .agent-icon--opencode,
-.agent-icon--kimi { color: inherit; }
+.agent-icon--kimi,
+.agent-icon--antigravity { color: inherit; }
 
 .agent-monogram {
   display: grid;

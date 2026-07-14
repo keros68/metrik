@@ -31,7 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       # 固定版本，与 README 声明的最低要求和开发机一致。滚动 stable 会让
       # 新版本引入的 lint 把 CI 变红，而本地无从复现。

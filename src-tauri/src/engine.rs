@@ -1,6 +1,6 @@
 use crate::adapters::{
-    AgentAdapter, ClaudeAdapter, CodexAdapter, KimiAdapter, OpencodeAdapter, ScanDiagnostics,
-    ZcodeAdapter,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, KimiAdapter, OpencodeAdapter,
+    ScanDiagnostics, ZcodeAdapter,
 };
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
@@ -519,6 +519,7 @@ fn ingest_sources(
         Box::new(ZcodeAdapter::detected()),
         Box::new(OpencodeAdapter::detected()),
         Box::new(KimiAdapter::detected()),
+        Box::new(AntigravityAdapter::detected()),
     ];
     let mut report = ScanReport::default();
 
@@ -937,6 +938,10 @@ fn quota_window_rank(key: &str) -> (u8, String) {
 }
 
 fn quota_window_label(adapter_id: &str, key: &str) -> String {
+    // Antigravity 的窗口键是官方桶标识（如 gemini_weekly），原样展示。
+    if adapter_id == "antigravity" {
+        return key.replace('_', " ");
+    }
     match key {
         "five_hour" | "primary" => "Session".into(),
         "seven_day" | "secondary" => {
@@ -1145,6 +1150,19 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             ),
             quality: if kimi_partial { "partial" } else { "exact" }.into(),
             quality_label: if kimi_partial { "部分覆盖" } else { "精确解析" }.into(),
+        },
+        SourceView {
+            id: "antigravity-live".into(),
+            kind: "local".into(),
+            label: "Antigravity 用量".into(),
+            detail: format!(
+                "发现 {} 个活跃会话，本次更新 {} 个。{}用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
+                discovered("antigravity").saturating_sub(1),
+                refreshed("antigravity"),
+                coverage_detail(&diagnostics("antigravity"), errors("antigravity"))
+            ),
+            quality: "exact".into(),
+            quality_label: "精确解析".into(),
         },
     ];
 
