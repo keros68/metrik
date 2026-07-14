@@ -36,10 +36,8 @@ jobs:
         with:
           targets: ${{ matrix.rust-targets }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
+      # 发布不频繁，且通用构建的 target 布局会让缓存的路径校验在 post 步骤
+      # 报错、把已成功的构建标红。发布流程不缓存，换取稳定的绿。
 
       - name: Install frontend dependencies
         run: npm ci
