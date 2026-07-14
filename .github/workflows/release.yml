@@ -28,12 +28,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # 安装包未签名：目标机会提示"未知发布者"，这是已知且在 README 声明的边界。
+      # 安装包没有微软代码签名证书：目标机会提示"未知发布者"，这是已知且在
+      # README 声明的边界。下面这对密钥是 Tauri 更新器自己的 minisign 签名，
+      # 只用于保证更新包在分发链路上没被掉包，与 SmartScreen 无关。
+      # 同时会生成 latest.json（更新器的检查端点）并一并上传到 Release。
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Metrik ${{ github.ref_name }}
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true

@@ -955,6 +955,13 @@ pub fn run() {
         None,
     ));
 
+    // 更新检查由用户在设置页手动触发；不自动下载、不静默安装。
+    // 更新包用项目自己的 minisign 密钥签名，防止分发链路被掉包。
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
     builder
         .setup(|app| {
             // macOS 下只保留右上角菜单栏图标，不占用 Dock。

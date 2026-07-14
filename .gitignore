@@ -14,3 +14,7 @@ Thumbs.db
 .codex/
 .playwright-cli/
 output/
+
+# 更新包签名私钥：丢失或泄露都会让更新链路失效，绝不入库
+*.key
+!src-tauri/**/*.key.pub

@@ -348,6 +348,32 @@ async function autostartApi() {
   return import("@tauri-apps/plugin-autostart");
 }
 
+/// 手动检查更新：只有用户点击时才发出这一个网络请求，不后台轮询。
+/// 返回 null 表示已是最新（或非桌面环境）。
+async function checkForUpdate() {
+  if (!isDesktop()) return null;
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const update = await check();
+  if (!update) return null;
+  return { version: update.version, notes: update.body || "", update };
+}
+
+/// 下载并安装；安装包的 minisign 签名由更新器校验，签名不符会直接失败。
+async function installUpdate(update, onProgress) {
+  let downloaded = 0;
+  let total = 0;
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      total = event.data.contentLength || 0;
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength || 0;
+      onProgress?.(total ? Math.min(100, Math.round((downloaded / total) * 100)) : null);
+    }
+  });
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  await relaunch();
+}
+
 /// 开机自启状态；浏览器演示模式返回 null（设置页据此隐藏该项）。
 async function getAutostart() {
   const api = await autostartApi();
@@ -378,8 +404,10 @@ async function closeWindow() {
 export {
   WINDOW_SIZES,
   applyWindowMode,
+  checkForUpdate,
   closeWindow,
   getAutostart,
+  installUpdate,
   isDesktop,
   minimizeWindow,
   restoreWindowPosition,

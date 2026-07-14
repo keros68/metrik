@@ -41,8 +41,11 @@ import {
 } from "./usageClient";
 import {
   applyWindowMode,
+  checkForUpdate,
   closeWindow,
   getAutostart,
+  installUpdate,
+  isDesktop,
   minimizeWindow,
   restoreWindowPosition,
   setAutostart,
@@ -1248,6 +1251,73 @@ function StartupCard() {
       {feedback && (
         <p className={`settings-feedback settings-feedback--${feedback.tone}`} role="alert">
           {feedback.message}
+        </p>
+      )}
+      <UpdateBlock />
+    </div>
+  );
+}
+
+// 更新只在用户点击时检查：不后台轮询，那是这个应用唯一会主动发出的网络请求。
+function UpdateBlock() {
+  const [state, setState] = useState({ status: "idle" });
+
+  const check = async () => {
+    setState({ status: "checking" });
+    try {
+      const found = await checkForUpdate();
+      setState(found ? { status: "available", ...found } : { status: "current" });
+    } catch (error) {
+      setState({ status: "error", message: `${error}` });
+    }
+  };
+
+  const install = async () => {
+    setState((current) => ({ ...current, status: "installing", percent: null }));
+    try {
+      await installUpdate(state.update, (percent) =>
+        setState((current) => ({ ...current, percent })));
+    } catch (error) {
+      setState({ status: "error", message: `${error}` });
+    }
+  };
+
+  if (!isDesktop()) return null;
+
+  return (
+    <div className="settings-subsection">
+      <h3>更新</h3>
+      <p className="settings-muted">
+        当前版本 {__APP_VERSION__}。只在你点击时检查一次，不后台轮询。更新包经签名校验，
+        签名不符会拒绝安装。
+      </p>
+      <div className="settings-directory-row">
+        <button
+          type="button"
+          className="ledger-button"
+          disabled={state.status === "checking" || state.status === "installing"}
+          onClick={state.status === "available" ? install : check}
+        >
+          {state.status === "checking"
+            ? "检查中…"
+            : state.status === "installing"
+              ? `下载中${state.percent == null ? "" : ` ${state.percent}%`}…`
+              : state.status === "available"
+                ? `更新到 ${state.version}`
+                : "检查更新"}
+        </button>
+      </div>
+      {state.status === "current" && (
+        <p className="settings-feedback settings-feedback--success" role="status">
+          已是最新版本。
+        </p>
+      )}
+      {state.status === "available" && state.notes && (
+        <p className="settings-muted">{state.notes}</p>
+      )}
+      {state.status === "error" && (
+        <p className="settings-feedback settings-feedback--error" role="alert">
+          {state.message}
         </p>
       )}
     </div>
