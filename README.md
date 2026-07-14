@@ -4,9 +4,12 @@ Metrik 是一个本地优先的 AI Agent 用量统计桌面应用。它读取本
 
 默认形态是 320 × 320 的桌面小组件，一键展开为完整统计视图。
 
+[![Download](https://img.shields.io/github/v/release/keros68/metrik?label=下载&color=success)](https://github.com/keros68/metrik/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app/)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11%20x64-0078D6.svg)](#当前验收边界)
+
+Windows 安装包：[下载最新版](https://github.com/keros68/metrik/releases/latest)（未签名，首次运行可能提示"未知发布者"）
 
 <p align="center">
   <img src="design/shot-widget.png" width="320" alt="Metrik 桌面小组件">
