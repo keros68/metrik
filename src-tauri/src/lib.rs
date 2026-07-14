@@ -4,6 +4,8 @@ mod claude_hook;
 mod claude_oauth;
 mod domain;
 mod engine;
+#[cfg(target_os = "macos")]
+mod macos;
 mod pricing;
 mod schema;
 mod storage;
@@ -933,7 +935,22 @@ async fn set_claude_hook(enabled: bool) -> Result<claude_hook::ClaudeHookStatus,
     .map_err(|error| format!("claude hook task failed: {error}"))?
 }
 
-#[cfg(desktop)]
+/// macOS 的完整视图是一个独立窗口（面板不能兼任），Windows 仍是同一个窗口变形，
+/// 所以这个命令只在 macOS 上有实现，前端也只在 macOS 上调用它。
+#[tauri::command]
+fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::open_expanded_window(app, nav)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, nav);
+        Err("独立的完整视图窗口仅用于 macOS".into())
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -949,7 +966,7 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(desktop)]
+#[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -988,8 +1005,16 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let builder = tauri::Builder::default();
 
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // macOS 上小插件是菜单栏面板：第二个实例把面板弹回图标下方，而不是显示一个游离窗口。
+        #[cfg(target_os = "macos")]
+        macos::show_panel(app);
+
+        #[cfg(not(target_os = "macos"))]
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
@@ -1013,11 +1038,12 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // macOS 下只保留右上角菜单栏图标，不占用 Dock。
+            // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
+            // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            macos::setup(app)?;
 
-            #[cfg(desktop)]
+            #[cfg(all(desktop, not(target_os = "macos")))]
             setup_tray(app)?;
 
             let database_path = match (
@@ -1056,10 +1082,13 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // 关闭时收进托盘常驻，退出走托盘菜单。
+            // macOS 的完整视图是独立窗口，红灯就该真的关掉它（关掉后 App 退回菜单栏）。
             #[cfg(desktop)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() != "expanded" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1075,7 +1104,8 @@ pub fn run() {
             claude_oauth_status,
             set_claude_oauth,
             set_taskbar_button,
-            set_glass_backdrop
+            set_glass_backdrop,
+            open_expanded_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

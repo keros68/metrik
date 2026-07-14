@@ -37,6 +37,8 @@ async function rememberCompactPosition(api, appWindow) {
 
 /// 启动时把小组件放回上次的位置；坐标已不在任何显示器上（拔了扩展屏等）时居中。
 async function restoreWindowPosition() {
+  // macOS 面板永远贴着菜单栏图标，没有"上次的位置"这回事。
+  if (isMacPlatform()) return;
   const api = await windowApi();
   if (!api) return;
   const stored = readStoredPosition();
@@ -68,6 +70,7 @@ async function restoreWindowPosition() {
 
 /// 拖动结束后持久化小组件位置（expanded 形态不记）。
 async function startPositionMemory(getMode) {
+  if (isMacPlatform()) return () => {};
   const api = await windowApi();
   if (!api) return () => {};
   const appWindow = api.getCurrentWindow();
@@ -90,6 +93,12 @@ function isWindowsPlatform() {
   return typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 }
 
+/// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定，形态不变，
+/// 窗口按钮/边缘挂靠/位置记忆/置顶全部由平台语义取代，见 docs/superpowers/specs。
+function isMacPlatform() {
+  return typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
+}
+
 async function windowApi() {
   if (!isDesktop()) return null;
   return import("@tauri-apps/api/window");
@@ -100,7 +109,17 @@ async function makeWebviewTransparent() {
   await api.getCurrentWebview().setBackgroundColor([0, 0, 0, 0]);
 }
 
+/// macOS 的完整视图是一个独立的标准窗口（原生红绿灯、可缩放、进 Dock），
+/// 由后端创建；面板保持原样，不变形。
+async function openExpandedWindow(nav) {
+  if (!isDesktop()) return;
+  await invoke("open_expanded_window", { nav: nav || null });
+}
+
 async function applyWindowMode(mode) {
+  // macOS 上两种形态是两个窗口，各自固定；没有"变形"这件事。
+  if (isMacPlatform()) return;
+
   const api = await windowApi();
   if (!api) return;
 
@@ -191,8 +210,18 @@ async function setWindowGlass(enabled) {
     await appWindow.clearEffects();
     return "off";
   }
+  if (isMacPlatform()) {
+    // WKWebView 的不透明底色会盖住窗口的 vibrancy 层，先让它透明。
+    await makeWebviewTransparent();
+  }
   try {
-    await appWindow.setEffects({ effects: ["popover", "hudWindow", "blur"] });
+    // macOS 的 vibrancy 是单选的：只给一个材质。hudWindow 是深色 HUD 材质，
+    // 不随系统浅色模式变白，和这套固定深色的配色一致（浅色主题是另一件事）。
+    await appWindow.setEffects(
+      isMacPlatform()
+        ? { effects: ["hudWindow"], state: "active", radius: 12 }
+        : { effects: ["blur"] },
+    );
     return "native";
   } catch (error) {
     console.warn("Native window effects unavailable, using CSS glass.", error);
@@ -210,6 +239,8 @@ const DOCK_POLL_MS = 250;
 /// 细边落在窗口的非客户区，webview 收不到 hover 事件，
 /// 所以挂靠期间用全局光标位置轮询判断进出。
 async function startEdgeDock({ getMode, getPinned }) {
+  // 边缘挂靠是桌面浮窗的交互；菜单栏面板不需要（它本来就贴在菜单栏上）。
+  if (isMacPlatform()) return () => {};
   const api = await windowApi();
   if (!api) return () => {};
   const win = api.getCurrentWindow();
@@ -412,7 +443,9 @@ export {
   getAutostart,
   installUpdate,
   isDesktop,
+  isMacPlatform,
   minimizeWindow,
+  openExpandedWindow,
   restoreWindowPosition,
   setAutostart,
   setWindowGlass,
