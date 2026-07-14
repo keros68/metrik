@@ -144,31 +144,6 @@ pub fn source_is_current(
     ))
 }
 
-pub fn adapter_has_stale_parser_sources(connection: &Connection, adapter_id: &str) -> Result<bool> {
-    connection
-        .query_row(
-            "SELECT EXISTS (
-                 SELECT 1 FROM scan_source
-                 WHERE adapter_id = ?1
-                   AND parser_version != ?2
-             )",
-            params![adapter_id, PARSER_VERSION],
-            |row| row.get(0),
-        )
-        .context("failed to inspect adapter parser versions")
-}
-
-pub fn source_needs_parser_rebuild(connection: &Connection, source_id: &str) -> Result<bool> {
-    let parser_version = connection
-        .query_row(
-            "SELECT parser_version FROM scan_source WHERE source_id = ?1",
-            [source_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    Ok(matches!(parser_version, Some(version) if version != PARSER_VERSION))
-}
-
 pub fn replace_source(
     connection: &mut Connection,
     source: &ParsedSource,
@@ -206,18 +181,15 @@ pub fn replace_source(
         ],
     )?;
 
-    // A parser invoked with a narrow coverage window only returns events in
-    // that window. Reconcile that slice and retain older observations until a
-    // wider scan explicitly covers them.
+    // 解析视界对所有源都一样（见 engine::RETENTION_DAYS），所以一次重扫覆盖这个源
+    // 的全部保留期历史：直接清掉它的旧观察记录，不必再按时间窗口切片。
+    // 孤儿清扫也只针对刚被清掉的这批事件——全局清扫的代价与账本总量成正比，
+    // 每个源都做一次会让补齐退化成 O(源数 × 事件总数)。
+    let previously_observed = observed_event_ids(&transaction, &source.source_id)?;
     transaction.execute(
-        "DELETE FROM event_observation
-         WHERE source_id = ?1
-           AND event_id IN (
-               SELECT event_id FROM usage_event WHERE occurred_at_ms >= ?2
-           )",
-        params![source.source_id, coverage_start_ms],
+        "DELETE FROM event_observation WHERE source_id = ?1",
+        [&source.source_id],
     )?;
-    delete_orphan_events(&transaction)?;
 
     for event in &source.events {
         let write_outcome = insert_or_merge_usage_event(&transaction, event, &source.locator)?;
@@ -233,12 +205,25 @@ pub fn replace_source(
         )?;
     }
 
+    // 本次重扫后仍然没有任何观察记录的，才是真孤儿（比如日志被改写、事件消失）。
+    // 仍被本源或其他源观察到的事件在上面已经重新登记，不会命中。
+    delete_orphan_events(&transaction, &previously_observed)?;
+
     for quota in &source.quotas {
         upsert_quota_tx(&transaction, quota)?;
     }
 
     transaction.commit()?;
     Ok(outcome)
+}
+
+fn observed_event_ids(transaction: &Transaction<'_>, source_id: &str) -> Result<Vec<String>> {
+    let mut statement =
+        transaction.prepare("SELECT event_id FROM event_observation WHERE source_id = ?1")?;
+    let ids = statement
+        .query_map([source_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
 }
 
 fn insert_or_merge_usage_event(
@@ -467,10 +452,14 @@ pub fn prune_missing_sources(connection: &mut Connection) -> Result<()> {
     }
 
     let transaction = connection.transaction()?;
+    // 观察记录会被 scan_source 的 ON DELETE CASCADE 一并删掉，所以先记下候选，
+    // 删完再回头判断哪些事件真的没人观察了。
+    let mut orphan_candidates = Vec::new();
     for source_id in missing {
-        transaction.execute("DELETE FROM scan_source WHERE source_id = ?1", [source_id])?;
+        orphan_candidates.extend(observed_event_ids(&transaction, &source_id)?);
+        transaction.execute("DELETE FROM scan_source WHERE source_id = ?1", [&source_id])?;
     }
-    delete_orphan_events(&transaction)?;
+    delete_orphan_events(&transaction, &orphan_candidates)?;
     transaction.commit()?;
     Ok(())
 }
@@ -483,14 +472,19 @@ pub fn prune_old_events(connection: &Connection, cutoff_ms: i64) -> Result<()> {
     Ok(())
 }
 
-fn delete_orphan_events(transaction: &Transaction<'_>) -> Result<()> {
-    transaction.execute(
+/// 只检查候选事件，不扫全表：调用方知道哪些事件刚失去过观察记录。
+fn delete_orphan_events(transaction: &Transaction<'_>, candidates: &[String]) -> Result<()> {
+    let mut statement = transaction.prepare(
         "DELETE FROM usage_event
-         WHERE NOT EXISTS (
-             SELECT 1 FROM event_observation WHERE event_observation.event_id = usage_event.event_id
-         )",
-        [],
+         WHERE event_id = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM event_observation
+               WHERE event_observation.event_id = usage_event.event_id
+           )",
     )?;
+    for event_id in candidates {
+        statement.execute([event_id])?;
+    }
     Ok(())
 }
 
@@ -815,84 +809,75 @@ mod tests {
         assert!(source_is_current(&connection, "source-b", 20, 1, 0).unwrap());
     }
 
+    /// 重扫一个源 = 整体替换它的观察记录：源里消失的事件被清掉，但只要还有别的
+    /// 源观察到它（同一事件被归档件与原件同时覆盖），就必须留下。
     #[test]
-    fn narrow_source_reconciliation_retains_older_observations() {
+    fn rescanning_a_source_replaces_its_observations_without_dropping_shared_events() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
-        let old = UsageEvent::new(
-            "codex",
-            "session:old".into(),
-            100,
-            "session".into(),
-            None,
-            TokenVector {
-                input_uncached: 10,
-                ..Default::default()
-            },
-            "cumulative_delta",
-        );
-        let recent = UsageEvent::new(
-            "codex",
-            "session:recent".into(),
-            2_000,
-            "session".into(),
-            None,
-            TokenVector {
-                input_uncached: 20,
-                ..Default::default()
-            },
-            "cumulative_delta",
-        );
+        let event = |key: &str, tokens: i64| {
+            UsageEvent::new(
+                "codex",
+                format!("session:{key}"),
+                100,
+                "session".into(),
+                None,
+                TokenVector {
+                    input_uncached: tokens,
+                    ..Default::default()
+                },
+                "cumulative_delta",
+            )
+        };
+
+        // shared 同时出现在原件和归档件里；solo 只在原件里。
         replace_source(
             &mut connection,
-            &source("source", "codex", vec![old, recent]),
+            &source(
+                "origin",
+                "codex",
+                vec![event("shared", 10), event("solo", 20)],
+            ),
+            0,
+        )
+        .unwrap();
+        replace_source(
+            &mut connection,
+            &source("archive", "codex", vec![event("shared", 10)]),
             0,
         )
         .unwrap();
 
-        let refreshed_recent = UsageEvent::new(
-            "codex",
-            "session:recent-v2".into(),
-            2_100,
-            "session".into(),
-            None,
-            TokenVector {
-                input_uncached: 30,
-                ..Default::default()
-            },
-            "cumulative_delta",
-        );
+        // 原件被改写，solo 消失了。
         replace_source(
             &mut connection,
-            &source("source", "codex", vec![refreshed_recent]),
-            1_000,
+            &source("origin", "codex", vec![event("shared", 10)]),
+            0,
         )
         .unwrap();
 
-        let old_tokens: i64 = connection
-            .query_row(
-                "SELECT input_uncached_tokens FROM usage_event WHERE event_key = 'session:old'",
-                [],
-                |row| row.get(0),
-            )
+        let keys: Vec<String> = connection
+            .prepare("SELECT event_key FROM usage_event ORDER BY event_key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(old_tokens, 10);
-        let event_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(event_count, 2);
-        let observation_count: i64 = connection
+        assert_eq!(keys, ["session:shared"]);
+
+        let observations: i64 = connection
             .query_row("SELECT COUNT(*) FROM event_observation", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(observation_count, 2);
+        assert_eq!(observations, 2);
     }
 
+    /// 解析器升级后，即使文件本身没变、覆盖范围也够，源仍必须重新解析。
     #[test]
-    fn stale_parser_sources_are_detected_for_retained_history() {
+    fn a_stale_parser_version_makes_a_source_need_reparsing() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
@@ -907,25 +892,12 @@ mod tests {
                 [PARSER_VERSION - 1],
             )
             .unwrap();
-        connection
-            .execute(
-                "INSERT INTO scan_source (
-                    source_id, adapter_id, logical_key, locator, observed_size,
-                    mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
-                 ) VALUES ('old', 'claude', 'old', 'old.jsonl', 10,
-                           500000000, 0, ?1, 0, NULL)",
-                [PARSER_VERSION - 1],
-            )
-            .unwrap();
 
-        assert!(source_needs_parser_rebuild(&connection, "recent").unwrap());
-        assert!(adapter_has_stale_parser_sources(&connection, "claude").unwrap());
-        assert!(!adapter_has_stale_parser_sources(&connection, "codex").unwrap());
+        assert!(!source_is_current(&connection, "recent", 10, 2_000_000_000, 0).unwrap());
 
+        // 重扫会把 parser_version 写成当前值（size / mtime 取自 `source` 助手）。
         replace_source(&mut connection, &source("recent", "claude", Vec::new()), 0).unwrap();
-        replace_source(&mut connection, &source("old", "claude", Vec::new()), 0).unwrap();
-        assert!(!source_needs_parser_rebuild(&connection, "recent").unwrap());
-        assert!(!adapter_has_stale_parser_sources(&connection, "claude").unwrap());
+        assert!(source_is_current(&connection, "recent", 20, 1, 0).unwrap());
     }
 
     #[test]

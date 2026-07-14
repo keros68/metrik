@@ -1,14 +1,14 @@
 use crate::adapters::{
     AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, KimiAdapter, OpencodeAdapter,
-    ScanDiagnostics, ZcodeAdapter,
+    ScanDiagnostics, SourceCandidate, ZcodeAdapter,
 };
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
 use crate::claude_oauth::{self, ClaudeOauth};
 use crate::domain::{
-    AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage, ModelSummary,
-    QuotaSample, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView, UsageReport,
-    UsageSessions, UsageSnapshot, AGENT_IDS,
+    AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage, IndexingView,
+    ModelSummary, QuotaSample, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView,
+    UsageReport, UsageSessions, UsageSnapshot, AGENT_IDS,
 };
 use crate::pricing;
 use crate::storage;
@@ -25,12 +25,25 @@ use std::time::{Duration as StdDuration, Instant};
 /// 报告窗口固定为 182 天（26 周），与 `usage_snapshot` 的扫描周期无关。
 const REPORT_WINDOW_DAYS: i64 = 182;
 
+/// 账本保留期，同时是唯一的解析视界。解析窗口**不跟随 UI 周期**：跟随会让
+/// 切到「30 天」时把此前只按 8 天窗口解析过的日志全部整份重扫，代价整个压在
+/// 一次前台请求里（实测本机 691 个文件、约 2GB JSONL）。固定视界的代价是每个
+/// 文件只在新增或变化时解析一次，切周期退化为纯 SQL 查询。
+const RETENTION_DAYS: i64 = 65;
+
+/// 每次快照分给日志解析的时间预算。待解析的源按 mtime 倒序排队（最近改动的先做，
+/// 当前周期的数字最先准确），超预算的留给下一次刷新，剩余量记进 `backfill_pending`。
+/// 预算只在文件之间检查，所以单个大文件可能超出——这是可接受的，
+/// 代价上限是一个文件的解析时间，而不是整个日志库。
+const PARSE_BUDGET: StdDuration = StdDuration::from_millis(1500);
+
 #[derive(Default)]
 struct ScanReport {
     discovered: HashMap<String, usize>,
     refreshed: HashMap<String, usize>,
     errors: HashMap<String, usize>,
     diagnostics: HashMap<String, AdapterDiagnostics>,
+    backfill_pending: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -104,9 +117,8 @@ pub fn build_snapshot(
 ) -> Result<UsageSnapshot> {
     let mut connection = storage::open_database(database_path)?;
     let now = Utc::now().timestamp_millis();
-    let discovery_cutoff = discovery_cutoff_ms(period, now);
-    let retention_cutoff = now - Duration::days(65).num_milliseconds();
-    let report = ingest_sources(&mut connection, discovery_cutoff, retention_cutoff)?;
+    let retention_cutoff = now - Duration::days(RETENTION_DAYS).num_milliseconds();
+    let report = ingest_sources(&mut connection, retention_cutoff)?;
 
     // app-server 是 Codex 额度的权威来源：拉到就整体替换，套餐变更后消失的
     // 窗口（如 prolite 没有 5 小时窗）不得留着旧日志快照冒充当前额度。
@@ -445,18 +457,6 @@ fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i
         .context("failed to calculate ledger event bounds")
 }
 
-fn discovery_cutoff_ms(period: &str, now_ms: i64) -> i64 {
-    let history_days = match period {
-        "month" => 61,
-        "week" => 15,
-        // Today needs the current partial day plus seven matching historical
-        // windows. The extra calendar-day margin also covers local-midnight
-        // boundaries without making unchanged files parse on every refresh.
-        _ => 8,
-    };
-    now_ms - Duration::days(history_days).num_milliseconds()
-}
-
 fn cached_live_quota(
     cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
 ) -> Result<Vec<QuotaSample>> {
@@ -508,11 +508,9 @@ fn cached_claude_oauth_quota(
     }
 }
 
-fn ingest_sources(
-    connection: &mut Connection,
-    cutoff_ms: i64,
-    retention_cutoff_ms: i64,
-) -> Result<ScanReport> {
+/// 按固定的保留期视界摄取日志。需要解析的源按 mtime 倒序排队，在时间预算内尽量
+/// 解析；没轮到的记进 `report.backfill_pending`，由界面显式标注为「补齐中」。
+fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanReport> {
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![
         Box::new(CodexAdapter::detected()),
         Box::new(ClaudeAdapter::detected()),
@@ -522,73 +520,82 @@ fn ingest_sources(
         Box::new(AntigravityAdapter::detected()),
     ];
     let mut report = ScanReport::default();
+    let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
 
-    for adapter in adapters {
-        // Parser-version migrations must revisit unchanged files as well as
-        // recently modified ones. Discover every source once, but only rebuild
-        // the history that the database itself retains.
-        let migration_pending =
-            storage::adapter_has_stale_parser_sources(connection, adapter.id())?;
-        let discovery_cutoff_ms = if migration_pending {
-            i64::MIN
-        } else {
-            cutoff_ms
-        };
-        let candidates = adapter.discover(discovery_cutoff_ms);
+    for (index, adapter) in adapters.iter().enumerate() {
+        let candidates = adapter.discover(horizon_ms);
         let stored_diagnostics = stored_adapter_scan_diagnostics(connection, adapter.id())?;
         report
             .discovered
             .insert(adapter.id().into(), candidates.len());
         for candidate in candidates {
-            let source_cutoff_ms = if migration_pending
-                || storage::source_needs_parser_rebuild(connection, &candidate.source_id)?
-            {
-                retention_cutoff_ms.min(cutoff_ms)
-            } else {
-                cutoff_ms
-            };
             if storage::source_is_current(
                 connection,
                 &candidate.source_id,
                 candidate.size,
                 candidate.mtime_ns,
-                source_cutoff_ms,
+                horizon_ms,
             )? {
                 if let Some(diagnostics) = stored_diagnostics.get(&candidate.source_id) {
                     record_scan_diagnostics(&mut report, adapter.id(), diagnostics);
                 }
                 continue;
             }
-
-            match adapter.parse(&candidate, source_cutoff_ms) {
-                Ok(scan) => {
-                    let mut diagnostics = scan.diagnostics;
-                    if let Ok(outcome) =
-                        storage::replace_source(connection, &scan.source, source_cutoff_ms)
-                    {
-                        diagnostics.rejected_events += outcome.rejected_events;
-                        if let Some(marker) = diagnostics.storage_marker() {
-                            connection
-                                .execute(
-                                    "UPDATE scan_source SET last_error = ?1 WHERE source_id = ?2",
-                                    params![marker, candidate.source_id],
-                                )
-                                .context("failed to persist JSONL scan diagnostics")?;
-                        }
-                        record_scan_diagnostics(&mut report, adapter.id(), &diagnostics);
-                        *report.refreshed.entry(adapter.id().into()).or_default() += 1;
-                    } else {
-                        *report.errors.entry(adapter.id().into()).or_default() += 1;
-                    }
-                }
-                Err(_) => {
-                    *report.errors.entry(adapter.id().into()).or_default() += 1;
-                }
-            }
+            queue.push((index, candidate));
         }
     }
 
+    // 最近改动的先解析：当前周期的数字最先变准，历史从近端往回填。
+    queue.sort_by_key(|(_, candidate)| Reverse(candidate.mtime_ns));
+    let deadline = Instant::now() + PARSE_BUDGET;
+    for (index, candidate) in &queue {
+        if Instant::now() >= deadline {
+            report.backfill_pending += 1;
+            continue;
+        }
+        ingest_candidate(
+            connection,
+            adapters[*index].as_ref(),
+            candidate,
+            horizon_ms,
+            &mut report,
+        )?;
+    }
+
     Ok(report)
+}
+
+fn ingest_candidate(
+    connection: &mut Connection,
+    adapter: &dyn AgentAdapter,
+    candidate: &SourceCandidate,
+    horizon_ms: i64,
+    report: &mut ScanReport,
+) -> Result<()> {
+    match adapter.parse(candidate, horizon_ms) {
+        Ok(scan) => {
+            let mut diagnostics = scan.diagnostics;
+            if let Ok(outcome) = storage::replace_source(connection, &scan.source, horizon_ms) {
+                diagnostics.rejected_events += outcome.rejected_events;
+                if let Some(marker) = diagnostics.storage_marker() {
+                    connection
+                        .execute(
+                            "UPDATE scan_source SET last_error = ?1 WHERE source_id = ?2",
+                            params![marker, candidate.source_id],
+                        )
+                        .context("failed to persist JSONL scan diagnostics")?;
+                }
+                record_scan_diagnostics(report, adapter.id(), &diagnostics);
+                *report.refreshed.entry(adapter.id().into()).or_default() += 1;
+            } else {
+                *report.errors.entry(adapter.id().into()).or_default() += 1;
+            }
+        }
+        Err(_) => {
+            *report.errors.entry(adapter.id().into()).or_default() += 1;
+        }
+    }
+    Ok(())
 }
 
 fn stored_adapter_scan_diagnostics(
@@ -846,6 +853,9 @@ fn query_snapshot_at(
             })
             .collect(),
         models,
+        indexing: IndexingView {
+            pending: report.backfill_pending,
+        },
         sources: source_views(report, sync::sync_view(connection).ok()),
         cost,
     })
@@ -1814,21 +1824,30 @@ mod tests {
         assert_eq!(period_bucket_count("month", 23), 30);
     }
 
+    /// 解析视界固定为保留期，不跟随 UI 周期。按视界解析过的源在之后的任何时刻、
+    /// 任何周期下都算 current——切到「30 天」不会再触发整份重扫。
     #[test]
-    fn today_discovery_keeps_an_eight_day_history_horizon() {
-        let now = 1_800_000_000_000_i64;
-        assert_eq!(
-            discovery_cutoff_ms("today", now),
-            now - Duration::days(8).num_milliseconds()
-        );
-        assert_eq!(
-            discovery_cutoff_ms("week", now),
-            now - Duration::days(15).num_milliseconds()
-        );
-        assert_eq!(
-            discovery_cutoff_ms("month", now),
-            now - Duration::days(61).num_milliseconds()
-        );
+    fn a_source_parsed_at_the_retention_horizon_is_never_reparsed_by_a_period_switch() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let parsed_at = 1_800_000_000_000_i64;
+        let horizon_at_parse = parsed_at - Duration::days(RETENTION_DAYS).num_milliseconds();
+        connection
+            .execute(
+                "INSERT INTO scan_source (
+                     source_id, adapter_id, logical_key, locator, observed_size,
+                     mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
+                 ) VALUES ('source', 'codex', 'source', 'rollout.jsonl', 10, 1, ?1, ?2, ?3, NULL)",
+                params![horizon_at_parse, storage::PARSER_VERSION, parsed_at],
+            )
+            .unwrap();
+
+        // 一周后再取快照：视界随 now 前移，旧覆盖仍然完全包住它。
+        let later = parsed_at + Duration::days(7).num_milliseconds();
+        let horizon_now = later - Duration::days(RETENTION_DAYS).num_milliseconds();
+        assert!(storage::source_is_current(&connection, "source", 10, 1, horizon_now).unwrap());
     }
 
     #[test]

@@ -56,6 +56,13 @@ CREATE INDEX IF NOT EXISTS idx_usage_event_time
 CREATE INDEX IF NOT EXISTS idx_usage_event_adapter_time
     ON usage_event(adapter_id, occurred_at_ms);
 
+-- event_observation 的主键是 (event_id, source_id)，按 source_id 查/删无索引可用，
+-- 只能全表扫。重扫一个源要先清掉它的旧观察记录，没这个索引时每个源的入库
+-- 代价与账本总事件数成正比（实测 690 个源要 20 分钟）。同一个索引也让
+-- scan_source 的 ON DELETE CASCADE 不必扫全表。
+CREATE INDEX IF NOT EXISTS idx_event_observation_source
+    ON event_observation(source_id);
+
 -- 同步与设置表在既有库上按需补建；它们不参与 schema 兼容性判定，
 -- 缺失时不会触发派生账本重建。
 CREATE TABLE IF NOT EXISTS app_setting (

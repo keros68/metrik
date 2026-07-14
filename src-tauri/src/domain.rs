@@ -155,6 +155,17 @@ pub struct UsageSnapshot {
     pub models: Vec<ModelSummary>,
     pub sources: Vec<SourceView>,
     pub cost: CostSummary,
+    pub indexing: IndexingView,
+}
+
+/// 历史索引的补齐进度。日志按固定的保留期视界解析，与 UI 选的周期无关；
+/// 首次索引和解析器升级后剩下的文件分批补齐，每次快照只花掉一小段时间预算。
+/// `pending > 0` 时账本尚未覆盖完整历史，数字必须显式标注为补齐中，
+/// 不得当作精确结果呈现。
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexingView {
+    pub pending: usize,
 }
 
 /// 周期内的估算成本，与官方账单和本地解析用量是三类不同事实，永远分开呈现；

@@ -83,6 +83,10 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
 
 SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. `PARSER_VERSION` is currently 4; version changes force retained-history reconciliation.
 
+The parse horizon is the retention window (65 days) for every source, and it deliberately does **not** follow the period the user selected. It used to: `today` parsed 8 days back, `month` 61. Because `scan_source.coverage_start_ms` records how far back a file was parsed, selecting a wider period invalidated every source parsed under a narrower one, and the whole re-scan ran synchronously inside one `usage_snapshot` request. On a 3 GB Codex log directory that made "30 days" a 23-minute frozen request. A fixed horizon means a file is parsed once, on arrival or on change; switching periods is then a pure SQL query. Sources still needing a parse are queued newest-first and cut off by `PARSE_BUDGET`; the remainder is reported as `indexing.pending` and the UI labels the numbers as incomplete rather than presenting a partial ledger as exact.
+
+Per-source work must stay proportional to that source, never to the size of the ledger. Re-scanning one source once cost 1.3–2.4 s regardless of the file's size — a 70 KB log with a single event took as long as a large one — because clearing its observations scanned all of `event_observation` (no index on `source_id`; the primary key is `(event_id, source_id)`), and orphan collection then scanned all of `usage_event`. Both are now scoped: `idx_event_observation_source` makes the clear an indexed delete, and orphan collection only considers the event ids that source had just stopped observing. Same work, 4 ms.
+
 Read-only queries (report, session stream) open the database with `SQLITE_OPEN_READ_ONLY` and skip `ensure_schema`. Running the schema check would issue `PRAGMA user_version` — a write — which blocks behind the scanner's writer and stalls those pages. On upgrade from the earlier Windows layout, the legacy Roaming database and SQLite sidecars are staged and copied only when no local database exists; legacy files are retained.
 
 Migration conflicts fall back to a separately named recovery ledger without overwriting either side. If application-data path resolution and recovery reservation both fail, startup selects a unique temporary ledger path so the window can still open; an unwritable temporary directory then degrades the data command to the UI's explicit unavailable state instead of aborting setup.
@@ -110,10 +114,10 @@ An adapter is only trustworthy once its field *semantics* are confirmed against 
 
 ## Runtime boundary
 
-- Compact mode refreshes every five minutes while visible; expanded mode refreshes every minute. Returning to the window triggers a refresh.
+- Compact mode refreshes every five minutes while visible; expanded mode refreshes every minute. While `indexing.pending > 0` the UI polls every 400 ms instead, so each snapshot spends another `PARSE_BUDGET` on the backlog until it is drained. Returning to the window triggers a refresh.
 - One in-flight request is allowed from the UI; duplicate period requests are coalesced. The Rust scan remains serialized by one lock.
 - A desktop single-instance guard focuses the existing window instead of starting a second scanner.
-- Unchanged files are cheap metadata checks. A changed file is still reparsed from the beginning, so very large active logs remain the main CPU and disk bottleneck until an append cursor with durable parser state is implemented.
+- Unchanged files are cheap metadata checks. A changed file is still reparsed from the beginning, so very large active logs remain the main CPU and disk bottleneck until an append cursor with durable parser state is implemented. The budget bounds a snapshot between files, not within one, so a single very large file can still overrun it.
 - Tauri does not remove the platform webview cost: WebView2/WebKit/WebKitGTK dominates resident memory relative to the Rust process.
 
 ## Planned device sync

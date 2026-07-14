@@ -47,7 +47,9 @@ import {
   getAutostart,
   installUpdate,
   isDesktop,
+  isMacPlatform,
   minimizeWindow,
+  openExpandedWindow,
   restoreWindowPosition,
   setAutostart,
   setWindowGlass,
@@ -55,6 +57,11 @@ import {
   startEdgeDock,
   startPositionMemory,
 } from "./windowClient";
+
+// macOS 是菜单栏应用：小插件是贴着菜单栏图标的面板（没有窗口按钮、不可拖动、
+// 材质由系统 vibrancy 承担），完整视图是独立的标准窗口（原生红绿灯）。
+// Windows 仍是"单窗口变形 + 自绘按钮"，两条路径不互相影响。
+const IS_MAC = isMacPlatform();
 
 const UsagePlot = lazy(() =>
   import("./UsagePlot").then((module) => ({ default: module.UsagePlot })),
@@ -699,28 +706,34 @@ function CompactWidget({
 
   return (
     <main
-      className={`widget-shell ${transparent ? "widget-shell--transparent" : ""} ${transparent && glassMode === "css" ? "widget-shell--glass-css" : ""} ${loading ? "is-loading" : ""}`}
+      className={`widget-shell ${transparent ? "widget-shell--transparent" : ""} ${transparent && glassMode === "css" ? "widget-shell--glass-css" : ""} ${IS_MAC ? "widget-shell--mac" : ""} ${loading ? "is-loading" : ""}`}
       style={transparent ? { "--glass-alpha": glassAlpha } : undefined}
     >
       <h1 className="sr-only">Metrik Agent 用量桌面小插件</h1>
       <header
         className="widget-titlebar"
         // 固定 = 置顶 + 锁定位置：去掉拖动区，窗口停在用户选定的位置。
-        {...(pinned ? {} : { "data-tauri-drag-region": true })}
-        style={pinned ? { cursor: "default" } : undefined}
+        // macOS 面板贴着菜单栏图标，拖动无意义，也没有窗口按钮。
+        {...(pinned || IS_MAC ? {} : { "data-tauri-drag-region": true })}
+        style={pinned || IS_MAC ? { cursor: "default" } : undefined}
       >
-        <div className="widget-brand" {...(pinned ? {} : { "data-tauri-drag-region": true })}>
+        <div
+          className="widget-brand"
+          {...(pinned || IS_MAC ? {} : { "data-tauri-drag-region": true })}
+        >
           <span>Metrik</span>
           <i className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`} aria-hidden="true" />
         </div>
-        <WindowActions
-          mode="compact"
-          pinned={pinned}
-          transparent={transparent}
-          onToggleMode={onExpand}
-          onTogglePinned={onTogglePinned}
-          onToggleTransparent={onToggleTransparent}
-        />
+        {!IS_MAC && (
+          <WindowActions
+            mode="compact"
+            pinned={pinned}
+            transparent={transparent}
+            onToggleMode={onExpand}
+            onTogglePinned={onTogglePinned}
+            onToggleTransparent={onToggleTransparent}
+          />
+        )}
       </header>
 
       <div className="widget-content">
@@ -2095,16 +2108,25 @@ function initialWindowMode() {
     : "compact";
 }
 
+/// 托盘菜单的"设置"直接开在设置页；其余情况从概览进。
+function initialNav() {
+  if (typeof window === "undefined") return "overview";
+  return new URLSearchParams(window.location.search).get("nav") === "settings"
+    ? "settings"
+    : "overview";
+}
+
 export function App() {
   const [viewMode, setViewMode] = useState(initialWindowMode);
   const [period, setPeriod] = useState("today");
   const [selectedAgent, setSelectedAgent] = useState("all");
-  const [activeNav, setActiveNav] = useState("overview");
+  const [activeNav, setActiveNav] = useState(initialNav);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pinned, setPinned] = useState(() => localStorage.getItem("metrik:pinned") === "true");
   // 玻璃材质默认开启；用户关闭后记住选择。
+  // macOS 上材质由系统 vibrancy 承担，恒开，没有开关按钮。
   const [transparent, setTransparent] = useState(
-    () => (localStorage.getItem("metrik:transparent") ?? "true") === "true",
+    () => IS_MAC || (localStorage.getItem("metrik:transparent") ?? "true") === "true",
   );
   const [quotaAgent, setQuotaAgent] = useState(
     () => localStorage.getItem("metrik:quotaAgent") || "codex",
@@ -2146,6 +2168,9 @@ export function App() {
   const [report, setReport] = useState(null);
   const [sessionsState, setSessionsState] = useState(null);
   const [snapshot, setSnapshot] = useState(() => getUsageSnapshot.initial("today"));
+  // 历史索引还没补齐：账本尚未覆盖完整周期，数字必须显式标注为不完整。
+  const indexingPending = snapshot.indexing?.pending || 0;
+  const indexing = indexingPending > 0;
   const requestSequence = useRef(0);
   const loadInFlight = useRef(false);
   const activeLoadPeriod = useRef(null);
@@ -2186,7 +2211,9 @@ export function App() {
   }, [period, loadSnapshot]);
 
   useEffect(() => {
-    const refreshEvery = viewMode === "compact" ? 300_000 : 60_000;
+    // 历史索引未补齐时快速迭代：每次快照只花掉一小段补齐预算，靠连续刷新把
+    // 剩余文件啃完，界面全程可用。补齐结束后回到常规节奏。
+    const refreshEvery = indexing ? 400 : viewMode === "compact" ? 300_000 : 60_000;
     let timer;
 
     const schedule = () => {
@@ -2210,9 +2237,11 @@ export function App() {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       window.removeEventListener("focus", refreshWhenVisible);
     };
-  }, [loadSnapshot, period, viewMode]);
+  }, [loadSnapshot, period, viewMode, indexing]);
 
   useEffect(() => {
+    // macOS 面板由系统管层级和位置：不置顶、不恢复坐标。
+    if (IS_MAC) return;
     if (pinned) runWindowAction(() => setWindowPinned(true));
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
     runWindowAction(() => restoreWindowPosition());
@@ -2339,6 +2368,11 @@ export function App() {
   }, [activeNav, viewMode, period]);
 
   const handleWindowMode = useCallback((nextMode) => {
+    // macOS：完整视图是另一个窗口，面板只负责把它开出来，自己保持原样。
+    if (IS_MAC) {
+      if (nextMode === "expanded") runWindowAction(() => openExpandedWindow());
+      return;
+    }
     setViewMode(nextMode);
     if (nextMode === "compact") setActiveNav("overview");
     runWindowAction(() => applyWindowMode(nextMode));
@@ -2434,14 +2468,26 @@ export function App() {
   return (
     <>
       <div className={`app-shell app-shell--expanded ${appBusy ? "is-loading" : ""}`}>
-        <div className="expanded-drag-region" data-tauri-drag-region aria-hidden="true" />
-        <WindowActions
-          mode="expanded"
-          pinned={pinned}
-          onToggleMode={handleWindowMode}
-          onTogglePinned={handleTogglePinned}
-        />
+        {/* macOS 的完整视图是标准窗口：拖动和窗口按钮都归原生标题栏，不自绘。 */}
+        {!IS_MAC && (
+          <>
+            <div className="expanded-drag-region" data-tauri-drag-region aria-hidden="true" />
+            <WindowActions
+              mode="expanded"
+              pinned={pinned}
+              onToggleMode={handleWindowMode}
+              onTogglePinned={handleTogglePinned}
+            />
+          </>
+        )}
         <Sidebar activeNav={activeNav} onNavChange={handleNavChange} snapshot={snapshot} loading={appBusy} />
+
+        {indexingPending > 0 ? (
+          <div className="indexing-banner" role="status">
+            <ClockCounterClockwise size={18} weight="light" aria-hidden="true" />
+            正在补齐历史索引，还剩 <strong>{indexingPending}</strong> 个日志文件。历史周期的数字尚不完整，会随补齐自动更新。
+          </div>
+        ) : null}
 
         {activeNav === "overview" ? (
           <>

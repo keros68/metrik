@@ -163,6 +163,7 @@ function demoSnapshot(period = "today") {
       { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "antigravity-live", kind: "local", label: "Antigravity 用量", detail: "来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。", quality: "exact", qualityLabel: "精确解析" },
     ],
+    indexing: { pending: 0 },
   };
 }
 
@@ -195,6 +196,7 @@ function pendingSnapshot(period = "today") {
         qualityLabel: "读取中",
       },
     ],
+    indexing: { pending: 0 },
   };
 }
 
@@ -227,6 +229,7 @@ function unavailableSnapshot(period = "today") {
         qualityLabel: "未载入",
       },
     ],
+    indexing: { pending: 0 },
   };
 }
 

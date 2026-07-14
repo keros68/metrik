@@ -195,6 +195,24 @@ button:focus-visible {
     rgba(28, 30, 36, 0.95);
 }
 
+/* ============ macOS：材质交给系统 ============
+   面板是 hudWindow vibrancy（深色 HUD，自带系统模糊、景深与窗口阴影）。
+   这里只补内描边与高光；再叠一层 Windows 那种近实心深色板（--glass-alpha 0.82）
+   会把系统材质糊死，所以 mac 上把 tint 压到很薄，暗度由 vibrancy 负责。
+   原生材质拿不到时走 --glass-css 近实心回落，不套这条。 */
+.widget-shell--mac:not(.widget-shell--glass-css) {
+  /* 与 setEffects 传给窗口的 radius 对齐，避免四角露出方形材质。 */
+  border-radius: 12px;
+  background:
+    radial-gradient(130% 100% at 14% 0%, rgba(178, 200, 255, 0.06), transparent 52%),
+    linear-gradient(168deg, rgba(30, 34, 46, 0.22), rgba(12, 15, 22, 0.3));
+  border: none;
+  /* 窗口阴影由 NSPanel 自己投，CSS 不再叠外阴影。 */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px rgba(255, 255, 255, 0.12);
+}
+
 .widget-titlebar {
   position: relative;
   z-index: 3;
@@ -2206,6 +2224,34 @@ button:focus-visible {
 
 /* 三种视图的自然高度差很大（热力图矮、折线高），固定容器高度，
    切换时卡片不再忽大忽小。内容垂直居中填满。 */
+/* 历史索引补齐中的显式标注。浮在内容之上而不是占一格，免得挤坏三列栅格。 */
+.indexing-banner {
+  position: absolute;
+  left: 148px;
+  bottom: 18px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 449px - 176px);
+  padding: 9px 15px;
+  border: 1px solid rgba(31, 33, 36, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 24px rgba(31, 33, 36, 0.09);
+  backdrop-filter: blur(12px);
+  color: rgba(31, 33, 36, 0.62);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  animation: settle-in 480ms var(--motion) both;
+}
+
+.indexing-banner strong {
+  color: rgba(31, 33, 36, 0.9);
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+}
+
 .report-view-body {
   display: flex;
   flex-direction: column;
@@ -2454,6 +2500,13 @@ button:focus-visible {
 
 @media (prefers-reduced-transparency: reduce) {
   .widget-shell--transparent {
+    background:
+      linear-gradient(158deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 55%),
+      rgba(24, 27, 33, 0.98);
+  }
+
+  /* mac 的薄 tint 依赖系统模糊；用户关掉透明度后必须自己变成近实心。 */
+  .widget-shell--mac:not(.widget-shell--glass-css) {
     background:
       linear-gradient(158deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 55%),
       rgba(24, 27, 33, 0.98);
