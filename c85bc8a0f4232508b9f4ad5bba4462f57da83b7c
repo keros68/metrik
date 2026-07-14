@@ -1,0 +1,18 @@
+BROKEN IN ISOLATION -- do not check out, bisect through, or cherry-pick this commit alone.
+
+Two unrelated changes were committed together by mistake (a `git add -A` on a
+working tree that another agent was concurrently editing):
+
+  * The intended change: the parse-horizon and per-source-ingest performance fix
+    (engine.rs, storage.rs, domain.rs, 001_init.sql, usageClient.js, docs).
+    This part is complete and correct.
+
+  * Swept in by accident: the macOS menu-bar frontend work in App.jsx and
+    styles.css. Its Rust and windowClient.js halves landed later, in e105659.
+
+Because App.jsx here imports `isMacPlatform` from windowClient.js but that
+export only arrives in e105659, `npm run build` fails at this commit.
+
+History was not rewritten: v0.4.0 was released from this lineage, and rebasing
+would detach the released tag from main. Both changes are intact and correct as
+of e105659 and later.
