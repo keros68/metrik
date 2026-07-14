@@ -7,8 +7,83 @@ const WINDOW_SIZES = {
 
 let compactPosition = null;
 
+const POSITION_KEY = "metrik:widgetPosition";
+
 function isDesktop() {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
+}
+
+function readStoredPosition() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(POSITION_KEY) || "null");
+    if (!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/// 记住小组件的物理坐标；边缘挂靠把窗口滑出屏幕时不记，避免下次开机在屏外。
+async function rememberCompactPosition(api, appWindow) {
+  const [pos, monitor] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    api.currentMonitor().catch(() => null),
+  ]);
+  if (!pos) return;
+  if (monitor && pos.y < monitor.position.y) return;
+  compactPosition = pos;
+  localStorage.setItem(POSITION_KEY, JSON.stringify({ x: pos.x, y: pos.y }));
+}
+
+/// 启动时把小组件放回上次的位置；坐标已不在任何显示器上（拔了扩展屏等）时居中。
+async function restoreWindowPosition() {
+  const api = await windowApi();
+  if (!api) return;
+  const stored = readStoredPosition();
+  if (!stored) return;
+
+  const appWindow = api.getCurrentWindow();
+  const [size, monitors] = await Promise.all([
+    appWindow.outerSize().catch(() => null),
+    api.availableMonitors().catch(() => []),
+  ]);
+  const width = size?.width || 320;
+  const height = size?.height || 320;
+  // 至少有一部分窗口落在某块屏幕的可见区域内才算有效坐标。
+  const onScreen = (monitors || []).some((monitor) => {
+    const left = monitor.position.x;
+    const top = monitor.position.y;
+    return (
+      stored.x + width > left &&
+      stored.x < left + monitor.size.width &&
+      stored.y + height > top &&
+      stored.y < top + monitor.size.height
+    );
+  });
+  if (!onScreen) return;
+
+  compactPosition = new api.PhysicalPosition(stored.x, stored.y);
+  await appWindow.setPosition(compactPosition).catch(() => {});
+}
+
+/// 拖动结束后持久化小组件位置（expanded 形态不记）。
+async function startPositionMemory(getMode) {
+  const api = await windowApi();
+  if (!api) return () => {};
+  const appWindow = api.getCurrentWindow();
+  let timer = null;
+  const unlistenPromise = appWindow.onMoved(() => {
+    if (getMode() !== "compact") return;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      rememberCompactPosition(api, appWindow).catch(() => {});
+    }, 400);
+  });
+  return async () => {
+    window.clearTimeout(timer);
+    const unlisten = await unlistenPromise.catch(() => null);
+    unlisten?.();
+  };
 }
 
 function isWindowsPlatform() {
@@ -20,6 +95,11 @@ async function windowApi() {
   return import("@tauri-apps/api/window");
 }
 
+async function makeWebviewTransparent() {
+  const api = await import("@tauri-apps/api/webview");
+  await api.getCurrentWebview().setBackgroundColor([0, 0, 0, 0]);
+}
+
 async function applyWindowMode(mode) {
   const api = await windowApi();
   if (!api) return;
@@ -28,6 +108,10 @@ async function applyWindowMode(mode) {
   const size = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
 
   if (mode === "expanded") {
+    // 小插件不占任务栏；完整视图是常规窗口，要出现在任务栏里。
+    // Windows 任务栏只在窗口重新显示时重读该样式，必须先藏后显才生效。
+    await appWindow.hide().catch(() => {});
+    await appWindow.setSkipTaskbar(false).catch(() => {});
     compactPosition = await appWindow.outerPosition().catch(() => null);
     const monitor = await api.currentMonitor().catch(() => null);
     const workArea = monitor?.workArea?.size?.toLogical(monitor.scaleFactor);
@@ -41,47 +125,75 @@ async function applyWindowMode(mode) {
     await appWindow.setMinSize(new api.LogicalSize(minWidth, minHeight));
     await appWindow.setSize(new api.LogicalSize(targetWidth, targetHeight));
     await appWindow.center();
+    await appWindow.show().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
     return;
   }
 
   if (await appWindow.isMaximized().catch(() => false)) {
     await appWindow.unmaximize();
   }
+  await appWindow.hide().catch(() => {});
+  await appWindow.setSkipTaskbar(true).catch(() => {});
   await appWindow.setMinSize(null);
   await appWindow.setMaximizable(false);
   await appWindow.setSize(new api.LogicalSize(size.width, size.height));
   await appWindow.setResizable(false);
   await appWindow.setMinSize(new api.LogicalSize(size.minWidth, size.minHeight));
 
-  if (compactPosition) {
-    await appWindow.setPosition(compactPosition).catch(() => appWindow.center());
+  const stored = readStoredPosition();
+  const target =
+    compactPosition || (stored ? new api.PhysicalPosition(stored.x, stored.y) : null);
+  if (target) {
+    await appWindow.setPosition(target).catch(() => appWindow.center());
   } else {
     await appWindow.center();
   }
+  await appWindow.show().catch(() => {});
+  await appWindow.setFocus().catch(() => {});
 }
 
-function glassTint() {
-  const dark = typeof window !== "undefined"
-    && window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
-  // SWCA Acrylic 的 tint：亮主题近白高透，暗主题深灰。
-  return dark ? [24, 26, 32, 170] : [252, 251, 250, 150];
+function glassOptions() {
+  // 玻璃固定为深色 HUD，不随系统主题；tint 只供旧系统的 SWCA 回退使用。
+  return {
+    dark: true,
+    tint: [18, 20, 25, 96],
+  };
 }
 
+/// 返回实际生效的材质："native"（系统模糊已启用）、"css"（原生不可用，
+/// 由 CSS 近实心玻璃承担外观）或 "off"。调用方据此切换样式层。
 async function setWindowGlass(enabled) {
-  if (!isDesktop()) return;
+  if (!isDesktop()) return enabled ? "css" : "off";
   if (isWindowsPlatform()) {
-    // Win11 的 DWM Acrylic 忽略 tint 且偏灰；改走 SWCA Acrylic，
-    // 用自定义 tint 得到 CodexBar 式的通透磨砂。
-    await invoke("set_glass_backdrop", { enabled, tint: glassTint() });
-    return;
+    // WebView2 has its own composition surface. Make that surface transparent
+    // before applying the HWND backdrop, otherwise it masks the native material.
+    await makeWebviewTransparent();
+    if (!enabled) {
+      await invoke("set_glass_backdrop", { enabled, ...glassOptions() });
+      return "off";
+    }
+    try {
+      await invoke("set_glass_backdrop", { enabled, ...glassOptions() });
+      return "native";
+    } catch (error) {
+      console.warn("Native glass backdrop unavailable, using CSS glass.", error);
+      return "css";
+    }
   }
   const api = await windowApi();
-  if (!api) return;
+  if (!api) return enabled ? "css" : "off";
   const appWindow = api.getCurrentWindow();
-  if (enabled) {
-    await appWindow.setEffects({ effects: ["popover", "hudWindow", "blur"] });
-  } else {
+  if (!enabled) {
     await appWindow.clearEffects();
+    return "off";
+  }
+  try {
+    await appWindow.setEffects({ effects: ["popover", "hudWindow", "blur"] });
+    return "native";
+  } catch (error) {
+    console.warn("Native window effects unavailable, using CSS glass.", error);
+    return "css";
   }
 }
 
@@ -116,6 +228,8 @@ async function startEdgeDock({ getMode, getPinned }) {
   };
 
   const undock = async () => {
+    // 已收起时先滑回可见位置，再解除挂靠，避免窗口留在屏幕外。
+    if (dock && hidden) await slideTo(dock.exposedY);
     dock = null;
     hidden = false;
     outsideSinceMs = null;
@@ -125,6 +239,11 @@ async function startEdgeDock({ getMode, getPinned }) {
 
   const poll = async () => {
     if (disposed || !dock) return;
+    // 固定 = 锁定位置：立即解除挂靠，不再自动收起。
+    if (getPinned()) {
+      await undock();
+      return;
+    }
     let cursor;
     try {
       cursor = await api.cursorPosition();
@@ -158,7 +277,7 @@ async function startEdgeDock({ getMode, getPinned }) {
 
   const check = async () => {
     if (disposed) return;
-    if (getMode() !== "compact") {
+    if (getMode() !== "compact" || getPinned()) {
       if (dock) await undock();
       return;
     }
@@ -224,6 +343,26 @@ async function setWindowPinned(pinned) {
   await api.getCurrentWindow().setAlwaysOnTop(pinned);
 }
 
+async function autostartApi() {
+  if (!isDesktop()) return null;
+  return import("@tauri-apps/plugin-autostart");
+}
+
+/// 开机自启状态；浏览器演示模式返回 null（设置页据此隐藏该项）。
+async function getAutostart() {
+  const api = await autostartApi();
+  if (!api) return null;
+  return api.isEnabled().catch(() => null);
+}
+
+async function setAutostart(enabled) {
+  const api = await autostartApi();
+  if (!api) throw new Error("浏览器演示模式不能配置开机启动");
+  if (enabled) await api.enable();
+  else await api.disable();
+  return api.isEnabled().catch(() => enabled);
+}
+
 async function minimizeWindow() {
   const api = await windowApi();
   if (!api) return;
@@ -240,9 +379,13 @@ export {
   WINDOW_SIZES,
   applyWindowMode,
   closeWindow,
+  getAutostart,
   isDesktop,
   minimizeWindow,
+  restoreWindowPosition,
+  setAutostart,
   setWindowGlass,
   setWindowPinned,
   startEdgeDock,
+  startPositionMemory,
 };

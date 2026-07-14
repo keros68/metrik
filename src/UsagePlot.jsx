@@ -9,33 +9,42 @@ function shortTokens(value) {
   return String(Math.round(value));
 }
 
+// 图表专用降饱和配色（与报告页一致）：品牌色直接上图偏"纯"，柔和一档。
 const AGENT_LINE_COLORS = {
-  claude: { stroke: "#e36b49", fill: "rgba(227, 107, 73, 0.11)" },
-  zcode: { stroke: "#6a5ae0", fill: "rgba(106, 90, 224, 0.11)" },
-  opencode: { stroke: "#1f9d8b", fill: "rgba(31, 157, 139, 0.11)" },
-  default: { stroke: "#246bdb", fill: "rgba(36, 107, 219, 0.11)" },
+  codex: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
+  claude: { stroke: "#d98663", fill: "rgba(217, 134, 99, 0.09)" },
+  zcode: { stroke: "#8b80d9", fill: "rgba(139, 128, 217, 0.09)" },
+  opencode: { stroke: "#4aa392", fill: "rgba(74, 163, 146, 0.09)" },
+  kimi: { stroke: "#6f8fd6", fill: "rgba(111, 143, 214, 0.09)" },
+  default: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
 };
 
-function pointTotal(point, visibleAgents) {
-  return visibleAgents.reduce(
-    (sum, agent) => sum + Number(point.tokens?.[agent] || 0),
-    0,
-  );
+function agentPalette(agent) {
+  return AGENT_LINE_COLORS[agent] || AGENT_LINE_COLORS.default;
 }
 
-export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }) {
+export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = {}, formatTokens }) {
   const shellRef = useRef(null);
   const hostRef = useRef(null);
   const tooltipRef = useRef(null);
   const tooltipTimeRef = useRef(null);
   const tooltipValueRef = useRef(null);
-  const palette = AGENT_LINE_COLORS[selectedAgent] || AGENT_LINE_COLORS.default;
-  const lineColor = palette.stroke;
-  const lineFill = palette.fill;
+
+  // "全部"时按 Agent 分色画多条线，只画周期内有数据的；全为零时保底一条，避免空图。
+  const activeAgents = useMemo(() => {
+    if (selectedAgent !== "all") return [selectedAgent];
+    const withData = visibleAgents.filter((agent) =>
+      series.some((point) => Number(point.tokens?.[agent] || 0) > 0),
+    );
+    return withData.length ? withData : visibleAgents.slice(0, 1);
+  }, [selectedAgent, series, visibleAgents]);
+  const multiLine = activeAgents.length > 1;
+  const primaryColor = agentPalette(activeAgents[0]).stroke;
+
   const accessibleRows = useMemo(() => series.map((point) => ({
     label: point.label,
-    value: pointTotal(point, visibleAgents),
-  })), [series, visibleAgents]);
+    values: activeAgents.map((agent) => Number(point.tokens?.[agent] || 0)),
+  })), [series, activeAgents]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -45,10 +54,9 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }
 
     const data = [
       series.map((_, index) => index),
-      series.map((point) => pointTotal(point, visibleAgents)),
+      ...activeAgents.map((agent) => series.map((point) => Number(point.tokens?.[agent] || 0))),
     ];
 
-    const visibleTotal = (index) => data[1][index];
     const xStride = series.length <= 7 ? 1 : series.length <= 25 ? 4 : 5;
 
     const plot = new uPlot(
@@ -94,14 +102,15 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }
         ],
         series: [
           {},
-          {
-            label: "当前周期",
-            stroke: lineColor,
+          ...activeAgents.map((agent) => ({
+            label: agentLabels[agent] || agent,
+            stroke: agentPalette(agent).stroke,
             width: 2,
-            fill: lineFill,
+            // 低透明面积填充：多线时也保留，柔和不压盖。
+            fill: agentPalette(agent).fill,
             paths: uPlot.paths.spline(),
             points: { show: false },
-          },
+          })),
         ],
         hooks: {
           setCursor: [
@@ -114,7 +123,16 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }
 
               tooltip.hidden = false;
               tooltipTimeRef.current.textContent = series[index].label;
-              tooltipValueRef.current.textContent = `${formatTokens(visibleTotal(index))} tokens`;
+              const valueHost = tooltipValueRef.current;
+              valueHost.replaceChildren();
+              activeAgents.forEach((agent, agentIndex) => {
+                const row = document.createElement("strong");
+                row.style.setProperty("--series-color", agentPalette(agent).stroke);
+                row.textContent = multiLine
+                  ? `${agentLabels[agent] || agent} ${formatTokens(data[agentIndex + 1][index])}`
+                  : `${formatTokens(data[agentIndex + 1][index])} tokens`;
+                valueHost.appendChild(row);
+              });
 
               const desiredLeft = u.cursor.left + 20;
               const maxLeft = Math.max(8, shell.clientWidth - tooltip.offsetWidth - 8);
@@ -147,21 +165,33 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, formatTokens }
       plot.destroy();
       host.replaceChildren();
     };
-  }, [formatTokens, lineColor, lineFill, selectedAgent, series, visibleAgents]);
+  }, [activeAgents, agentLabels, formatTokens, multiLine, series]);
 
   return (
-    <div className="usage-plot-shell" ref={shellRef} style={{ "--series-color": lineColor }}>
+    <div className="usage-plot-shell" ref={shellRef} style={{ "--series-color": primaryColor }}>
       <div className="usage-plot" ref={hostRef} />
       <div className="chart-tooltip chart-tooltip--floating" ref={tooltipRef} hidden>
         <span ref={tooltipTimeRef} />
-        <strong ref={tooltipValueRef} />
+        <div className="chart-tooltip-values" ref={tooltipValueRef} />
       </div>
       <table className="sr-only">
         <caption>当前筛选条件下的用量趋势数据</caption>
-        <thead><tr><th scope="col">时间</th><th scope="col">tokens</th></tr></thead>
+        <thead>
+          <tr>
+            <th scope="col">时间</th>
+            {activeAgents.map((agent) => (
+              <th scope="col" key={agent}>{agentLabels[agent] || agent}</th>
+            ))}
+          </tr>
+        </thead>
         <tbody>
           {accessibleRows.map((row, index) => (
-            <tr key={`${row.label}-${index}`}><th scope="row">{row.label}</th><td>{formatTokens(row.value)}</td></tr>
+            <tr key={`${row.label}-${index}`}>
+              <th scope="row">{row.label}</th>
+              {row.values.map((value, valueIndex) => (
+                <td key={valueIndex}>{formatTokens(value)}</td>
+              ))}
+            </tr>
           ))}
         </tbody>
       </table>

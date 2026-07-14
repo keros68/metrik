@@ -13,3 +13,4 @@ Thumbs.db
 .agents/
 .codex/
 .playwright-cli/
+output/

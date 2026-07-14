@@ -18,7 +18,7 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0 },
+    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0 },
   }));
 }
 
@@ -66,6 +66,19 @@ function demoQuotaView(remainingPercent, resetsInMinutes) {
   };
 }
 
+// 演示分量比例取自真实日志的典型形态：缓存读远大于其余分量。
+function demoAgentSummary(id, tokens, totalTokens) {
+  return {
+    id,
+    tokens,
+    inputUncached: Math.round(tokens * 0.07),
+    cacheRead: Math.round(tokens * 0.82),
+    cacheWrite: Math.round(tokens * 0.06),
+    output: tokens - Math.round(tokens * 0.07) - Math.round(tokens * 0.82) - Math.round(tokens * 0.06),
+    share: (tokens / totalTokens) * 100,
+  };
+}
+
 function demoSnapshot(period = "today") {
   const scale = PERIOD_SCALE[period]?.factor || 1;
   const codexTokens = Math.round(892_400 * scale);
@@ -101,10 +114,31 @@ function demoSnapshot(period = "today") {
       },
     ],
     agents: [
-      { id: "codex", tokens: codexTokens, share: (codexTokens / totalTokens) * 100 },
-      { id: "claude", tokens: claudeTokens, share: (claudeTokens / totalTokens) * 100 },
-      { id: "zcode", tokens: zcodeTokens, share: (zcodeTokens / totalTokens) * 100 },
-      { id: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
+      demoAgentSummary("codex", codexTokens, totalTokens),
+      demoAgentSummary("claude", claudeTokens, totalTokens),
+      demoAgentSummary("zcode", zcodeTokens, totalTokens),
+      demoAgentSummary("opencode", opencodeTokens, totalTokens),
+    ],
+    cost: {
+      available: true,
+      // 演示值按 gpt-5.2 / claude 价目的量级粗算。
+      totalUsd: 5.62 * scale,
+      unpricedTokens: zcodeTokens + opencodeTokens,
+      pricingAsOf: "2026-07-13",
+      byAgent: [
+        { agent: "codex", usd: 2.31 * scale, unpricedTokens: 0 },
+        { agent: "claude", usd: 3.31 * scale, unpricedTokens: 0 },
+        { agent: "zcode", usd: 0, unpricedTokens: zcodeTokens },
+        { agent: "opencode", usd: 0, unpricedTokens: opencodeTokens },
+      ],
+    },
+    models: [
+      { model: "gpt-5.2-codex", agent: "codex", tokens: Math.round(codexTokens * 0.9), share: (codexTokens * 0.9 / totalTokens) * 100 },
+      { model: "claude-fable-5", agent: "claude", tokens: Math.round(claudeTokens * 0.72), share: (claudeTokens * 0.72 / totalTokens) * 100 },
+      { model: "claude-sonnet-5", agent: "claude", tokens: Math.round(claudeTokens * 0.28), share: (claudeTokens * 0.28 / totalTokens) * 100 },
+      { model: "gpt-5.2", agent: "codex", tokens: Math.round(codexTokens * 0.1), share: (codexTokens * 0.1 / totalTokens) * 100 },
+      { model: "glm-5", agent: "zcode", tokens: zcodeTokens, share: (zcodeTokens / totalTokens) * 100 },
+      { model: "unknown", agent: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
@@ -134,6 +168,7 @@ function pendingSnapshot(period = "today") {
       { id: "zcode", tokens: 0, share: 0 },
       { id: "opencode", tokens: 0, share: 0 },
     ],
+    models: [],
     sources: [
       {
         id: "pending",
@@ -165,6 +200,7 @@ function unavailableSnapshot(period = "today") {
       { id: "zcode", tokens: 0, share: 0 },
       { id: "opencode", tokens: 0, share: 0 },
     ],
+    models: [],
     sources: [
       {
         id: "load-error",
@@ -190,6 +226,126 @@ async function loadUsageSnapshot(period = "today") {
     console.warn("Unable to load live usage.", error);
     return unavailableSnapshot(period);
   }
+}
+
+function demoReport() {
+  const days = [];
+  const now = new Date();
+  const byAgentTotals = { codex: 0, claude: 0, zcode: 0, opencode: 0 };
+  const activeDays = { codex: 0, claude: 0, zcode: 0, opencode: 0 };
+  let total = 0;
+  for (let offset = 181; offset >= 0; offset -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+    const weekday = date.getDay();
+    const wave = 0.55 + ((offset * 13) % 17) / 17;
+    const weekend = weekday === 0 || weekday === 6 ? 0.3 : 1;
+    // 演示形态：约 8% 的天完全没有用量。
+    if ((offset * 7) % 12 === 0) continue;
+    const codex = Math.round(9_800_000 * wave * weekend);
+    const claude = Math.round(6_400_000 * (1.4 - wave / 2) * weekend);
+    const zcode = (offset % 5 === 0) ? Math.round(900_000 * wave) : 0;
+    const opencode = (offset % 9 === 0) ? Math.round(600_000 * wave) : 0;
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const byAgent = { codex, claude, zcode, opencode };
+    const dayTotal = codex + claude + zcode + opencode;
+    Object.entries(byAgent).forEach(([id, value]) => {
+      byAgentTotals[id] += value;
+      if (value > 0) activeDays[id] += 1;
+    });
+    total += dayTotal;
+    days.push({ date: key, tokens: dayTotal, byAgent });
+  }
+  return {
+    isDemo: true,
+    loadError: false,
+    days,
+    firstEventMs: now.getTime() - 181 * 86_400_000,
+    lastEventMs: now.getTime(),
+    totalTokens: total,
+    topModels: [
+      { model: "gpt-5.2-codex", agent: "codex", tokens: Math.round(byAgentTotals.codex * 0.9), share: (byAgentTotals.codex * 0.9 / total) * 100 },
+      { model: "claude-fable-5", agent: "claude", tokens: Math.round(byAgentTotals.claude * 0.72), share: (byAgentTotals.claude * 0.72 / total) * 100 },
+      { model: "claude-sonnet-5", agent: "claude", tokens: Math.round(byAgentTotals.claude * 0.28), share: (byAgentTotals.claude * 0.28 / total) * 100 },
+      { model: "gpt-5.2", agent: "codex", tokens: Math.round(byAgentTotals.codex * 0.1), share: (byAgentTotals.codex * 0.1 / total) * 100 },
+      { model: "glm-5", agent: "zcode", tokens: byAgentTotals.zcode, share: (byAgentTotals.zcode / total) * 100 },
+    ],
+    agents: ["codex", "claude", "zcode", "opencode"].map((id) => ({
+      id,
+      tokens: byAgentTotals[id],
+      activeDays: activeDays[id],
+    })),
+    streakDays: 5,
+  };
+}
+
+function demoSessions(period = "today") {
+  const now = Date.now();
+  const dayCount = period === "today" ? 1 : period === "week" ? 7 : 30;
+  const sessions = [];
+  const specs = [
+    { agent: "codex", model: "gpt-5.2-codex", base: 12_400_000, usd: 0.42 },
+    { agent: "claude", model: "claude-fable-5", base: 38_200_000, usd: 1.92 },
+    { agent: "claude", model: "claude-sonnet-5", base: 6_800_000, usd: 0.21 },
+    { agent: "codex", model: "gpt-5.2", base: 3_100_000, usd: 0.11 },
+  ];
+  for (let day = 0; day < Math.min(dayCount, 5); day += 1) {
+    specs.forEach((spec, index) => {
+      if ((day + index) % 3 === 2) return;
+      const end = now - day * 86_400_000 - (index * 2 + 1) * 3_600_000;
+      const tokens = Math.round(spec.base * (0.6 + ((day + index) % 4) / 5));
+      sessions.push({
+        agent: spec.agent,
+        sessionId: `demo-${day}-${index}-${spec.agent}`,
+        startMs: end - (28 + index * 17) * 60_000,
+        endMs: end,
+        tokens,
+        inputUncached: Math.round(tokens * 0.07),
+        cacheRead: Math.round(tokens * 0.82),
+        cacheWrite: Math.round(tokens * 0.06),
+        output: Math.round(tokens * 0.05),
+        model: spec.model,
+        models: [spec.model],
+        usd: spec.usd * (0.6 + ((day + index) % 4) / 5),
+        eventCount: 40 + index * 13,
+      });
+    });
+  }
+  sessions.sort((a, b) => b.endMs - a.endMs);
+  return { period, sessions, totalSessions: sessions.length, truncated: false, isDemo: true, loadError: false };
+}
+
+async function getUsageSessions(period = "today") {
+  if (!isTauriRuntime()) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return demoSessions(period);
+  }
+  try {
+    return await invoke("usage_sessions", { period });
+  } catch (error) {
+    console.warn("Unable to load usage sessions.", error);
+    return { period, sessions: [], totalSessions: 0, truncated: false, isDemo: false, loadError: true };
+  }
+}
+
+async function getUsageReport() {
+  if (!isTauriRuntime()) {
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    return demoReport();
+  }
+  try {
+    return await invoke("usage_report");
+  } catch (error) {
+    console.warn("Unable to load the usage report.", error);
+    return { loadError: true, isDemo: false, days: [], topModels: [], agents: [], totalTokens: 0, streakDays: 0, firstEventMs: null, lastEventMs: null };
+  }
+}
+
+// 桌面端 WebView 不响应 blob 下载，导出走后端写入下载目录；返回完整路径。
+async function exportCsvFile(fileName, content) {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  return invoke("export_csv", { fileName, content });
 }
 
 async function rebuildLocalLedger(period = "today") {
@@ -239,6 +395,20 @@ async function setClaudeHook(enabled) {
   return invoke("set_claude_hook", { enabled });
 }
 
+async function getClaudeOauthStatus() {
+  if (!isTauriRuntime()) {
+    return { demo: true, enabled: false, credentialsPresent: false, scopeOk: false };
+  }
+  return invoke("claude_oauth_status");
+}
+
+async function setClaudeOauth(enabled) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置官方额度来源");
+  }
+  return invoke("set_claude_oauth", { enabled });
+}
+
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
   isTauriRuntime() ? pendingSnapshot(period) : demoSnapshot(period)
@@ -246,9 +416,14 @@ loadUsageSnapshot.initial = (period = "today") => (
 
 export {
   loadUsageSnapshot as getUsageSnapshot,
+  getUsageReport,
+  getUsageSessions,
+  exportCsvFile,
   rebuildLocalLedger,
   getSyncSettings,
   configureSync,
   getClaudeHookStatus,
   setClaudeHook,
+  getClaudeOauthStatus,
+  setClaudeOauth,
 };
