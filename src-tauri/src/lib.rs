@@ -2,6 +2,7 @@ mod adapters;
 mod app_server;
 mod claude_hook;
 mod claude_oauth;
+mod coding_quota;
 mod domain;
 mod engine;
 #[cfg(target_os = "macos")]
@@ -13,6 +14,7 @@ mod sync;
 
 use anyhow::{Context, Result};
 use domain::{QuotaSample, UsageReport, UsageSessions, UsageSnapshot};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 
 type SharedQuotaCache = Arc<Mutex<Option<(Instant, Vec<QuotaSample>)>>>;
+/// 走网络的官方配额（GLM/Kimi）按 adapter 分桶缓存，跨快照持有以限流。
+type SharedHttpQuotaCache = Arc<Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>>;
 
 const DATABASE_FILE_NAME: &str = "metrik.sqlite3";
 const RECOVERY_DATABASE_FILE_NAME: &str = "metrik.recovery.sqlite3";
@@ -34,6 +38,7 @@ struct AppState {
     scan_gate: Arc<Mutex<()>>,
     quota_cache: SharedQuotaCache,
     claude_quota_cache: SharedQuotaCache,
+    http_quota_cache: SharedHttpQuotaCache,
 }
 
 fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
@@ -337,13 +342,20 @@ async fn usage_snapshot(
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
     let claude_quota_cache = Arc::clone(&state.claude_quota_cache);
+    let http_quota_cache = Arc::clone(&state.http_quota_cache);
 
     tauri::async_runtime::spawn_blocking(move || {
         let _gate = scan_gate
             .lock()
             .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        engine::build_snapshot(&database_path, &period, &quota_cache, &claude_quota_cache)
-            .map_err(|error| error.to_string())
+        engine::build_snapshot(
+            &database_path,
+            &period,
+            &quota_cache,
+            &claude_quota_cache,
+            &http_quota_cache,
+        )
+        .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("usage scan task failed: {error}"))?
@@ -417,14 +429,21 @@ async fn rebuild_local_ledger(
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
     let claude_quota_cache = Arc::clone(&state.claude_quota_cache);
+    let http_quota_cache = Arc::clone(&state.http_quota_cache);
 
     tauri::async_runtime::spawn_blocking(move || {
         let _gate = scan_gate
             .lock()
             .map_err(|_| "usage scan lock poisoned".to_owned())?;
         storage::reset_derived_ledger(&database_path).map_err(|error| error.to_string())?;
-        engine::build_snapshot(&database_path, &period, &quota_cache, &claude_quota_cache)
-            .map_err(|error| error.to_string())
+        engine::build_snapshot(
+            &database_path,
+            &period,
+            &quota_cache,
+            &claude_quota_cache,
+            &http_quota_cache,
+        )
+        .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("local ledger rebuild task failed: {error}"))?
@@ -1077,6 +1096,7 @@ pub fn run() {
                 scan_gate: Arc::new(Mutex::new(())),
                 quota_cache: Arc::new(Mutex::new(None)),
                 claude_quota_cache: Arc::new(Mutex::new(None)),
+                http_quota_cache: Arc::new(Mutex::new(HashMap::new())),
             });
             Ok(())
         })

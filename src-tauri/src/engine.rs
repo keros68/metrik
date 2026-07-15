@@ -5,6 +5,7 @@ use crate::adapters::{
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
 use crate::claude_oauth::{self, ClaudeOauth};
+use crate::coding_quota;
 use crate::domain::{
     AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage, IndexingView,
     ModelSummary, QuotaSample, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView,
@@ -114,6 +115,7 @@ pub fn build_snapshot(
     period: &str,
     quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
     claude_quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
+    http_quota_cache: &Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>,
 ) -> Result<UsageSnapshot> {
     let mut connection = storage::open_database(database_path)?;
     let now = Utc::now().timestamp_millis();
@@ -150,6 +152,29 @@ pub fn build_snapshot(
     }
     for sample in claude_samples {
         storage::upsert_quota(&connection, &sample)?;
+    }
+
+    // GLM/Kimi 官方配额：与 codex/claude 同型，一次实时 GET，跨快照缓存限流。
+    // 取到才整体替换该 Agent 的窗口；无凭据/失败时保留旧行（会随时效变陈旧），
+    // 绝不写零值或估算冒充。
+    for (adapter_id, fetch) in [
+        (
+            "zcode",
+            coding_quota::fetch_zcode_quota as fn(StdDuration) -> Result<Vec<QuotaSample>>,
+        ),
+        ("kimi", coding_quota::fetch_kimi_quota),
+    ] {
+        if let Ok(samples) = cached_coding_quota(http_quota_cache, adapter_id, fetch) {
+            if !samples.is_empty() {
+                connection.execute(
+                    "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
+                    [adapter_id],
+                )?;
+                for sample in &samples {
+                    storage::upsert_quota(&connection, sample)?;
+                }
+            }
+        }
     }
 
     storage::prune_missing_sources(&mut connection)?;
@@ -503,6 +528,34 @@ fn cached_claude_oauth_quota(
         }
         Err(error) => {
             *guard = Some((Instant::now(), Vec::new()));
+            Err(error)
+        }
+    }
+}
+
+/// GLM/Kimi 等走网络的官方配额缓存拉取：按 adapter 分桶，成功 120s、失败 300s。
+/// adapter 每次快照都重建，故缓存不能放 adapter 里，必须由 engine 层跨快照持有。
+fn cached_coding_quota(
+    cache: &Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>,
+    adapter_id: &'static str,
+    fetch: fn(StdDuration) -> Result<Vec<QuotaSample>>,
+) -> Result<Vec<QuotaSample>> {
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("coding quota cache lock poisoned"))?;
+    if let Some((captured, value)) = guard.get(adapter_id) {
+        let ttl = if value.is_empty() { 300 } else { 120 };
+        if captured.elapsed() < StdDuration::from_secs(ttl) {
+            return Ok(value.clone());
+        }
+    }
+    match fetch(StdDuration::from_secs(6)) {
+        Ok(value) => {
+            guard.insert(adapter_id, (Instant::now(), value.clone()));
+            Ok(value)
+        }
+        Err(error) => {
+            guard.insert(adapter_id, (Instant::now(), Vec::new()));
             Err(error)
         }
     }
@@ -2341,8 +2394,15 @@ mod tests {
         ));
         let quota_cache = Mutex::new(None);
         let claude_quota_cache = Mutex::new(None);
-        let snapshot =
-            build_snapshot(&database, "today", &quota_cache, &claude_quota_cache).unwrap();
+        let http_quota_cache = Mutex::new(HashMap::new());
+        let snapshot = build_snapshot(
+            &database,
+            "today",
+            &quota_cache,
+            &claude_quota_cache,
+            &http_quota_cache,
+        )
+        .unwrap();
         println!(
             "live snapshot: total={}, codex={}, claude={}, quota_available={}, quota_remaining={:.1}, quota_source={}",
             snapshot.total_tokens,
