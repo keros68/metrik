@@ -966,7 +966,9 @@ fn set_native_theme(window: tauri::WebviewWindow, theme: Option<String>) -> Resu
             Some("light") => Some(tauri::Theme::Light),
             _ => None,
         };
-        window.set_theme(resolved).map_err(|error| error.to_string())?;
+        window
+            .set_theme(resolved)
+            .map_err(|error| error.to_string())?;
     }
     #[cfg(not(target_os = "macos"))]
     {
