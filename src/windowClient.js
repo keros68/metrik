@@ -371,6 +371,13 @@ async function startEdgeDock({ getMode, getPinned }) {
   };
 }
 
+/// 让完整视图的原生窗口主题跟随用户选择（macOS 标题栏）；"自动"传 null 交回系统。
+/// 后端只在 macOS 生效，其它平台与非桌面环境安静跳过。
+async function setNativeTheme(theme) {
+  if (!isDesktop()) return;
+  await invoke("set_native_theme", { theme: theme ?? null }).catch(() => {});
+}
+
 async function setWindowPinned(pinned) {
   const api = await windowApi();
   if (!api) return;
@@ -448,6 +455,7 @@ export {
   openExpandedWindow,
   restoreWindowPosition,
   setAutostart,
+  setNativeTheme,
   setWindowGlass,
   setWindowPinned,
   startEdgeDock,

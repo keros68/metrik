@@ -52,6 +52,7 @@ import {
   openExpandedWindow,
   restoreWindowPosition,
   setAutostart,
+  setNativeTheme,
   setWindowGlass,
   setWindowPinned,
   startEdgeDock,
@@ -2195,6 +2196,13 @@ export function App() {
       delete root.dataset.theme;
     }
   }, [viewMode, darkTheme]);
+  // macOS 完整视图是独立原生窗口：手动明暗时让原生标题栏跟随内容；"自动"传 null
+  // 交回系统（内容也跟随系统，两者一致）。只作用于展开窗口，不碰紧凑面板；
+  // 其它平台后端 no-op。
+  useEffect(() => {
+    if (viewMode !== "expanded") return;
+    setNativeTheme(theme === "auto" ? null : theme);
+  }, [viewMode, theme]);
   // 小插件展示哪些 Agent 由用户在设置里勾选；默认 Codex + Claude。
   const [widgetAgents, setWidgetAgents] = useState(() => {
     try {

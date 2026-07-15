@@ -954,6 +954,27 @@ async fn set_claude_hook(enabled: bool) -> Result<claude_hook::ClaudeHookStatus,
     .map_err(|error| format!("claude hook task failed: {error}"))?
 }
 
+/// 完整视图在 macOS 是带原生标题栏的独立窗口：用户手动选择明暗、且与系统相反时，
+/// 让原生标题栏跟随内容主题（"自动"传 None，交回系统决定，与内容一致）。
+/// Windows 的完整视图无边框、无原生标题栏，无需处理，这里对其它平台是 no-op。
+#[tauri::command]
+fn set_native_theme(window: tauri::WebviewWindow, theme: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let resolved = match theme.as_deref() {
+            Some("dark") => Some(tauri::Theme::Dark),
+            Some("light") => Some(tauri::Theme::Light),
+            _ => None,
+        };
+        window.set_theme(resolved).map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&window, theme);
+    }
+    Ok(())
+}
+
 /// macOS 的完整视图是一个独立窗口（面板不能兼任），Windows 仍是同一个窗口变形，
 /// 所以这个命令只在 macOS 上有实现，前端也只在 macOS 上调用它。
 #[tauri::command]
@@ -1125,6 +1146,7 @@ pub fn run() {
             set_claude_oauth,
             set_taskbar_button,
             set_glass_backdrop,
+            set_native_theme,
             open_expanded_window
         ])
         .run(tauri::generate_context!())
