@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -358,7 +358,7 @@ function PeriodControl({ period, onChange, compact = false, fullWidthArea = fals
   );
 }
 
-function UsageChart({ snapshot, selectedAgent }) {
+function UsageChart({ snapshot, selectedAgent, dark = false }) {
   const visibleAgents = selectedAgent === "all" ? AGENT_ORDER : [selectedAgent];
   // 图例与图中的线一致：只列周期内有数据的 Agent。
   const legendAgents = selectedAgent === "all"
@@ -378,6 +378,7 @@ function UsageChart({ snapshot, selectedAgent }) {
             selectedAgent={selectedAgent}
             agentLabels={AGENT_LABELS}
             formatTokens={exactTokens}
+            dark={dark}
           />
         </Suspense>
       </div>
@@ -1344,6 +1345,36 @@ function UpdateBlock() {
   );
 }
 
+const THEME_OPTIONS = [
+  { id: "auto", label: "自动" },
+  { id: "light", label: "亮色" },
+  { id: "dark", label: "暗色" },
+];
+
+function ThemeCard({ theme, onThemeChange }) {
+  return (
+    <div className="settings-card">
+      <h2>完整视图外观</h2>
+      <p className="settings-muted">
+        选择大窗口的明暗主题。“自动”跟随系统外观。桌面小插件不受此设置影响。
+      </p>
+      <div className="theme-toggle" role="group" aria-label="完整视图主题">
+        {THEME_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={theme === option.id ? "is-selected" : ""}
+            aria-pressed={theme === option.id}
+            onClick={() => onThemeChange(option.id)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function GlassAlphaCard({ glassAlpha, onGlassAlpha }) {
   const percent = Math.round(glassAlpha * 100);
   return (
@@ -1398,7 +1429,7 @@ function WidgetAgentsCard({ widgetAgents, onToggleWidgetAgent }) {
   );
 }
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, glassAlpha, onGlassAlpha }) {
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, glassAlpha, onGlassAlpha, theme, onThemeChange }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1456,6 +1487,8 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       )}
 
       <div className="settings-grid">
+      <ThemeCard theme={theme} onThemeChange={onThemeChange} />
+
       <div className="settings-card">
         <label htmlFor="sync-directory">同步文件夹（绝对路径）</label>
         <div className="settings-directory-row">
@@ -2131,6 +2164,37 @@ export function App() {
   const [quotaAgent, setQuotaAgent] = useState(
     () => localStorage.getItem("metrik:quotaAgent") || "codex",
   );
+  // 大窗口（展开视图）暗色主题：自动 / 亮 / 暗三态，默认跟随系统。
+  // 仅作用于展开视图；紧凑小插件的玻璃/浅色外观不受此设置影响。
+  const [theme, setTheme] = useState(() => {
+    const stored = localStorage.getItem("metrik:theme");
+    return stored === "light" || stored === "dark" ? stored : "auto";
+  });
+  const handleThemeChange = useCallback((next) => {
+    setTheme(next);
+    localStorage.setItem("metrik:theme", next);
+  }, []);
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
+  );
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return undefined;
+    const update = () => setSystemDark(media.matches);
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  const darkTheme = theme === "auto" ? systemDark : theme === "dark";
+  // data-theme 只挂在展开窗口上：紧凑态永不带该属性，暗色 CSS 因此绝不会
+  // 泄漏到小插件或它弹出的来源抽屉（Windows 下两态共用同一文档）。
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    if (viewMode === "expanded") {
+      root.dataset.theme = darkTheme ? "dark" : "light";
+    } else {
+      delete root.dataset.theme;
+    }
+  }, [viewMode, darkTheme]);
   // 小插件展示哪些 Agent 由用户在设置里勾选；默认 Codex + Claude。
   const [widgetAgents, setWidgetAgents] = useState(() => {
     try {
@@ -2545,7 +2609,7 @@ export function App() {
                 <ChartState pending={snapshot.pending} />
               ) : (
                 <>
-                  <UsageChart snapshot={snapshot} selectedAgent={selectedAgent} />
+                  <UsageChart snapshot={snapshot} selectedAgent={selectedAgent} dark={darkTheme} />
                   <BreakdownSection snapshot={snapshot} selectedAgent={selectedAgent} />
                 </>
               )}
@@ -2567,6 +2631,8 @@ export function App() {
             onToggleWidgetAgent={handleToggleWidgetAgent}
             glassAlpha={glassAlpha}
             onGlassAlpha={handleGlassAlpha}
+            theme={theme}
+            onThemeChange={handleThemeChange}
           />
         ) : activeNav === "reports" ? (
           <ReportsSection report={report} />

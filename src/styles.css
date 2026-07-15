@@ -2544,3 +2544,423 @@ button:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============ 完整视图外观开关（设置页分段控件） ============
+   新类，浅暗两态共用；暗色差异在下方 data-theme 块里覆盖。 */
+.theme-toggle {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 3px;
+  background: rgba(31, 33, 36, 0.05);
+  border-radius: 12px;
+}
+
+.theme-toggle button {
+  min-height: 34px;
+  padding: 0 18px;
+  color: #4d4f53;
+  font-size: 12.5px;
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 240ms;
+  transition-timing-function: var(--motion);
+}
+
+.theme-toggle button:hover { color: #1f2022; }
+
+.theme-toggle button.is-selected {
+  color: #202124;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(28, 30, 33, 0.1), 0 0 0 1px rgba(31, 33, 36, 0.04);
+}
+
+/* ================================================================
+   完整视图暗色主题
+   仅作用于展开视图（.app-shell 子树）及其来源抽屉；data-theme 只挂在
+   展开窗口上（见 App.jsx 的门控），故紧凑小插件永不进入此分支。
+   浅色规则不改动一行，这里全部是追加覆盖，把已验收的浅色态零风险留存。
+   ================================================================ */
+:root[data-theme="dark"] {
+  --canvas: #131417;
+  --surface: #1c1e22;
+  --ink: #e7e8eb;
+  --muted: #9a9ca2;
+  /* 品牌/语义色在深底上提亮一档，保证对比度。 */
+  --blue: #6f9bf0;
+  --green: #7cc069;
+  --warn: #dca648;
+  --critical: #ec8468;
+
+  /* 展开视图专用的暗色 token：文字梯度、卡片层级、描边与阴影。 */
+  --d-strong: #f3f4f6;
+  --d-ink: #e7e8eb;
+  --d-ink-2: #cdcfd4;
+  --d-ink-3: #adafb5;
+  --d-muted: #94969c;
+  --d-faint: #7c7e84;
+  --d-card: #1c1e22;
+  --d-raised: #24272c;
+  --d-input: #202329;
+  --d-sunken: rgba(255, 255, 255, 0.055);
+  --d-hairline: rgba(255, 255, 255, 0.09);
+  --d-hairline-2: rgba(255, 255, 255, 0.14);
+  --d-card-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 10px 26px rgba(0, 0, 0, 0.42),
+    inset 0 1px rgba(255, 255, 255, 0.045);
+}
+
+/* --- 外壳与骨架 --- */
+:root[data-theme="dark"] .app-shell {
+  color: var(--d-ink);
+  background:
+    radial-gradient(circle at 84% 14%, rgba(255, 255, 255, 0.035), transparent 30%),
+    var(--canvas);
+}
+
+:root[data-theme="dark"] .sidebar {
+  background: rgba(255, 255, 255, 0.028);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .wordmark { color: var(--d-strong); }
+
+:root[data-theme="dark"] .nav-button { color: #85878d; }
+:root[data-theme="dark"] .nav-button:hover {
+  color: var(--d-ink-2);
+  background: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .nav-button--active:hover { background: rgba(111, 155, 240, 0.1); }
+
+:root[data-theme="dark"] .tooltip-label {
+  background: rgba(70, 72, 80, 0.96);
+}
+
+:root[data-theme="dark"] .source-status { color: var(--d-muted); }
+:root[data-theme="dark"] .source-status:hover { color: var(--d-ink-2); }
+:root[data-theme="dark"] .source-status small { color: var(--d-faint); }
+
+/* --- 周期切换悬浮条 --- */
+:root[data-theme="dark"] .period-control {
+  background: rgba(28, 30, 34, 0.82);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 9px 24px rgba(0, 0, 0, 0.4),
+    inset 0 1px rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="dark"] .period-control button { color: var(--d-ink-3); }
+:root[data-theme="dark"] .period-control button:hover { color: var(--d-strong); }
+:root[data-theme="dark"] .period-control button.is-selected {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 5px 18px rgba(0, 0, 0, 0.2);
+}
+
+/* --- 概览主区 --- */
+:root[data-theme="dark"] .section-kicker { color: var(--d-strong); }
+:root[data-theme="dark"] .metric-line h1 { color: var(--d-strong); }
+:root[data-theme="dark"] .metric-line > span { color: var(--d-ink-2); }
+:root[data-theme="dark"] .comparison { color: var(--d-muted); }
+:root[data-theme="dark"] .axis-caption { color: var(--d-muted); }
+
+/* --- 图表 --- */
+:root[data-theme="dark"] .chart-loading { color: var(--d-faint); }
+:root[data-theme="dark"] .chart-state {
+  color: var(--d-muted);
+  border-color: var(--d-hairline);
+}
+:root[data-theme="dark"] .chart-state h2 { color: var(--d-ink-2); }
+:root[data-theme="dark"] .u-cursor-x { border-right-color: rgba(255, 255, 255, 0.28); }
+:root[data-theme="dark"] .chart-tooltip {
+  background: var(--d-raised);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 14px 38px rgba(0, 0, 0, 0.5);
+}
+:root[data-theme="dark"] .chart-tooltip span { color: var(--d-muted); }
+:root[data-theme="dark"] .chart-legend { color: var(--d-muted); }
+
+/* --- 拆分卡片 --- */
+:root[data-theme="dark"] .breakdown-card {
+  background: var(--d-card);
+  box-shadow: var(--d-card-shadow);
+}
+:root[data-theme="dark"] .breakdown-card h2 { color: var(--d-ink-2); }
+:root[data-theme="dark"] .comp-legend span { color: var(--d-ink-3); }
+:root[data-theme="dark"] .comp-legend em,
+:root[data-theme="dark"] .model-list em { color: var(--d-muted); }
+:root[data-theme="dark"] .model-name { color: var(--d-ink-3); }
+:root[data-theme="dark"] .model-track { background: var(--d-sunken); }
+:root[data-theme="dark"] .cost-total strong { color: var(--d-strong); }
+:root[data-theme="dark"] .cost-total span { color: var(--d-muted); }
+:root[data-theme="dark"] .cost-note { color: var(--d-faint); }
+
+/* --- 右栏检查器与配额 --- */
+:root[data-theme="dark"] .inspector {
+  background: var(--d-card);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 20px 56px rgba(0, 0, 0, 0.5),
+    inset 0 1px rgba(255, 255, 255, 0.045);
+}
+:root[data-theme="dark"] .eyebrow { color: var(--d-muted); }
+:root[data-theme="dark"] .quota-group {
+  background: var(--d-card);
+  box-shadow: var(--d-card-shadow);
+}
+:root[data-theme="dark"] .quota-group > header small { color: var(--d-muted); }
+:root[data-theme="dark"] .quota-bar-row small { color: var(--d-muted); }
+:root[data-theme="dark"] .quota-bar-row em { color: var(--d-ink-2); }
+:root[data-theme="dark"] .quota-bar-row > span { color: var(--d-faint); }
+:root[data-theme="dark"] .quota-bar-row--warn em { color: var(--warn); }
+:root[data-theme="dark"] .quota-bar-row--critical em { color: var(--critical); }
+:root[data-theme="dark"] .quota-pace { color: var(--d-faint); }
+:root[data-theme="dark"] .quota-pace--behind { color: var(--warn); }
+
+/* --- Agent 列表 --- */
+:root[data-theme="dark"] .agent-row {
+  color: var(--d-ink);
+  box-shadow: 0 1px rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="dark"] .agent-row:hover,
+:root[data-theme="dark"] .agent-row--selected { background: rgba(255, 255, 255, 0.05); }
+:root[data-theme="dark"] .agent-copy small { color: var(--d-muted); }
+:root[data-theme="dark"] .agent-share { color: var(--d-muted); }
+:root[data-theme="dark"] .agent-row > svg { color: var(--d-muted); }
+:root[data-theme="dark"] .traceability { color: var(--d-muted); }
+:root[data-theme="dark"] .traceability > span { color: var(--d-ink-3); }
+:root[data-theme="dark"] .traceability small { color: var(--d-faint); }
+
+/* --- 来源抽屉（展开态弹出；紧凑态弹出的同一抽屉不带 data-theme，保持浅色） --- */
+:root[data-theme="dark"] .drawer-backdrop { background: rgba(0, 0, 0, 0.5); }
+:root[data-theme="dark"] .source-drawer {
+  background: #1a1c20;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 34px 80px rgba(0, 0, 0, 0.6),
+    inset 0 1px rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="dark"] .source-drawer h2 { color: var(--d-strong); }
+:root[data-theme="dark"] .icon-button {
+  color: var(--d-ink-3);
+  background: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .icon-button:hover { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .source-list {
+  box-shadow: 0 -1px rgba(255, 255, 255, 0.08), 0 1px rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="dark"] .source-item { box-shadow: 0 1px rgba(255, 255, 255, 0.07); }
+:root[data-theme="dark"] .source-item:last-child { box-shadow: none; }
+:root[data-theme="dark"] .source-item-icon {
+  color: var(--blue);
+  background: rgba(111, 155, 240, 0.14);
+}
+:root[data-theme="dark"] .source-item p { color: var(--d-muted); }
+:root[data-theme="dark"] .quality-badge {
+  color: var(--d-ink-3);
+  background: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme="dark"] .quality-badge--official { color: var(--blue); background: rgba(111, 155, 240, 0.16); }
+:root[data-theme="dark"] .quality-badge--exact { color: #83c471; background: rgba(124, 192, 105, 0.14); }
+:root[data-theme="dark"] .quality-badge--partial { color: var(--warn); background: rgba(220, 166, 72, 0.15); }
+:root[data-theme="dark"] .quality-badge--unavailable { color: #e6906f; background: rgba(230, 144, 111, 0.14); }
+:root[data-theme="dark"] .privacy-note {
+  color: var(--d-muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* --- 账本重建卡 --- */
+:root[data-theme="dark"] .ledger-recovery {
+  background: rgba(111, 155, 240, 0.06);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px rgba(255, 255, 255, 0.04);
+}
+:root[data-theme="dark"] .ledger-recovery-icon {
+  color: var(--d-ink-3);
+  background: var(--d-raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="dark"] .ledger-recovery h3 { color: var(--d-ink-2); }
+:root[data-theme="dark"] .ledger-recovery-heading p,
+:root[data-theme="dark"] .ledger-confirmation p { color: var(--d-muted); }
+:root[data-theme="dark"] .ledger-demo-note {
+  color: #e0c67c;
+  background: rgba(220, 166, 72, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(220, 166, 72, 0.14);
+}
+:root[data-theme="dark"] .ledger-button {
+  color: var(--d-ink-2);
+  background: var(--d-raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+:root[data-theme="dark"] .ledger-button:hover:not(:disabled) {
+  color: var(--d-strong);
+  background: #2c3037;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+:root[data-theme="dark"] .ledger-button--primary {
+  color: #fff;
+  background: #3a63c9;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+:root[data-theme="dark"] .ledger-button--primary:hover:not(:disabled) {
+  color: #fff;
+  background: #4a72d6;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+:root[data-theme="dark"] .ledger-confirmation {
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="dark"] .ledger-confirmation strong { color: var(--d-ink-2); }
+:root[data-theme="dark"] .ledger-rebuild-status { color: var(--d-muted); }
+:root[data-theme="dark"] .ledger-rebuild-status--success { color: #83c471; }
+:root[data-theme="dark"] .ledger-rebuild-status--error { color: #e6906f; }
+
+/* --- 设置页 --- */
+:root[data-theme="dark"] .settings-header p { color: var(--d-muted); }
+:root[data-theme="dark"] .settings-demo-note {
+  color: #e0c67c;
+  background: rgba(220, 166, 72, 0.13);
+}
+:root[data-theme="dark"] .settings-card {
+  background: var(--d-card);
+  box-shadow: var(--d-card-shadow);
+}
+:root[data-theme="dark"] .settings-subsection { border-top-color: var(--d-hairline); }
+:root[data-theme="dark"] .settings-card label { color: var(--d-ink-3); }
+:root[data-theme="dark"] .settings-directory-row input {
+  color: var(--d-ink);
+  background: var(--d-input);
+  border-color: var(--d-hairline-2);
+}
+:root[data-theme="dark"] .settings-feedback--success { color: #83c471; }
+:root[data-theme="dark"] .settings-feedback--error { color: #e6906f; }
+:root[data-theme="dark"] .settings-status dt { color: var(--d-faint); }
+:root[data-theme="dark"] .settings-error-text { color: #e6906f; }
+:root[data-theme="dark"] .settings-muted { color: var(--d-faint); }
+:root[data-theme="dark"] .settings-device-list li {
+  background: var(--d-raised);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="dark"] .settings-device-list span { color: var(--d-faint); }
+:root[data-theme="dark"] .settings-device-list small { color: var(--d-muted); }
+:root[data-theme="dark"] .glass-slider-row em { color: var(--d-ink-2); }
+:root[data-theme="dark"] .settings-agent-toggle label {
+  background: var(--d-raised);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* --- 主题分段控件（暗色） --- */
+:root[data-theme="dark"] .theme-toggle { background: var(--d-sunken); }
+:root[data-theme="dark"] .theme-toggle button { color: var(--d-ink-3); }
+:root[data-theme="dark"] .theme-toggle button:hover { color: var(--d-strong); }
+:root[data-theme="dark"] .theme-toggle button.is-selected {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* --- 用量 / 会话页 --- */
+:root[data-theme="dark"] .session-group h2 { color: var(--d-muted); }
+:root[data-theme="dark"] .session-row { box-shadow: 0 1px rgba(255, 255, 255, 0.07); }
+:root[data-theme="dark"] .session-row:last-child { box-shadow: none; }
+:root[data-theme="dark"] .session-id-chip {
+  color: var(--d-muted);
+  background: var(--d-sunken);
+}
+:root[data-theme="dark"] .session-id-chip:hover {
+  color: var(--d-ink-2);
+  background: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme="dark"] .session-id-chip--copied { color: #83c471; background: rgba(124, 192, 105, 0.16); }
+:root[data-theme="dark"] .session-copy small { color: var(--d-muted); }
+:root[data-theme="dark"] .session-row > em { color: var(--d-ink-2); }
+:root[data-theme="dark"] .usage-toolbar select {
+  color: var(--d-ink);
+  background: var(--d-input);
+  border-color: var(--d-hairline-2);
+}
+
+/* --- 报告页 --- */
+:root[data-theme="dark"] .report-stats strong { color: var(--d-strong); }
+:root[data-theme="dark"] .report-stats span { color: var(--d-muted); }
+:root[data-theme="dark"] .report-card {
+  background: var(--d-card);
+  box-shadow: var(--d-card-shadow);
+}
+:root[data-theme="dark"] .report-card h2 { color: var(--d-ink-2); }
+
+/* 热力图：深底上把序列反相为"越用越亮"，否则深蓝在深底上读不出强度。 */
+:root[data-theme="dark"] .heat-0 { background: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .heat-1 { background: #22406e; }
+:root[data-theme="dark"] .heat-2 { background: #2f60a8; }
+:root[data-theme="dark"] .heat-3 { background: #4f86dd; }
+:root[data-theme="dark"] .heat-4 { background: #86b0f2; }
+:root[data-theme="dark"] .heatmap-months { color: var(--d-faint); }
+:root[data-theme="dark"] .heatmap-scale { color: var(--d-faint); }
+
+:root[data-theme="dark"] .report-view-toggle { background: var(--d-sunken); }
+:root[data-theme="dark"] .report-view-toggle button { color: var(--d-ink-3); }
+:root[data-theme="dark"] .report-view-toggle button.is-selected {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="dark"] .trend-axis { stroke: rgba(255, 255, 255, 0.16); }
+:root[data-theme="dark"] .trend-label { fill: var(--d-faint); }
+:root[data-theme="dark"] .donut-total { fill: var(--d-strong); }
+:root[data-theme="dark"] .donut-caption { fill: var(--d-faint); }
+
+/* --- 历史索引横幅 --- */
+:root[data-theme="dark"] .indexing-banner {
+  border-color: var(--d-hairline);
+  background: var(--d-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  color: var(--d-muted);
+}
+:root[data-theme="dark"] .indexing-banner strong { color: var(--d-strong); }
+
+/* --- 空状态 --- */
+:root[data-theme="dark"] .empty-section > span {
+  color: var(--blue);
+  background: rgba(111, 155, 240, 0.12);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .empty-section p { color: var(--d-muted); }
+:root[data-theme="dark"] .empty-section button { color: #fff; background: #3a63c9; }
+
+/* --- 展开窗口自绘按钮条（仅 Windows；macOS 完整视图用原生标题栏） --- */
+:root[data-theme="dark"] .window-actions--expanded {
+  background: rgba(30, 32, 36, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 8px 22px rgba(0, 0, 0, 0.4),
+    inset 0 1px rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="dark"] .window-action { color: var(--d-muted); }
+:root[data-theme="dark"] .window-action:hover {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme="dark"] .window-action--active,
+:root[data-theme="dark"] .window-action--active:hover {
+  color: var(--blue);
+  background: rgba(111, 155, 240, 0.16);
+}
+:root[data-theme="dark"] .window-action--close:hover {
+  color: #e8796d;
+  background: rgba(232, 121, 109, 0.16);
+}
+
+/* --- 滚动条 --- */
+:root[data-theme="dark"] .dashboard,
+:root[data-theme="dark"] .inspector-zone,
+:root[data-theme="dark"] .settings-section,
+:root[data-theme="dark"] .reports-section,
+:root[data-theme="dark"] .usage-section {
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+}

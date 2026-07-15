@@ -24,7 +24,13 @@ function agentPalette(agent) {
   return AGENT_LINE_COLORS[agent] || AGENT_LINE_COLORS.default;
 }
 
-export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = {}, formatTokens }) {
+// 坐标轴/网格用中性灰，随主题切换取值：canvas 由 JS 绘制，收不到 CSS 变量。
+const AXIS_COLORS = {
+  light: { axis: "#77797c", grid: "rgba(80, 83, 88, 0.16)" },
+  dark: { axis: "#8f9198", grid: "rgba(160, 163, 170, 0.16)" },
+};
+
+export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = {}, formatTokens, dark = false }) {
   const shellRef = useRef(null);
   const hostRef = useRef(null);
   const tooltipRef = useRef(null);
@@ -59,6 +65,7 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
     ];
 
     const xStride = series.length <= 7 ? 1 : series.length <= 25 ? 4 : 5;
+    const axisTone = dark ? AXIS_COLORS.dark : AXIS_COLORS.light;
 
     const plot = new uPlot(
       {
@@ -78,7 +85,7 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
         },
         axes: [
           {
-            stroke: "#77797c",
+            stroke: axisTone.axis,
             font: AXIS_FONT,
             size: 43,
             gap: 13,
@@ -88,12 +95,12 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
             values: (_u, values) => values.map((value) => series[Math.round(value)]?.label || ""),
           },
           {
-            stroke: "#77797c",
+            stroke: axisTone.axis,
             font: AXIS_FONT,
             size: 49,
             gap: 8,
             ticks: { show: false },
-            grid: { stroke: "rgba(80, 83, 88, 0.16)", width: 1, dash: [3, 6] },
+            grid: { stroke: axisTone.grid, width: 1, dash: [3, 6] },
             splits: (_u, _axis, _min, max) => {
               const step = Math.max(1, Math.ceil(max / 5 / 10_000) * 10_000);
               return Array.from({ length: Math.ceil(max / step) + 1 }, (_, index) => index * step);
@@ -166,7 +173,7 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
       plot.destroy();
       host.replaceChildren();
     };
-  }, [activeAgents, agentLabels, formatTokens, multiLine, series]);
+  }, [activeAgents, agentLabels, formatTokens, multiLine, series, dark]);
 
   return (
     <div className="usage-plot-shell" ref={shellRef} style={{ "--series-color": primaryColor }}>
