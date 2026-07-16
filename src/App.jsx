@@ -750,9 +750,11 @@ function StripBar({
   onToggleOrientation,
   onRestore,
 }) {
-  const cells = agents
-    .map((agentId) => ({ agentId, cell: stripCellData(agentQuotaFor(snapshot, agentId)) }))
-    .filter((item) => item.cell);
+  // 用户自选的 agent 一律占格；没有官方配额数据的显示 "--"，不伪造数字。
+  const cells = agents.map((agentId) => ({
+    agentId,
+    cell: stripCellData(agentQuotaFor(snapshot, agentId)),
+  }));
   const dragProps = pinned ? {} : { "data-tauri-drag-region": true };
   const vertical = orientation === "vertical";
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
@@ -769,6 +771,26 @@ function StripBar({
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
           const meta = AGENT_META[agentId];
+          if (!cell) {
+            return (
+              <div
+                key={agentId}
+                className="strip-cell strip-cell--unavailable"
+                title={`${meta.label}：官方配额不可用`}
+                {...dragProps}
+              >
+                <img
+                  className={`strip-cell-icon ${meta.iconClass || ""}`}
+                  src={meta.iconSrc}
+                  alt={meta.label}
+                  draggable={false}
+                />
+                <span className="strip-cell-body">
+                  <em>--</em>
+                </span>
+              </div>
+            );
+          }
           const view = cell.tightest.view;
           const severity = quotaSeverity(view);
           const isSnapshot = view.stale || view.quality === "official_snapshot";
@@ -780,7 +802,12 @@ function StripBar({
               title={stripTooltip(agentId, cell.windows)}
               {...dragProps}
             >
-              <img className="strip-cell-icon" src={meta.iconSrc} alt={meta.label} draggable={false} />
+              <img
+                className={`strip-cell-icon ${meta.iconClass || ""}`}
+                src={meta.iconSrc}
+                alt={meta.label}
+                draggable={false}
+              />
               <span className="strip-cell-body">
                 <em>{Math.round(view.remainingPercent)}%</em>
                 <span className="strip-cell-track" aria-hidden="true">
@@ -1585,7 +1612,56 @@ function WidgetAgentsCard({ widgetAgents, onToggleWidgetAgent }) {
   );
 }
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, glassAlpha, onGlassAlpha, theme, onThemeChange }) {
+function StripAgentsCard({ stripAgents, onToggleStripAgent, onMoveStripAgent }) {
+  // 已选的按显示顺序排前面，未选的按默认顺序垫后。
+  const rows = [
+    ...stripAgents,
+    ...AGENT_ORDER.filter((agentId) => !stripAgents.includes(agentId)),
+  ];
+  return (
+    <div className="settings-card">
+      <h2>胶囊条显示的 Agent</h2>
+      <p className="settings-muted">
+        选择胶囊条里展示哪些 Agent（至少保留一个）；勾选顺序就是显示顺序，↑ 可上移。
+        没有官方配额来源的 Agent 会以 "--" 占格显示。
+      </p>
+      <ul className="settings-agent-toggle">
+        {rows.map((agentId) => {
+          const index = stripAgents.indexOf(agentId);
+          const checked = index >= 0;
+          return (
+            <li key={agentId}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={checked && stripAgents.length === 1}
+                  onChange={() => onToggleStripAgent(agentId)}
+                />
+                <AgentMark agentId={agentId} />
+                <span>{AGENT_META[agentId].label}</span>
+              </label>
+              {checked && (
+                <button
+                  type="button"
+                  className="settings-agent-move"
+                  onClick={() => onMoveStripAgent(agentId)}
+                  disabled={index === 0}
+                  aria-label={`将 ${AGENT_META[agentId].label} 上移`}
+                  title="上移"
+                >
+                  ↑
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, theme, onThemeChange }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1709,6 +1785,12 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       <StartupCard />
 
       <WidgetAgentsCard widgetAgents={widgetAgents} onToggleWidgetAgent={onToggleWidgetAgent} />
+
+      <StripAgentsCard
+        stripAgents={stripAgents}
+        onToggleStripAgent={onToggleStripAgent}
+        onMoveStripAgent={onMoveStripAgent}
+      />
 
       <GlassAlphaCard glassAlpha={glassAlpha} onGlassAlpha={onGlassAlpha} />
 
@@ -2558,8 +2640,8 @@ export function App() {
     return withData.length ? withData : ["codex"];
   }, [snapshot]);
   const activeQuotaAgent = quotaAgents.includes(quotaAgent) ? quotaAgent : quotaAgents[0];
-  // 胶囊条只上有官方配额数据的 agent；两类事实不混排，无数据就是无数据。
-  const stripAgents = useMemo(
+  // 自动模式：胶囊条显示全部有官方配额数据的 agent（快照顺序）。
+  const autoStripAgents = useMemo(
     () =>
       (snapshot.agentQuotas || [])
         .filter(quotaHasData)
@@ -2567,6 +2649,44 @@ export function App() {
         .filter((agent) => AGENT_META[agent]),
     [snapshot],
   );
+  const autoStripAgentsRef = useRef(autoStripAgents);
+  autoStripAgentsRef.current = autoStripAgents;
+  // 用户自选模式：内容与顺序都由用户在设置里定；null = 自动。
+  const [stripAgentsSetting, setStripAgentsSetting] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("metrik:stripAgents") || "null");
+      if (Array.isArray(stored)) {
+        const valid = stored.filter((id) => AGENT_ORDER.includes(id));
+        if (valid.length) return valid;
+      }
+    } catch {
+      // 本地设置损坏时回到自动模式。
+    }
+    return null;
+  });
+  const stripAgents = stripAgentsSetting ?? autoStripAgents;
+  // 勾选即追加到末尾（勾选顺序 = 显示顺序）；首次改动时以当前自动列表为基准。
+  const handleToggleStripAgent = useCallback((agentId) => {
+    setStripAgentsSetting((current) => {
+      const base = current ?? autoStripAgentsRef.current;
+      const next = base.includes(agentId)
+        ? base.filter((id) => id !== agentId)
+        : [...base, agentId];
+      if (!next.length) return current; // 至少保留一个
+      localStorage.setItem("metrik:stripAgents", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+  const handleMoveStripAgent = useCallback((agentId) => {
+    setStripAgentsSetting((current) => {
+      const base = [...(current ?? autoStripAgentsRef.current)];
+      const index = base.indexOf(agentId);
+      if (index <= 0) return current;
+      [base[index - 1], base[index]] = [base[index], base[index - 1]];
+      localStorage.setItem("metrik:stripAgents", JSON.stringify(base));
+      return base;
+    });
+  }, []);
   // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
   const stripApplied = useRef(false);
   useEffect(() => {
@@ -2848,6 +2968,9 @@ export function App() {
             onSnapshotRefresh={() => loadSnapshot(currentPeriod.current)}
             widgetAgents={widgetAgents}
             onToggleWidgetAgent={handleToggleWidgetAgent}
+            stripAgents={stripAgents}
+            onToggleStripAgent={handleToggleStripAgent}
+            onMoveStripAgent={handleMoveStripAgent}
             glassAlpha={glassAlpha}
             onGlassAlpha={handleGlassAlpha}
             theme={theme}
