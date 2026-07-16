@@ -167,8 +167,8 @@ function isWindowsPlatform() {
   return typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 }
 
-/// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定，形态不变，
-/// 窗口按钮/边缘挂靠/位置记忆/置顶全部由平台语义取代，见 docs/superpowers/specs。
+/// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定；compact 与
+/// strip 可在同一面板内变形，但窗口按钮/边缘挂靠/位置记忆/置顶仍由平台语义取代。
 function isMacPlatform() {
   return typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 }
@@ -191,8 +191,20 @@ async function openExpandedWindow(nav) {
 }
 
 async function applyWindowMode(mode, options = {}) {
-  // macOS 上两种形态是两个窗口，各自固定；没有"变形"这件事。
-  if (isMacPlatform()) return;
+  // macOS 的完整视图仍是独立窗口；compact/strip 共用菜单栏 NSPanel。
+  // 改尺寸交给后端完成，随后会按新宽度重新对齐菜单栏图标。
+  if (isMacPlatform()) {
+    if (!isDesktop()) return;
+    const size = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
+    const width = mode === "strip"
+      ? Math.max(size.minWidth, Math.round(options.width || size.width))
+      : size.width;
+    const height = mode === "strip"
+      ? Math.max(size.minHeight, Math.round(options.height || size.height))
+      : size.height;
+    await invoke("resize_macos_panel", { width, height });
+    return;
+  }
 
   const api = await windowApi();
   if (!api) return;
@@ -290,6 +302,15 @@ async function applyWindowMode(mode, options = {}) {
 
 /// 胶囊条格数或方向变化时只调尺寸，不走 hide/show，避免闪烁。
 async function resizeStripWindow({ width, height }) {
+  if (isMacPlatform()) {
+    if (!isDesktop()) return;
+    const size = WINDOW_SIZES.strip;
+    await invoke("resize_macos_panel", {
+      width: Math.max(size.minWidth, Math.round(width || size.width)),
+      height: Math.max(size.minHeight, Math.round(height || size.height)),
+    });
+    return;
+  }
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();
@@ -311,7 +332,7 @@ function glassOptions() {
 
 /// 返回实际生效的材质："native"（系统模糊已启用）、"css"（原生不可用，
 /// 由 CSS 近实心玻璃承担外观）或 "off"。调用方据此切换样式层。
-async function setWindowGlass(enabled) {
+async function setWindowGlass(enabled, radius = 12) {
   if (!isDesktop()) return enabled ? "css" : "off";
   if (isWindowsPlatform()) {
     // WebView2 has its own composition surface. Make that surface transparent
@@ -341,13 +362,11 @@ async function setWindowGlass(enabled) {
     await makeWebviewTransparent();
   }
   try {
-    // macOS 的 vibrancy 是单选的：只给一个材质。menu 是原生菜单同款材质
-    // （通透、带饱和度增强），比发闷的 hudWindow 更接近系统菜单质感。
-    // 材质深浅跟随窗口外观，面板窗口在 Rust 侧锁定为 dark（见 macos.rs），
-    // 浅色系统下也保持深色菜单玻璃，和这套固定深色的配色一致。
+    // macOS 的 vibrancy 是单选的：menu 是原生菜单同款材质。面板不再锁死
+    // dark，而是像 CodexBar 的 NSMenu 一样跟随应用当前的系统外观。
     await appWindow.setEffects(
       isMacPlatform()
-        ? { effects: ["menu"], state: "active", radius: 12 }
+        ? { effects: ["menu"], state: "active", radius }
         : { effects: ["blur"] },
     );
     return "native";

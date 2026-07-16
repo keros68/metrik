@@ -992,6 +992,24 @@ fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<()
     }
 }
 
+/// macOS 菜单栏面板在紧凑卡片与胶囊条之间切换尺寸；后端负责在改尺寸后
+/// 重新锚定菜单栏图标。其它平台不调用此命令。
+#[tauri::command]
+fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if !(48.0..=640.0).contains(&width) || !(40.0..=640.0).contains(&height) {
+        return Err("macOS 面板尺寸超出允许范围".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::resize_panel(&app, width, height)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, width, height);
+        Err("菜单栏面板尺寸切换仅用于 macOS".into())
+    }
+}
+
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1149,7 +1167,8 @@ pub fn run() {
             set_taskbar_button,
             set_glass_backdrop,
             set_native_theme,
-            open_expanded_window
+            open_expanded_window,
+            resize_macos_panel
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");
