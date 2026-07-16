@@ -131,11 +131,11 @@ const AGENT_ORDER = Object.keys(AGENT_META);
 // 一格约 54px 高（图标/百分比/进度条纵向堆叠）。
 // chrome 是留白 + 状态点 + 方向/还原两个按钮（竖条里竖排）。
 const STRIP_CELL_WIDTH = 68;
-const STRIP_CHROME_WIDTH = 76;
+const STRIP_CHROME_WIDTH = 102;
 const STRIP_BAR_HEIGHT = 40;
 const STRIP_VERTICAL_WIDTH = 52;
 const STRIP_VCELL_HEIGHT = 54;
-const STRIP_VCHROME_HEIGHT = 84;
+const STRIP_VCHROME_HEIGHT = 110;
 
 function stripWindowSize(orientation, count) {
   const cells = Math.max(1, count);
@@ -748,6 +748,7 @@ function StripBar({
   glassAlpha = 0.82,
   orientation,
   onToggleOrientation,
+  onTogglePinned,
   onRestore,
 }) {
   // 用户自选的 agent 一律占格；没有官方配额数据的显示 "--"，不伪造数字。
@@ -831,6 +832,16 @@ function StripBar({
           className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
           aria-hidden="true"
         />
+        <button
+          type="button"
+          className={`strip-button ${pinned ? "strip-button--active" : ""}`}
+          onClick={onTogglePinned}
+          aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          aria-pressed={pinned}
+          title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+        >
+          <PushPinSimple size={13} weight={pinned ? "fill" : "light"} aria-hidden="true" />
+        </button>
         <button
           type="button"
           className="strip-button"
@@ -2828,6 +2839,7 @@ export function App() {
         glassAlpha={glassAlpha}
         orientation={stripOrientation}
         onToggleOrientation={handleToggleStripOrientation}
+        onTogglePinned={handleTogglePinned}
         onRestore={() => handleWindowMode("compact")}
       />
     );

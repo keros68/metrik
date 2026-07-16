@@ -928,6 +928,9 @@ html:has(.strip-shell) #root {
   background: rgba(255, 255, 255, 0.16);
 }
 
+.strip-button--active { color: var(--blue); }
+.strip-shell--transparent .strip-button--active { color: #9ec1f5; }
+
 .sr-only {
   position: absolute;
   width: 1px;
