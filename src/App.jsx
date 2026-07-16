@@ -244,6 +244,7 @@ function quotaHasData(entry) {
 function shortWindowLabel(key) {
   if (key === "five_hour" || key === "primary") return "5h";
   if (key === "seven_day" || key === "secondary") return "7d";
+  if (key === "extra_usage") return "超额";
   return key.replace(/^seven_day_/, "").slice(0, 4);
 }
 

@@ -50,6 +50,14 @@ pub struct ClaudeOauthStatus {
 struct UsageResponse {
     five_hour: Option<UsageWindow>,
     seven_day: Option<UsageWindow>,
+    /// 按模型的周限额（平铺字段，官方正逐步迁往 limits[]）。
+    seven_day_opus: Option<UsageWindow>,
+    seven_day_sonnet: Option<UsageWindow>,
+    /// 新版格式：扁平的限额数组，每条可经 scope.model 标注所属模型
+    /// （如促销期的模型专属周限）。同键时以这里的为准。
+    limits: Option<Vec<LimitEntry>>,
+    /// 超额付费用量（套餐外按量计费）；未开启时不产出窗口。
+    extra_usage: Option<ExtraUsage>,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +66,58 @@ struct UsageWindow {
     utilization: Option<f64>,
     /// ISO-8601 重置时刻。
     resets_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LimitEntry {
+    /// 已用百分比（0–100），与 UsageWindow.utilization 同义。
+    percent: Option<f64>,
+    resets_at: Option<String>,
+    scope: Option<LimitScope>,
+    is_active: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct LimitScope {
+    model: Option<LimitScopeModel>,
+}
+
+#[derive(Deserialize)]
+struct LimitScopeModel {
+    display_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExtraUsage {
+    is_enabled: Option<bool>,
+    /// 已用超额预算的百分比（0–100）。
+    utilization: Option<f64>,
+}
+
+impl LimitEntry {
+    /// 归一成与平铺字段一致的窗口键：`seven_day_<模型名小写>`。
+    /// 只认带模型 scope 的条目——不带 scope 的总量窗口平铺字段已经覆盖，
+    /// 而 limits[] 里的分类键（kind/group）尚不稳定，不猜。
+    fn window_key(&self) -> Option<String> {
+        if self.is_active == Some(false) {
+            return None;
+        }
+        let name = self
+            .scope
+            .as_ref()?
+            .model
+            .as_ref()?
+            .display_name
+            .as_deref()?;
+        let slug = name
+            .trim()
+            .to_lowercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        if slug.is_empty() {
+            return None;
+        }
+        Some(format!("seven_day_{slug}"))
+    }
 }
 
 pub struct ClaudeOauth {
@@ -102,8 +162,10 @@ impl ClaudeOauth {
         }
     }
 
-    /// 拉取官方 5h / 7d 窗口。窗口键与 statusLine 钩子一致（five_hour /
-    /// seven_day），下游展示无需区分来源。
+    /// 拉取官方额度窗口：5h / 7d 总量、按模型周限（seven_day_opus 等平铺
+    /// 字段与新版 limits[] 数组）、已开启的超额付费用量。窗口键与
+    /// statusLine 钩子一致（five_hour / seven_day / seven_day_*），
+    /// 下游展示无需区分来源。
     pub fn fetch_quota_samples(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
         let Some(credentials) = self.read_credentials() else {
             bail!("本机没有 Claude Code 登录凭据（~/.claude/.credentials.json）");
@@ -145,18 +207,66 @@ impl ClaudeOauth {
         let usage: UsageResponse =
             serde_json::from_str(&body).context("Claude 用量响应不是预期的 JSON")?;
 
-        let now = chrono::Utc::now().timestamp_millis();
-        let samples = [
-            ("five_hour", usage.five_hour),
-            ("seven_day", usage.seven_day),
-        ]
+        let samples = samples_from_usage(usage, chrono::Utc::now().timestamp_millis());
+        if samples.is_empty() {
+            bail!("Claude 用量响应缺少可用的额度窗口");
+        }
+        Ok(samples)
+    }
+}
+
+/// 把用量响应归一成额度样本：平铺窗口打底，limits[] 同键覆盖，
+/// 超额付费（若开启）殿后。缺 utilization 的窗口一律丢弃，不编造数字。
+fn samples_from_usage(usage: UsageResponse, now: i64) -> Vec<QuotaSample> {
+    let mut windows: Vec<(String, UsageWindow)> = [
+        ("five_hour", usage.five_hour),
+        ("seven_day", usage.seven_day),
+        ("seven_day_opus", usage.seven_day_opus),
+        ("seven_day_sonnet", usage.seven_day_sonnet),
+    ]
+    .into_iter()
+    .filter_map(|(key, window)| Some((key.to_owned(), window?)))
+    .collect();
+
+    // limits[] 与平铺字段可能描述同一窗口；官方正往 limits[] 迁移，同键以它为准。
+    for entry in usage.limits.unwrap_or_default() {
+        let Some(key) = entry.window_key() else {
+            continue;
+        };
+        let window = UsageWindow {
+            utilization: entry.percent,
+            resets_at: entry.resets_at,
+        };
+        if let Some(existing) = windows
+            .iter_mut()
+            .find(|(existing_key, _)| *existing_key == key)
+        {
+            existing.1 = window;
+        } else {
+            windows.push((key, window));
+        }
+    }
+
+    // 超额付费只在用户开启后单列一行；没开启就不占位，也不显示 0%。
+    if let Some(extra) = usage.extra_usage {
+        if extra.is_enabled == Some(true) && extra.utilization.is_some() {
+            windows.push((
+                "extra_usage".to_owned(),
+                UsageWindow {
+                    utilization: extra.utilization,
+                    resets_at: None,
+                },
+            ));
+        }
+    }
+
+    windows
         .into_iter()
         .filter_map(|(key, window)| {
-            let window = window?;
             let used = window.utilization?;
             Some(QuotaSample {
                 adapter_id: "claude",
-                window_key: key.to_owned(),
+                window_key: key,
                 remaining_percent: (100.0 - used).clamp(0.0, 100.0),
                 resets_at_ms: window.resets_at.as_deref().and_then(parse_iso8601_ms),
                 collected_at_ms: now,
@@ -164,13 +274,7 @@ impl ClaudeOauth {
                 quality: "official_snapshot",
             })
         })
-        .collect::<Vec<_>>();
-
-        if samples.is_empty() {
-            bail!("Claude 用量响应缺少 five_hour/seven_day 窗口");
-        }
-        Ok(samples)
-    }
+        .collect()
 }
 
 fn parse_iso8601_ms(value: &str) -> Option<i64> {
@@ -232,11 +336,63 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(usage.five_hour.as_ref().unwrap().utilization, Some(40.0));
+        let samples = samples_from_usage(usage, 1);
         assert_eq!(
-            parse_iso8601_ms(usage.five_hour.unwrap().resets_at.as_deref().unwrap()),
-            Some(1_784_007_000_000)
+            samples
+                .iter()
+                .map(|sample| sample.window_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["five_hour", "seven_day", "seven_day_opus"],
         );
-        assert_eq!(usage.seven_day.unwrap().utilization, Some(43.5));
+        assert_eq!(samples[0].remaining_percent, 60.0);
+        assert_eq!(samples[0].resets_at_ms, Some(1_784_007_000_000));
+        assert_eq!(samples[1].remaining_percent, 56.5);
+        // 未开启的超额付费不产出窗口。
+        assert!(samples
+            .iter()
+            .all(|sample| sample.window_key != "extra_usage"));
+    }
+
+    #[test]
+    fn limits_entries_override_flat_windows_and_add_scoped_models() {
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{
+                "five_hour": {"utilization": 10.0},
+                "seven_day_opus": {"utilization": 12.0, "resets_at": "2026-07-17T21:00:00Z"},
+                "limits": [
+                    {"kind": "weekly_scoped", "group": "weekly", "percent": 30.0,
+                     "resets_at": "2026-07-18T21:00:00Z",
+                     "scope": {"model": {"id": "opus-4", "display_name": "Opus"}}},
+                    {"kind": "weekly_scoped", "group": "weekly", "percent": 52.0,
+                     "scope": {"model": {"display_name": "Fable"}}},
+                    {"kind": "weekly_scoped", "group": "weekly", "percent": 99.0,
+                     "is_active": false,
+                     "scope": {"model": {"display_name": "Haiku"}}},
+                    {"kind": "weekly", "group": "weekly", "percent": 44.0}
+                ],
+                "extra_usage": {"is_enabled": true, "utilization": 7.5}
+            }"#,
+        )
+        .unwrap();
+        let samples = samples_from_usage(usage, 1);
+        let keys = samples
+            .iter()
+            .map(|sample| sample.window_key.as_str())
+            .collect::<Vec<_>>();
+        // 同键覆盖（opus 用 limits 值）、新增 scoped 模型（fable）、
+        // 跳过 is_active=false（haiku）与不带模型 scope 的条目、追加超额付费。
+        assert_eq!(
+            keys,
+            vec![
+                "five_hour",
+                "seven_day_opus",
+                "seven_day_fable",
+                "extra_usage"
+            ],
+        );
+        let opus = &samples[1];
+        assert_eq!(opus.remaining_percent, 70.0);
+        assert_eq!(opus.resets_at_ms, parse_iso8601_ms("2026-07-18T21:00:00Z"));
+        assert_eq!(samples[3].remaining_percent, 92.5);
     }
 }

@@ -996,6 +996,8 @@ fn quota_window_rank(key: &str) -> (u8, String) {
     match key {
         "five_hour" | "primary" => (0, String::new()),
         "seven_day" | "secondary" => (1, String::new()),
+        // 超额付费是套餐外的补充预算，排在全部套餐窗口之后。
+        "extra_usage" => (3, String::new()),
         other => (2, other.to_owned()),
     }
 }
@@ -1014,6 +1016,8 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
                 "每周".into()
             }
         }
+        // Claude 套餐外按量付费的已用比例（月度预算）。
+        "extra_usage" => "超额用量".into(),
         other => {
             let model = other.strip_prefix("seven_day_").unwrap_or(other);
             let mut chars = model.chars();
