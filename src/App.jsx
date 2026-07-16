@@ -754,6 +754,8 @@ function StripBar({
   onToggleOrientation,
   onTogglePinned,
   onRestore,
+  availableUpdate,
+  onOpenUpdate,
 }) {
   // 用户自选的 agent 一律占格；没有官方配额数据的显示 "--"，不伪造数字。
   const cells = agents.map((agentId) => ({
@@ -832,6 +834,15 @@ function StripBar({
         </span>
       )}
       <div className="strip-controls">
+        {availableUpdate && (
+          <button
+            type="button"
+            className="update-dot"
+            onClick={onOpenUpdate}
+            aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
+            title={`有新版本 ${availableUpdate.version}，点击更新`}
+          />
+        )}
         <i
           className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
           aria-hidden="true"
@@ -888,6 +899,8 @@ function CompactWidget({
   onCycleQuotaAgent,
   widgetAgents,
   glassAlpha = 0.82,
+  availableUpdate,
+  onOpenUpdate,
 }) {
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
@@ -922,6 +935,15 @@ function CompactWidget({
         >
           <span>Metrik</span>
           <i className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`} aria-hidden="true" />
+          {availableUpdate && (
+            <button
+              type="button"
+              className="update-dot"
+              onClick={onOpenUpdate}
+              aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
+              title={`有新版本 ${availableUpdate.version}，点击更新`}
+            />
+          )}
         </div>
         {!IS_MAC && (
           <WindowActions
@@ -1416,7 +1438,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
   );
 }
 
-function StartupCard() {
+function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [enabled, setEnabled] = useState(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -1472,14 +1494,29 @@ function StartupCard() {
           {feedback.message}
         </p>
       )}
-      <UpdateBlock />
+      <UpdateBlock
+        autoCheck={autoUpdateCheck}
+        onAutoCheckChange={onAutoUpdateCheck}
+        availableUpdate={availableUpdate}
+      />
     </div>
   );
 }
 
-// 更新只在用户点击时检查：不后台轮询，那是这个应用唯一会主动发出的网络请求。
-function UpdateBlock() {
-  const [state, setState] = useState({ status: "idle" });
+// 检查每天自动做一次（可关，关掉后回到纯手动）；下载安装永远由用户点击触发。
+function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
+  const [state, setState] = useState(() =>
+    availableUpdate ? { status: "available", ...availableUpdate } : { status: "idle" },
+  );
+  // 自动检查在小组件形态就可能发现新版；进设置页时直接呈现，不用再点一次。
+  useEffect(() => {
+    if (!availableUpdate) return;
+    setState((current) =>
+      current.status === "idle" || current.status === "current"
+        ? { status: "available", ...availableUpdate }
+        : current,
+    );
+  }, [availableUpdate]);
 
   const check = async () => {
     setState({ status: "checking" });
@@ -1507,9 +1544,18 @@ function UpdateBlock() {
     <div className="settings-subsection">
       <h3>更新</h3>
       <p className="settings-muted">
-        当前版本 {__APP_VERSION__}。只在你点击时检查一次，不后台轮询。更新包经签名校验，
+        当前版本 {__APP_VERSION__}。每天自动检查一次新版本（仅一次网络请求，可关闭），
+        发现后在小组件上以小圆点提示；下载与安装始终由你点击确认。更新包经签名校验，
         签名不符会拒绝安装。
       </p>
+      <label className="update-autocheck">
+        <input
+          type="checkbox"
+          checked={autoCheck}
+          onChange={(event) => onAutoCheckChange(event.target.checked)}
+        />
+        <span>自动检查更新（每天一次）</span>
+      </label>
       <div className="settings-directory-row">
         <button
           type="button"
@@ -1706,7 +1752,7 @@ function StripAgentsCard({ stripAgents, onToggleStripAgent, onMoveStripAgent }) 
   );
 }
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, theme, onThemeChange }) {
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1827,7 +1873,11 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         )}
       </div>
 
-      <StartupCard />
+      <StartupCard
+        autoUpdateCheck={autoUpdateCheck}
+        onAutoUpdateCheck={onAutoUpdateCheck}
+        availableUpdate={availableUpdate}
+      />
 
       <WidgetAgentsCard widgetAgents={widgetAgents} onToggleWidgetAgent={onToggleWidgetAgent} />
 
@@ -2532,6 +2582,35 @@ export function App() {
     localStorage.setItem("metrik:uiScale", String(next));
     setWindowUiScale(next);
   }, []);
+  // 自动检查更新：默认开、设置里可关。只检查和提醒（小组件上的小圆点），
+  // 下载安装始终由用户在设置页点击触发。
+  const [autoUpdateCheck, setAutoUpdateCheck] = useState(
+    () => (localStorage.getItem("metrik:autoUpdateCheck") ?? "true") === "true",
+  );
+  const handleAutoUpdateCheck = useCallback((next) => {
+    setAutoUpdateCheck(next);
+    localStorage.setItem("metrik:autoUpdateCheck", String(next));
+  }, []);
+  const [availableUpdate, setAvailableUpdate] = useState(null);
+  useEffect(() => {
+    if (!isDesktop() || !autoUpdateCheck) return undefined;
+    let cancelled = false;
+    const check = () => {
+      checkForUpdate()
+        .then((found) => {
+          if (!cancelled && found) setAvailableUpdate(found);
+        })
+        .catch(() => {}); // 静默失败：提醒是尽力而为，不打扰
+    };
+    // 错开启动扫描的高峰再查；之后每天一次。
+    const startTimer = window.setTimeout(check, 15000);
+    const interval = window.setInterval(check, 24 * 60 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(startTimer);
+      window.clearInterval(interval);
+    };
+  }, [autoUpdateCheck]);
   const handleToggleWidgetAgent = useCallback((agentId) => {
     setWidgetAgents((current) => {
       const next = current.includes(agentId)
@@ -2828,6 +2907,16 @@ export function App() {
     if (nextMode !== "strip") runWindowAction(() => applyWindowMode(nextMode));
   }, []);
 
+  // 小组件上的更新提示点：点击直达设置页。macOS 的设置在独立展开窗口里。
+  const handleOpenUpdate = useCallback(() => {
+    if (IS_MAC) {
+      runWindowAction(() => openExpandedWindow("settings"));
+      return;
+    }
+    setActiveNav("settings");
+    handleWindowMode("expanded");
+  }, [handleWindowMode]);
+
   const handleTogglePinned = useCallback(() => {
     setPinned((current) => {
       const next = !current;
@@ -2894,6 +2983,8 @@ export function App() {
         onToggleOrientation={handleToggleStripOrientation}
         onTogglePinned={handleTogglePinned}
         onRestore={() => handleWindowMode("compact")}
+        availableUpdate={availableUpdate}
+        onOpenUpdate={handleOpenUpdate}
       />
     );
   }
@@ -2920,6 +3011,8 @@ export function App() {
           onCycleQuotaAgent={handleCycleQuotaAgent}
           widgetAgents={widgetAgents}
           glassAlpha={glassAlpha}
+          availableUpdate={availableUpdate}
+          onOpenUpdate={handleOpenUpdate}
         />
         {drawerOpen && (
           <SourceDrawer
@@ -3042,6 +3135,9 @@ export function App() {
             onUiScale={handleUiScale}
             theme={theme}
             onThemeChange={handleThemeChange}
+            autoUpdateCheck={autoUpdateCheck}
+            onAutoUpdateCheck={handleAutoUpdateCheck}
+            availableUpdate={availableUpdate}
           />
         ) : activeNav === "reports" ? (
           <ReportsSection report={report} />

@@ -519,7 +519,7 @@ async function autostartApi() {
   return import("@tauri-apps/plugin-autostart");
 }
 
-/// 手动检查更新：只有用户点击时才发出这一个网络请求，不后台轮询。
+/// 检查更新（设置页手动点击，或自动检查每天一次；后者可在设置关闭）。
 /// 返回 null 表示已是最新（或非桌面环境）。
 async function checkForUpdate() {
   if (!isDesktop()) return null;

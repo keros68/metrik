@@ -916,7 +916,9 @@ html:has(.strip-shell) #root {
   padding-top: 4px;
 }
 
-.strip-shell .status-dot { flex: none; }
+/* 基础 .status-dot 的 margin-top 是来源抽屉的对齐补偿，胶囊条里要归零，
+   否则点相对按钮下坠 5px。 */
+.strip-shell .status-dot { flex: none; margin: 0; }
 
 .strip-button {
   display: grid;
@@ -1120,6 +1122,33 @@ html:has(.strip-shell) #root {
 .status-dot--loading {
   background: #d3a72d;
   animation: status-pulse 900ms var(--motion) infinite alternate;
+}
+
+/* 有新版本的提示点：常驻但不打扰，点击直达设置页更新。 */
+.update-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  background: var(--blue);
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(36, 107, 219, 0.1);
+  cursor: pointer;
+}
+
+.widget-shell--transparent .update-dot,
+.strip-shell--transparent .update-dot {
+  background: #9ec1f5;
+  box-shadow: 0 0 0 4px rgba(158, 193, 245, 0.14);
+}
+
+/* 设置页"自动检查更新"开关行。 */
+.update-autocheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
 }
 
 .status-dot--error { background: #c96a45; }
@@ -2065,13 +2094,17 @@ html:has(.strip-shell) #root {
   border-radius: 12px;
 }
 
-/* 卡片双列铺满宽度，消除右侧大空白；窄窗口自动回退单列。 */
+/* 多列瀑布排布：卡片在列内紧凑堆叠、各列高度自动均衡，消除 grid
+   "每行按最高卡撑开"留下的大洞；窄窗口自动回退单列。 */
 .settings-grid {
-  display: grid;
-  align-items: start;
-  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-  gap: 20px;
   margin-top: 26px;
+  columns: 400px;
+  column-gap: 20px;
+}
+
+.settings-grid > * {
+  margin-bottom: 20px;
+  break-inside: avoid;
 }
 
 .settings-card {
