@@ -40,7 +40,15 @@ async function rememberWindowPosition(api, appWindow, mode) {
     api.currentMonitor().catch(() => null),
   ]);
   if (!pos) return;
-  if (monitor && pos.y < monitor.position.y) return;
+  if (monitor) {
+    const top = monitor.position.y;
+    const workBottom = monitor.workArea
+      ? monitor.workArea.position.y + monitor.workArea.size.height
+      : top + monitor.size.height;
+    // 滑出上缘（挂靠）或压进任务栏下面的坐标都不记，
+    // 避免下次开机窗口停在够不着的地方。
+    if (pos.y < top || pos.y > workBottom - 24) return;
+  }
   lastPositions[mode] = pos;
   localStorage.setItem(key, JSON.stringify({ x: pos.x, y: pos.y }));
 }
