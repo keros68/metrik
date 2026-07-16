@@ -2,7 +2,7 @@
 
 本地优先的 AI Agent 用量统计桌面应用。读取本机 Agent 留下的日志，把**官方配额**、**本地解析的 Token**、**估算成本**三类事实分开呈现——估算不冒充账单，读不到就显示"不可用"，绝不用零值或演示数字顶替。
 
-Windows 上是 320 × 320 的桌面小组件，macOS 上是菜单栏面板；两者都能一键展开为完整统计视图。
+Windows 上是 320 × 320 的桌面小组件，可再折叠成一根横向或竖立的**配额胶囊条**；macOS 上是菜单栏面板。两者都能一键展开为完整统计视图。
 
 [![Download](https://img.shields.io/github/v/release/keros68/metrik?label=下载&color=success)](https://github.com/keros68/metrik/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,6 +14,13 @@ Windows 上是 320 × 320 的桌面小组件，macOS 上是菜单栏面板；两
 <p align="center">
   <img src="design/shot-widget.png" width="320" alt="Metrik 桌面小组件">
 </p>
+
+<p align="center">
+  <img src="design/shot-strip-vertical.png" height="240" alt="配额胶囊条 · 竖条">
+  &nbsp;&nbsp;&nbsp;
+  <img src="design/shot-strip-horizontal.png" width="330" alt="配额胶囊条 · 横条">
+</p>
+<p align="center"><sub>小组件可折叠成配额胶囊条（Windows）：横条或竖立长条，只占一线屏幕。</sub></p>
 
 ![完整视图 · 概览](design/shot-overview.png)
 
@@ -44,6 +51,7 @@ Gemini CLI 明确不在支持范围。Cursor 见[路线](#路线)。
 ## 功能
 
 - **配额三行元语**：窗口名 → 进度条 → 已用百分比 + 重置倒计时，外加消耗节奏预测。数据陈旧或窗口已重置时显式标注。
+- **配额胶囊条**（Windows）：小组件一键折叠成横向或竖立的小条，每个 Agent 一格（图标 + 剩余百分比 + 品牌色进度条）；显示哪些 Agent 及顺序可在设置里自选，材质跟随小组件的玻璃开关。
 - **报告**：26 周热力图 / 周趋势折线 / Agent 构成环形。
 - **用量**：按天分组的会话明细，支持筛选、CSV 导出、复制会话 ID（方便 resume）。
 - **成本估算**：静态价目表按 Token 分量计价，没有价目的模型归入"未计价"。
