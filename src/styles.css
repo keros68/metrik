@@ -196,16 +196,17 @@ button:focus-visible {
 }
 
 /* ============ macOS：材质交给系统 ============
-   面板是 hudWindow vibrancy（深色 HUD，自带系统模糊、景深与窗口阴影）。
-   这里只补内描边与高光；再叠一层 Windows 那种近实心深色板（--glass-alpha 0.82）
-   会把系统材质糊死，所以 mac 上把 tint 压到很薄，暗度由 vibrancy 负责。
-   原生材质拿不到时走 --glass-css 近实心回落，不套这条。 */
+   面板是 menu vibrancy（原生菜单同款玻璃，窗口外观锁 dark，自带系统模糊、
+   饱和度增强与窗口阴影）。这里只补内描边与高光；再叠一层 Windows 那种
+   近实心深色板（--glass-alpha 0.82）会把系统材质糊死，所以 mac 上把 tint
+   压到很薄，暗度由 vibrancy 负责。原生材质拿不到时走 --glass-css 近实心
+   回落，不套这条。 */
 .widget-shell--mac:not(.widget-shell--glass-css) {
   /* 与 setEffects 传给窗口的 radius 对齐，避免四角露出方形材质。 */
   border-radius: 12px;
   background:
-    radial-gradient(130% 100% at 14% 0%, rgba(178, 200, 255, 0.06), transparent 52%),
-    linear-gradient(168deg, rgba(30, 34, 46, 0.22), rgba(12, 15, 22, 0.3));
+    radial-gradient(130% 100% at 14% 0%, rgba(178, 200, 255, 0.05), transparent 52%),
+    linear-gradient(168deg, rgba(30, 34, 46, 0.1), rgba(12, 15, 22, 0.16));
   border: none;
   /* 窗口阴影由 NSPanel 自己投，CSS 不再叠外阴影。 */
   box-shadow:
@@ -764,6 +765,17 @@ html:has(.strip-shell) #root {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.09),
     inset 0 1px rgba(255, 255, 255, 0.12);
+}
+
+/* macOS：条带的材质同样交给系统 vibrancy（menu 材质，同紧凑面板），
+   近实心深色板会把材质糊死，压薄成一层冷色 tint；
+   原生材质拿不到时走上面的近实心配方，不套这条。 */
+.strip-shell--mac:not(.strip-shell--glass-css) {
+  /* 与 setEffects 传给窗口的 radius 对齐，避免四角露出方形材质。 */
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.05), transparent 55%),
+    linear-gradient(168deg, rgba(30, 34, 46, 0.1), rgba(12, 15, 22, 0.16));
 }
 
 .strip-cell {
@@ -2744,7 +2756,8 @@ html:has(.strip-shell) #root {
   }
 
   /* mac 的薄 tint 依赖系统模糊；用户关掉透明度后必须自己变成近实心。 */
-  .widget-shell--mac:not(.widget-shell--glass-css) {
+  .widget-shell--mac:not(.widget-shell--glass-css),
+  .strip-shell--mac:not(.strip-shell--glass-css) {
     background:
       linear-gradient(158deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 55%),
       rgba(24, 27, 33, 0.98);

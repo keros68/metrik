@@ -51,6 +51,10 @@ fn to_menubar_panel(app: &AppHandle) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
+    // 紧凑面板与胶囊条是固定深色设计：把窗口外观锁定为 dark，menu 材质
+    // （见 windowClient.js 的 setEffects）随窗口外观渲染，浅色系统下也保持
+    // 深色菜单玻璃，白字对比度不塌。
+    let _ = window.set_theme(Some(tauri::Theme::Dark));
     let panel = match window.to_panel() {
         Ok(panel) => panel,
         Err(error) => {

@@ -283,11 +283,13 @@ async function setWindowGlass(enabled) {
     await makeWebviewTransparent();
   }
   try {
-    // macOS 的 vibrancy 是单选的：只给一个材质。hudWindow 是深色 HUD 材质，
-    // 不随系统浅色模式变白，和这套固定深色的配色一致（浅色主题是另一件事）。
+    // macOS 的 vibrancy 是单选的：只给一个材质。menu 是原生菜单同款材质
+    // （通透、带饱和度增强），比发闷的 hudWindow 更接近系统菜单质感。
+    // 材质深浅跟随窗口外观，面板窗口在 Rust 侧锁定为 dark（见 macos.rs），
+    // 浅色系统下也保持深色菜单玻璃，和这套固定深色的配色一致。
     await appWindow.setEffects(
       isMacPlatform()
-        ? { effects: ["hudWindow"], state: "active", radius: 12 }
+        ? { effects: ["menu"], state: "active", radius: 12 }
         : { effects: ["blur"] },
     );
     return "native";

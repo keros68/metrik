@@ -746,6 +746,7 @@ function StripBar({
   loading,
   transparent,
   glassAlpha = 0.82,
+  glassMode = "css",
   orientation,
   onToggleOrientation,
   onTogglePinned,
@@ -761,7 +762,7 @@ function StripBar({
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   return (
     <main
-      className={`strip-shell ${vertical ? "strip-shell--vertical" : ""} ${transparent ? "strip-shell--transparent" : ""}`}
+      className={`strip-shell ${vertical ? "strip-shell--vertical" : ""} ${transparent ? "strip-shell--transparent" : ""} ${transparent && glassMode === "css" ? "strip-shell--glass-css" : ""} ${IS_MAC ? "strip-shell--mac" : ""}`}
       {...dragProps}
       style={{
         ...(transparent ? { "--glass-alpha": glassAlpha } : {}),
@@ -2837,6 +2838,7 @@ export function App() {
         loading={appBusy}
         transparent={transparent}
         glassAlpha={glassAlpha}
+        glassMode={glassMode}
         orientation={stripOrientation}
         onToggleOrientation={handleToggleStripOrientation}
         onTogglePinned={handleTogglePinned}
