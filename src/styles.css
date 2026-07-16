@@ -736,15 +736,34 @@ html:has(.strip-shell) #root {
   padding: 0 6px 0 8px;
   gap: 4px;
   overflow: hidden;
+  color: var(--ink);
+  background:
+    radial-gradient(140% 180% at 14% 0%, rgba(255, 255, 255, 0.9), transparent 60%),
+    linear-gradient(165deg, #fbfbfa, #f0efeb);
+  box-shadow: inset 0 0 0 1px rgba(31, 33, 36, 0.08);
+  cursor: default;
+  user-select: none;
+}
+
+.strip-shell--vertical {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 6px 6px 5px;
+  gap: 2px;
+}
+
+/* 玻璃模式与小卡片同一条管线：原生材质填满方形窗口，窗口由 DWM 加
+   系统圆角（约 8px），CSS 圆角收小贴合，避免四角露出方形材质或白底。 */
+.strip-shell--transparent {
+  --glass-alpha: 0.82;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.92);
   background:
     radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
-    rgba(21, 23, 28, 0.93);
-  border-radius: 13px;
+    rgba(21, 23, 28, var(--glass-alpha));
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.09),
     inset 0 1px rgba(255, 255, 255, 0.12);
-  cursor: default;
-  user-select: none;
 }
 
 .strip-cell {
@@ -758,9 +777,12 @@ html:has(.strip-shell) #root {
   transition: background-color 240ms var(--motion);
 }
 
+.strip-shell--vertical .strip-cell { flex: none; }
+
 .strip-cell > * { pointer-events: none; }
 
-.strip-cell:hover { background: rgba(255, 255, 255, 0.07); }
+.strip-cell:hover { background: rgba(31, 33, 36, 0.06); }
+.strip-shell--transparent .strip-cell:hover { background: rgba(255, 255, 255, 0.07); }
 
 .strip-cell-icon {
   width: 16px;
@@ -776,7 +798,7 @@ html:has(.strip-shell) #root {
 }
 
 .strip-cell-body em {
-  color: rgba(255, 255, 255, 0.92);
+  color: rgba(31, 33, 36, 0.92);
   font-style: normal;
   font-size: 11px;
   font-weight: 600;
@@ -784,49 +806,77 @@ html:has(.strip-shell) #root {
   line-height: 1;
 }
 
+.strip-shell--transparent .strip-cell-body em { color: rgba(255, 255, 255, 0.92); }
+
 .strip-cell-track {
   display: block;
   height: 4px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--quota-accent, #7fabef) 22%, rgba(255, 255, 255, 0.06));
+  background: color-mix(in srgb, var(--quota-accent, var(--blue)) 16%, rgba(31, 33, 36, 0.05));
   border-radius: 2px;
+}
+
+.strip-shell--transparent .strip-cell-track {
+  background: color-mix(in srgb, var(--quota-accent, #7fabef) 22%, rgba(255, 255, 255, 0.06));
 }
 
 .strip-cell-track i {
   display: block;
   width: 100%;
   height: 100%;
-  background: var(--quota-accent, #7fabef);
+  background: var(--quota-accent, var(--blue));
   border-radius: inherit;
-  filter: brightness(1.22) saturate(0.92);
   transform-origin: left center;
-  transition: transform 700ms var(--motion);
+  transition-property: transform, opacity;
+  transition-duration: 700ms;
+  transition-timing-function: var(--motion);
 }
 
-/* 陈旧快照整格降透明度；接近耗尽换警示色（沿用 85/95 分级）。 */
-.strip-cell--stale { opacity: 0.55; }
-.strip-cell--warn em { color: #e8b04a; }
-.strip-cell--warn .strip-cell-track i { background: #e8b04a; filter: none; }
-.strip-cell--critical em { color: #ec7a63; }
-.strip-cell--critical .strip-cell-track i { background: #ec7a63; filter: none; }
+.strip-shell--transparent .strip-cell-track i { filter: brightness(1.22) saturate(0.92); }
+
+/* 陈旧快照只淡化进度条（与小卡片一致），文字保持全亮；
+   接近耗尽换警示色（沿用 85/95 分级）。 */
+.strip-cell--stale .strip-cell-track i { opacity: 0.55; }
+.strip-cell--warn em { color: #8f681f; }
+.strip-cell--warn .strip-cell-track i { background: var(--warn); }
+.strip-cell--critical em { color: #a1402e; }
+.strip-cell--critical .strip-cell-track i { background: var(--critical); }
+.strip-shell--transparent .strip-cell--warn em { color: #e8b04a; }
+.strip-shell--transparent .strip-cell--warn .strip-cell-track i { background: #e8b04a; filter: none; }
+.strip-shell--transparent .strip-cell--critical em { color: #ec7a63; }
+.strip-shell--transparent .strip-cell--critical .strip-cell-track i { background: #ec7a63; filter: none; }
 
 .strip-empty {
   flex: 1;
   padding-left: 4px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--muted);
   font-size: 11px;
+}
+
+.strip-shell--transparent .strip-empty { color: rgba(255, 255, 255, 0.6); }
+
+.strip-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.strip-shell--vertical .strip-controls {
+  justify-content: center;
+  padding-top: 3px;
 }
 
 .strip-shell .status-dot { flex: none; }
 
-.strip-restore {
+.strip-button {
   display: grid;
   flex: none;
   place-items: center;
   width: 22px;
   height: 22px;
-  color: rgba(255, 255, 255, 0.65);
-  background: rgba(255, 255, 255, 0.08);
+  color: #4f5257;
+  background: rgba(31, 33, 36, 0.06);
   border: none;
   border-radius: 7px;
   cursor: pointer;
@@ -835,7 +885,17 @@ html:has(.strip-shell) #root {
   transition-timing-function: var(--motion);
 }
 
-.strip-restore:hover {
+.strip-button:hover {
+  color: #1f2124;
+  background: rgba(31, 33, 36, 0.12);
+}
+
+.strip-shell--transparent .strip-button {
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.strip-shell--transparent .strip-button:hover {
   color: rgba(255, 255, 255, 0.95);
   background: rgba(255, 255, 255, 0.16);
 }

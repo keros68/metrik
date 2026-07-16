@@ -182,7 +182,8 @@ async function applyWindowMode(mode, options = {}) {
 
   if (mode === "strip") {
     const width = Math.max(size.minWidth, Math.round(options.width || size.width));
-    await appWindow.setSize(new api.LogicalSize(width, size.height));
+    const height = Math.max(size.minHeight, Math.round(options.height || size.height));
+    await appWindow.setSize(new api.LogicalSize(width, height));
     await appWindow.setResizable(false);
     // 有记忆位置回记忆位置；首次进入保持当前位置（出现在卡片原地）。
     const storedStrip = readStoredPosition("strip");
@@ -229,15 +230,16 @@ async function applyWindowMode(mode, options = {}) {
   await appWindow.setFocus().catch(() => {});
 }
 
-/// 胶囊条格数变化时只调宽度，不走 hide/show，避免闪烁。
-async function resizeStripWindow(width) {
+/// 胶囊条格数或方向变化时只调尺寸，不走 hide/show，避免闪烁。
+async function resizeStripWindow({ width, height }) {
   const api = await windowApi();
   if (!api) return;
   const size = WINDOW_SIZES.strip;
-  const target = Math.max(size.minWidth, Math.round(width));
+  const targetWidth = Math.max(size.minWidth, Math.round(width || size.width));
+  const targetHeight = Math.max(size.minHeight, Math.round(height || size.height));
   await api
     .getCurrentWindow()
-    .setSize(new api.LogicalSize(target, size.height))
+    .setSize(new api.LogicalSize(targetWidth, targetHeight))
     .catch(() => {});
 }
 

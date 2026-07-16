@@ -2,8 +2,10 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   ArrowDown,
   ArrowUp,
+  ArrowsDownUp,
   ArrowsInLineVertical,
   ArrowsInSimple,
+  ArrowsLeftRight,
   ArrowsOutSimple,
   CaretRight,
   ChartBar,
@@ -125,12 +127,24 @@ const AGENT_META = {
 
 const AGENT_ORDER = Object.keys(AGENT_META);
 
-// 胶囊条一格约 68px（图标 + 百分比 + 微型进度条），两端留白 + 回卡片按钮约 48px。
+// 胶囊条尺寸：横条一格约 68px 宽，竖条一格约 32px 高；
+// chrome 是两端留白 + 状态点 + 方向/还原两个按钮。
 const STRIP_CELL_WIDTH = 68;
-const STRIP_CHROME_WIDTH = 48;
+const STRIP_CHROME_WIDTH = 76;
+const STRIP_BAR_HEIGHT = 40;
+const STRIP_CELL_HEIGHT = 32;
+const STRIP_CHROME_HEIGHT = 38;
+const STRIP_VERTICAL_WIDTH = 96;
 
-function stripWindowWidth(count) {
-  return STRIP_CHROME_WIDTH + STRIP_CELL_WIDTH * Math.max(1, count);
+function stripWindowSize(orientation, count) {
+  const cells = Math.max(1, count);
+  if (orientation === "vertical") {
+    return {
+      width: STRIP_VERTICAL_WIDTH,
+      height: STRIP_CHROME_HEIGHT + STRIP_CELL_HEIGHT * cells,
+    };
+  }
+  return { width: STRIP_CHROME_WIDTH + STRIP_CELL_WIDTH * cells, height: STRIP_BAR_HEIGHT };
 }
 
 const AGENT_LABELS = Object.fromEntries(
@@ -724,13 +738,32 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
   );
 }
 
-function StripBar({ snapshot, agents, pinned, loading, onRestore }) {
+function StripBar({
+  snapshot,
+  agents,
+  pinned,
+  loading,
+  transparent,
+  glassAlpha = 0.82,
+  orientation,
+  onToggleOrientation,
+  onRestore,
+}) {
   const cells = agents
     .map((agentId) => ({ agentId, cell: stripCellData(agentQuotaFor(snapshot, agentId)) }))
     .filter((item) => item.cell);
   const dragProps = pinned ? {} : { "data-tauri-drag-region": true };
+  const vertical = orientation === "vertical";
+  const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   return (
-    <main className="strip-shell" {...dragProps} style={pinned ? { cursor: "default" } : undefined}>
+    <main
+      className={`strip-shell ${vertical ? "strip-shell--vertical" : ""} ${transparent ? "strip-shell--transparent" : ""}`}
+      {...dragProps}
+      style={{
+        ...(transparent ? { "--glass-alpha": glassAlpha } : {}),
+        ...(pinned ? { cursor: "default" } : {}),
+      }}
+    >
       <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
@@ -765,19 +798,30 @@ function StripBar({ snapshot, agents, pinned, loading, onRestore }) {
           配额不可用
         </span>
       )}
-      <i
-        className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
-        aria-hidden="true"
-      />
-      <button
-        type="button"
-        className="strip-restore"
-        onClick={onRestore}
-        aria-label="展开为桌面小插件"
-        title="展开为桌面小插件"
-      >
-        <ArrowsOutSimple size={13} weight="light" aria-hidden="true" />
-      </button>
+      <div className="strip-controls">
+        <i
+          className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          className="strip-button"
+          onClick={onToggleOrientation}
+          aria-label={vertical ? "切换为横条" : "切换为竖条"}
+          title={vertical ? "切换为横条" : "切换为竖条"}
+        >
+          <OrientationIcon size={13} weight="light" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="strip-button"
+          onClick={onRestore}
+          aria-label="展开为桌面小插件"
+          title="展开为桌面小插件"
+        >
+          <ArrowsOutSimple size={13} weight="light" aria-hidden="true" />
+        </button>
+      </div>
     </main>
   );
 }
@@ -2275,6 +2319,17 @@ export function App() {
   const [quotaAgent, setQuotaAgent] = useState(
     () => localStorage.getItem("metrik:quotaAgent") || "codex",
   );
+  // 胶囊条方向：横条 / 竖条，用户手动选，记住选择。
+  const [stripOrientation, setStripOrientation] = useState(() =>
+    localStorage.getItem("metrik:stripOrientation") === "vertical" ? "vertical" : "horizontal",
+  );
+  const handleToggleStripOrientation = useCallback(() => {
+    setStripOrientation((current) => {
+      const next = current === "vertical" ? "horizontal" : "vertical";
+      localStorage.setItem("metrik:stripOrientation", next);
+      return next;
+    });
+  }, []);
   // 大窗口（展开视图）暗色主题：自动 / 亮 / 暗三态，默认跟随系统。
   // 仅作用于展开视图；紧凑小插件的玻璃/浅色外观不受此设置影响。
   const [theme, setTheme] = useState(() => {
@@ -2450,7 +2505,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     const apply = () => {
-      setWindowGlass(transparent && viewMode === "compact")
+      setWindowGlass(transparent && viewMode !== "expanded")
         .then((mode) => {
           if (!cancelled) setGlassMode(mode);
         })
@@ -2519,14 +2574,14 @@ export function App() {
       stripApplied.current = false;
       return;
     }
-    const width = stripWindowWidth(stripAgents.length);
+    const size = stripWindowSize(stripOrientation, stripAgents.length);
     if (stripApplied.current) {
-      runWindowAction(() => resizeStripWindow(width));
+      runWindowAction(() => resizeStripWindow(size));
     } else {
       stripApplied.current = true;
-      runWindowAction(() => applyWindowMode("strip", { width }));
+      runWindowAction(() => applyWindowMode("strip", size));
     }
-  }, [viewMode, stripAgents.length]);
+  }, [viewMode, stripAgents.length, stripOrientation]);
   const handleCycleQuotaAgent = useCallback(() => {
     const index = quotaAgents.indexOf(activeQuotaAgent);
     const next = quotaAgents[(index + 1) % quotaAgents.length];
@@ -2648,6 +2703,10 @@ export function App() {
         agents={stripAgents}
         pinned={pinned}
         loading={appBusy}
+        transparent={transparent}
+        glassAlpha={glassAlpha}
+        orientation={stripOrientation}
+        onToggleOrientation={handleToggleStripOrientation}
         onRestore={() => handleWindowMode("compact")}
       />
     );
