@@ -3,19 +3,26 @@ import { invoke } from "@tauri-apps/api/core";
 const WINDOW_SIZES = {
   compact: { width: 320, height: 320, minWidth: 320, minHeight: 320 },
   expanded: { width: 1120, height: 760, minWidth: 960, minHeight: 700 },
+  strip: { width: 240, height: 40, minWidth: 168, minHeight: 40 },
 };
 
-let compactPosition = null;
+// compact 与 strip 各自记位，互不覆盖；expanded 不记位。
+const POSITION_KEYS = {
+  compact: "metrik:widgetPosition",
+  strip: "metrik:stripPosition",
+};
 
-const POSITION_KEY = "metrik:widgetPosition";
+const lastPositions = { compact: null, strip: null };
 
 function isDesktop() {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
-function readStoredPosition() {
+function readStoredPosition(mode) {
+  const key = POSITION_KEYS[mode];
+  if (!key) return null;
   try {
-    const raw = JSON.parse(localStorage.getItem(POSITION_KEY) || "null");
+    const raw = JSON.parse(localStorage.getItem(key) || "null");
     if (!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return null;
     return raw;
   } catch {
@@ -23,25 +30,28 @@ function readStoredPosition() {
   }
 }
 
-/// 记住小组件的物理坐标；边缘挂靠把窗口滑出屏幕时不记，避免下次开机在屏外。
-async function rememberCompactPosition(api, appWindow) {
+/// 记住窗口的物理坐标（按形态分开记）；边缘挂靠把窗口滑出屏幕时不记，
+/// 避免下次开机在屏外。
+async function rememberWindowPosition(api, appWindow, mode) {
+  const key = POSITION_KEYS[mode];
+  if (!key) return;
   const [pos, monitor] = await Promise.all([
     appWindow.outerPosition().catch(() => null),
     api.currentMonitor().catch(() => null),
   ]);
   if (!pos) return;
   if (monitor && pos.y < monitor.position.y) return;
-  compactPosition = pos;
-  localStorage.setItem(POSITION_KEY, JSON.stringify({ x: pos.x, y: pos.y }));
+  lastPositions[mode] = pos;
+  localStorage.setItem(key, JSON.stringify({ x: pos.x, y: pos.y }));
 }
 
-/// 启动时把小组件放回上次的位置；坐标已不在任何显示器上（拔了扩展屏等）时居中。
-async function restoreWindowPosition() {
+/// 启动时把窗口放回该形态上次的位置；坐标已不在任何显示器上（拔了扩展屏等）时居中。
+async function restoreWindowPosition(mode = "compact") {
   // macOS 面板永远贴着菜单栏图标，没有"上次的位置"这回事。
   if (isMacPlatform()) return;
   const api = await windowApi();
   if (!api) return;
-  const stored = readStoredPosition();
+  const stored = readStoredPosition(mode);
   if (!stored) return;
 
   const appWindow = api.getCurrentWindow();
@@ -49,8 +59,9 @@ async function restoreWindowPosition() {
     appWindow.outerSize().catch(() => null),
     api.availableMonitors().catch(() => []),
   ]);
-  const width = size?.width || 320;
-  const height = size?.height || 320;
+  const fallback = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
+  const width = size?.width || fallback.width;
+  const height = size?.height || fallback.height;
   // 至少有一部分窗口落在某块屏幕的可见区域内才算有效坐标。
   const onScreen = (monitors || []).some((monitor) => {
     const left = monitor.position.x;
@@ -64,11 +75,11 @@ async function restoreWindowPosition() {
   });
   if (!onScreen) return;
 
-  compactPosition = new api.PhysicalPosition(stored.x, stored.y);
-  await appWindow.setPosition(compactPosition).catch(() => {});
+  lastPositions[mode] = new api.PhysicalPosition(stored.x, stored.y);
+  await appWindow.setPosition(lastPositions[mode]).catch(() => {});
 }
 
-/// 拖动结束后持久化小组件位置（expanded 形态不记）。
+/// 拖动结束后持久化窗口位置（compact 与 strip 各记各的；expanded 不记）。
 async function startPositionMemory(getMode) {
   if (isMacPlatform()) return () => {};
   const api = await windowApi();
@@ -76,10 +87,11 @@ async function startPositionMemory(getMode) {
   const appWindow = api.getCurrentWindow();
   let timer = null;
   const unlistenPromise = appWindow.onMoved(() => {
-    if (getMode() !== "compact") return;
+    const mode = getMode();
+    if (!POSITION_KEYS[mode]) return;
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
-      rememberCompactPosition(api, appWindow).catch(() => {});
+      rememberWindowPosition(api, appWindow, mode).catch(() => {});
     }, 400);
   });
   return async () => {
@@ -116,7 +128,7 @@ async function openExpandedWindow(nav) {
   await invoke("open_expanded_window", { nav: nav || null });
 }
 
-async function applyWindowMode(mode) {
+async function applyWindowMode(mode, options = {}) {
   // macOS 上两种形态是两个窗口，各自固定；没有"变形"这件事。
   if (isMacPlatform()) return;
 
@@ -133,7 +145,7 @@ async function applyWindowMode(mode) {
     await appWindow.hide().catch(() => {});
     await appWindow.setSkipTaskbar(false).catch(() => {});
     await invoke("set_taskbar_button", { visible: true }).catch(() => {});
-    compactPosition = await appWindow.outerPosition().catch(() => null);
+    lastPositions.compact = await appWindow.outerPosition().catch(() => null);
     const monitor = await api.currentMonitor().catch(() => null);
     const workArea = monitor?.workArea?.size?.toLogical(monitor.scaleFactor);
     const targetWidth = Math.min(size.width, Math.max(WINDOW_SIZES.compact.width, (workArea?.width || size.width) - 32));
@@ -159,13 +171,29 @@ async function applyWindowMode(mode) {
   await invoke("set_taskbar_button", { visible: false }).catch(() => {});
   await appWindow.setMinSize(null);
   await appWindow.setMaximizable(false);
+
+  if (mode === "strip") {
+    const width = Math.max(size.minWidth, Math.round(options.width || size.width));
+    await appWindow.setSize(new api.LogicalSize(width, size.height));
+    await appWindow.setResizable(false);
+    // 有记忆位置回记忆位置；首次进入保持当前位置（出现在卡片原地）。
+    const storedStrip = readStoredPosition("strip");
+    const stripTarget =
+      lastPositions.strip ||
+      (storedStrip ? new api.PhysicalPosition(storedStrip.x, storedStrip.y) : null);
+    if (stripTarget) await appWindow.setPosition(stripTarget).catch(() => {});
+    await appWindow.show().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+    return;
+  }
+
   await appWindow.setSize(new api.LogicalSize(size.width, size.height));
   await appWindow.setResizable(false);
   await appWindow.setMinSize(new api.LogicalSize(size.minWidth, size.minHeight));
 
-  const stored = readStoredPosition();
+  const stored = readStoredPosition("compact");
   const target =
-    compactPosition || (stored ? new api.PhysicalPosition(stored.x, stored.y) : null);
+    lastPositions.compact || (stored ? new api.PhysicalPosition(stored.x, stored.y) : null);
   if (target) {
     await appWindow.setPosition(target).catch(() => appWindow.center());
   } else {
@@ -173,6 +201,18 @@ async function applyWindowMode(mode) {
   }
   await appWindow.show().catch(() => {});
   await appWindow.setFocus().catch(() => {});
+}
+
+/// 胶囊条格数变化时只调宽度，不走 hide/show，避免闪烁。
+async function resizeStripWindow(width) {
+  const api = await windowApi();
+  if (!api) return;
+  const size = WINDOW_SIZES.strip;
+  const target = Math.max(size.minWidth, Math.round(width));
+  await api
+    .getCurrentWindow()
+    .setSize(new api.LogicalSize(target, size.height))
+    .catch(() => {});
 }
 
 function glassOptions() {
@@ -453,6 +493,7 @@ export {
   isMacPlatform,
   minimizeWindow,
   openExpandedWindow,
+  resizeStripWindow,
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
