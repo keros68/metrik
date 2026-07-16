@@ -182,6 +182,24 @@ async function applyWindowMode(mode, options = {}) {
       lastPositions.strip ||
       (storedStrip ? new api.PhysicalPosition(storedStrip.x, storedStrip.y) : null);
     if (stripTarget) await appWindow.setPosition(stripTarget).catch(() => {});
+    // 最终坐标不在任何屏幕的可见区域内（挂靠残留、拔了扩展屏等）时居中，
+    // 保证胶囊条永远出现在看得见的地方。
+    const [pos, outer, monitors] = await Promise.all([
+      appWindow.outerPosition().catch(() => null),
+      appWindow.outerSize().catch(() => null),
+      api.availableMonitors().catch(() => []),
+    ]);
+    const onScreen = Boolean(
+      pos &&
+        (monitors || []).some(
+          (monitor) =>
+            pos.x + (outer?.width || 0) > monitor.position.x &&
+            pos.x < monitor.position.x + monitor.size.width &&
+            pos.y + (outer?.height || 0) > monitor.position.y &&
+            pos.y < monitor.position.y + monitor.size.height,
+        ),
+    );
+    if (!onScreen) await appWindow.center().catch(() => {});
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
     return;
@@ -314,7 +332,9 @@ async function startEdgeDock({ getMode, getPinned }) {
   const poll = async () => {
     if (disposed || !dock) return;
     // 固定 = 锁定位置：立即解除挂靠，不再自动收起。
-    if (getPinned()) {
+    // 离开 compact（折叠成胶囊条等）同样立即解除：挂靠计时器记的是旧形态的
+    // 高度，继续收起会把新形态的窗口整个滑出屏幕。
+    if (getPinned() || getMode() !== "compact") {
       await undock();
       return;
     }
