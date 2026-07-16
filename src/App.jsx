@@ -2479,23 +2479,6 @@ export function App() {
     };
   }, []);
 
-  // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
-  const stripApplied = useRef(false);
-  useEffect(() => {
-    if (IS_MAC) return;
-    if (viewMode !== "strip") {
-      stripApplied.current = false;
-      return;
-    }
-    const width = stripWindowWidth(stripAgents.length);
-    if (stripApplied.current) {
-      runWindowAction(() => resizeStripWindow(width));
-    } else {
-      stripApplied.current = true;
-      runWindowAction(() => applyWindowMode("strip", { width }));
-    }
-  }, [viewMode, stripAgents.length]);
-
   useEffect(() => {
     if (!drawerOpen) return undefined;
     const closeOnEscape = (event) => {
@@ -2528,6 +2511,22 @@ export function App() {
         .filter((agent) => AGENT_META[agent]),
     [snapshot],
   );
+  // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
+  const stripApplied = useRef(false);
+  useEffect(() => {
+    if (IS_MAC) return;
+    if (viewMode !== "strip") {
+      stripApplied.current = false;
+      return;
+    }
+    const width = stripWindowWidth(stripAgents.length);
+    if (stripApplied.current) {
+      runWindowAction(() => resizeStripWindow(width));
+    } else {
+      stripApplied.current = true;
+      runWindowAction(() => applyWindowMode("strip", { width }));
+    }
+  }, [viewMode, stripAgents.length]);
   const handleCycleQuotaAgent = useCallback(() => {
     const index = quotaAgents.indexOf(activeQuotaAgent);
     const next = quotaAgents[(index + 1) % quotaAgents.length];
