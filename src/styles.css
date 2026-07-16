@@ -200,17 +200,15 @@ button:focus-visible {
 }
 
 /* ============ macOS：材质交给系统 ============
-   面板是 menu vibrancy（原生菜单同款玻璃，窗口外观锁 dark，自带系统模糊、
-   饱和度增强与窗口阴影）。这里只补内描边与高光；再叠一层 Windows 那种
-   近实心深色板（--glass-alpha 0.82）会把系统材质糊死，所以 mac 上把 tint
-   压到很薄，暗度由 vibrancy 负责。原生材质拿不到时走 --glass-css 近实心
-   回落，不套这条。 */
+   面板使用 menu vibrancy，并像 CodexBar 的 NSMenu 一样跟随系统外观。WebView
+   只叠一层适度 tint 来稳定复杂壁纸上的文字对比度；原生材质拿不到时走
+   --glass-css 近实心回落，不套这条。 */
 .widget-shell--mac:not(.widget-shell--glass-css) {
   /* 与 setEffects 传给窗口的 radius 对齐，避免四角露出方形材质。 */
-  border-radius: 12px;
+  border-radius: 14px;
   background:
-    radial-gradient(130% 100% at 14% 0%, rgba(178, 200, 255, 0.05), transparent 52%),
-    linear-gradient(168deg, rgba(30, 34, 46, 0.1), rgba(12, 15, 22, 0.16));
+    radial-gradient(130% 100% at 14% 0%, rgba(178, 200, 255, 0.07), transparent 52%),
+    linear-gradient(168deg, rgba(30, 34, 46, 0.22), rgba(12, 15, 22, 0.3));
   border: none;
   /* 窗口阴影由 NSPanel 自己投，CSS 不再叠外阴影。 */
   box-shadow:
@@ -771,15 +769,14 @@ html:has(.strip-shell) #root {
     inset 0 1px rgba(255, 255, 255, 0.12);
 }
 
-/* macOS：条带的材质同样交给系统 vibrancy（menu 材质，同紧凑面板），
-   近实心深色板会把材质糊死，压薄成一层冷色 tint；
-   原生材质拿不到时走上面的近实心配方，不套这条。 */
+/* macOS：条带同样使用跟随系统的 menu vibrancy；原生材质拿不到时走
+   上面的近实心配方，不套这条。 */
 .strip-shell--mac:not(.strip-shell--glass-css) {
   /* 与 setEffects 传给窗口的 radius 对齐，避免四角露出方形材质。 */
-  border-radius: 12px;
+  border-radius: 20px;
   background:
-    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.05), transparent 55%),
-    linear-gradient(168deg, rgba(30, 34, 46, 0.1), rgba(12, 15, 22, 0.16));
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
+    linear-gradient(168deg, rgba(30, 34, 46, 0.2), rgba(12, 15, 22, 0.28));
 }
 
 .strip-cell {
@@ -953,6 +950,131 @@ html:has(.strip-shell) #root {
 
 .strip-button--active { color: var(--blue); }
 .strip-shell--transparent .strip-button--active { color: #9ec1f5; }
+
+/* CodexBar 直接使用原生 NSMenu，并把菜单外观钉在系统当前 appearance；
+   Metrik 的 WebView 内容也必须随之切换前景色，不能在浅色材质上继续用白字。 */
+@media (prefers-color-scheme: light) {
+  .widget-shell--mac:not(.widget-shell--glass-css) {
+    background:
+      radial-gradient(130% 100% at 14% 0%, rgba(255, 255, 255, 0.48), transparent 52%),
+      linear-gradient(168deg, rgba(252, 252, 252, 0.4), rgba(238, 241, 246, 0.3));
+    box-shadow:
+      inset 0 0 0 1px rgba(31, 33, 36, 0.1),
+      inset 0 1px rgba(255, 255, 255, 0.72);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-titlebar {
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 1px rgba(31, 33, 36, 0.08);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-brand,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric strong,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent {
+    color: rgba(24, 26, 30, 0.94);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .window-action {
+    color: rgba(31, 33, 36, 0.58);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .window-action:hover {
+    color: rgba(24, 26, 30, 0.94);
+    background: rgba(31, 33, 36, 0.08);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact {
+    background: rgba(31, 33, 36, 0.07);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button {
+    color: rgba(31, 33, 36, 0.58);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button.is-selected {
+    color: rgba(24, 26, 30, 0.94);
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: 0 1px 3px rgba(31, 33, 36, 0.12);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent-list {
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow:
+      0 0 0 1px rgba(31, 33, 36, 0.08),
+      inset 0 1px rgba(255, 255, 255, 0.52);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota:hover,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent:hover,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent--selected {
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent {
+    box-shadow: 0 1px rgba(31, 33, 36, 0.07);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric > span,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota > span,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric small,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-comparison,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota > small,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-window small,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent > span > small,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent em,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source,
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source small {
+    color: rgba(31, 33, 36, 0.58);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-window em {
+    color: rgba(24, 26, 30, 0.92);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-track {
+    background: color-mix(in srgb, var(--quota-accent, #246bdb) 18%, rgba(31, 33, 36, 0.08));
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source:hover {
+    color: rgba(24, 26, 30, 0.9);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css) {
+    color: rgba(24, 26, 30, 0.92);
+    background:
+      radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.48), transparent 55%),
+      linear-gradient(168deg, rgba(252, 252, 252, 0.42), rgba(238, 241, 246, 0.32));
+    box-shadow:
+      inset 0 0 0 1px rgba(31, 33, 36, 0.1),
+      inset 0 1px rgba(255, 255, 255, 0.68);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-cell-body em {
+    color: rgba(24, 26, 30, 0.92);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-cell-track {
+    background: rgba(31, 33, 36, 0.11);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-button {
+    color: rgba(31, 33, 36, 0.6);
+    background: rgba(31, 33, 36, 0.07);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-button:hover {
+    color: rgba(24, 26, 30, 0.94);
+    background: rgba(31, 33, 36, 0.13);
+  }
+
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-empty,
+  .strip-shell--mac:not(.strip-shell--glass-css).strip-shell--transparent .strip-cell--unavailable em {
+    color: rgba(31, 33, 36, 0.56);
+  }
+}
 
 .sr-only {
   position: absolute;

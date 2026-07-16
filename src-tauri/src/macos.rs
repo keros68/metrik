@@ -16,7 +16,8 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    ActivationPolicy, AppHandle, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindowBuilder,
+    ActivationPolicy, AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, WebviewUrl,
+    WebviewWindowBuilder,
 };
 use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
 use tauri_nspanel::{panel_delegate, ManagerExt, WebviewWindowExt};
@@ -51,10 +52,9 @@ fn to_menubar_panel(app: &AppHandle) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
-    // 紧凑面板与胶囊条是固定深色设计：把窗口外观锁定为 dark，menu 材质
-    // （见 windowClient.js 的 setEffects）随窗口外观渲染，浅色系统下也保持
-    // 深色菜单玻璃，白字对比度不塌。
-    let _ = window.set_theme(Some(tauri::Theme::Dark));
+    // 与 CodexBar 的原生 NSMenu 一样跟随系统当前外观；不要把 vibrancy 锁死
+    // 为 dark。内容层会分别为 light/dark 材质保证对比度。
+    let _ = window.set_theme(None);
     let panel = match window.to_panel() {
         Ok(panel) => panel,
         Err(error) => {
@@ -98,6 +98,21 @@ pub fn show_panel(app: &AppHandle) {
     panel.show();
 }
 
+/// 在紧凑卡片与胶囊条之间变形，并按新尺寸重新对齐菜单栏图标。
+/// 尺寸范围在命令入口校验；这里保持原生 NSPanel 的层级和行为不变。
+pub fn resize_panel(app: &AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+        return Err("macOS 菜单栏面板不存在".into());
+    };
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())?;
+    // 不依赖 resize 事件是否已回写 outer_size；直接用目标逻辑宽度计算锚点，
+    // 避免卡片/胶囊切换的一帧里仍按旧宽度定位。
+    position_panel_with_width(app, Some(width));
+    Ok(())
+}
+
 fn toggle_panel(app: &AppHandle) {
     let Ok(panel) = app.get_webview_panel(PANEL_LABEL) else {
         return;
@@ -112,18 +127,24 @@ fn toggle_panel(app: &AppHandle) {
 
 /// 把面板水平居中对齐到托盘图标、垂直贴在菜单栏下方；靠近屏幕右缘时向内收，不出屏。
 fn position_panel(app: &AppHandle) {
+    position_panel_with_width(app, None);
+}
+
+fn position_panel_with_width(app: &AppHandle, logical_width: Option<f64>) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
     let Some((icon_x, icon_y, icon_width, icon_height)) = *TRAY_RECT.lock().unwrap() else {
         return;
     };
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
     let scale = window.scale_factor().unwrap_or(1.0);
-
-    let width = f64::from(size.width);
+    let width = match logical_width {
+        Some(width) => width * scale,
+        None => match window.outer_size() {
+            Ok(size) => f64::from(size.width),
+            Err(_) => return,
+        },
+    };
     let mut x = icon_x + icon_width / 2.0 - width / 2.0;
     let y = icon_y + icon_height + MENU_BAR_GAP * scale;
 

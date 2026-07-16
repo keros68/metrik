@@ -133,11 +133,11 @@ const AGENT_ORDER = Object.keys(AGENT_META);
 // 一格约 54px 高（图标/百分比/进度条纵向堆叠）。
 // chrome 是留白 + 状态点 + 方向/还原两个按钮（竖条里竖排）。
 const STRIP_CELL_WIDTH = 68;
-const STRIP_CHROME_WIDTH = 102;
+const STRIP_CHROME_WIDTH = IS_MAC ? 76 : 102;
 const STRIP_BAR_HEIGHT = 40;
 const STRIP_VERTICAL_WIDTH = 52;
 const STRIP_VCELL_HEIGHT = 54;
-const STRIP_VCHROME_HEIGHT = 110;
+const STRIP_VCHROME_HEIGHT = IS_MAC ? 84 : 110;
 
 function stripWindowSize(orientation, count) {
   const cells = Math.max(1, count);
@@ -673,7 +673,7 @@ function runWindowAction(action) {
   });
 }
 
-function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogglePinned, onToggleTransparent }) {
+function WindowActions({ mode, pinned, transparent = false, macMinimal = false, onToggleMode, onTogglePinned, onToggleTransparent }) {
   return (
     <div className={`window-actions window-actions--${mode}`} aria-label="窗口操作">
       {mode === "expanded" && (
@@ -698,7 +698,7 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
           <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
         </button>
       )}
-      {mode === "compact" && (
+      {mode === "compact" && !macMinimal && (
         <button
           type="button"
           className={`window-action ${transparent ? "window-action--active" : ""}`}
@@ -710,34 +710,38 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
           <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
         </button>
       )}
-      <button
-        type="button"
-        className={`window-action ${pinned ? "window-action--active" : ""}`}
-        onClick={onTogglePinned}
-        aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-        aria-pressed={pinned}
-        title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-      >
-        <PushPinSimple size={17} weight={pinned ? "fill" : "light"} aria-hidden="true" />
-      </button>
-      <button
-        type="button"
-        className="window-action"
-        onClick={() => runWindowAction(minimizeWindow)}
-        aria-label="最小化"
-        title="最小化"
-      >
-        <Minus size={17} weight="light" aria-hidden="true" />
-      </button>
-      <button
-        type="button"
-        className="window-action window-action--close"
-        onClick={() => runWindowAction(closeWindow)}
-        aria-label="隐藏到托盘"
-        title="隐藏到托盘"
-      >
-        <X size={17} weight="light" aria-hidden="true" />
-      </button>
+      {!macMinimal && (
+        <>
+          <button
+            type="button"
+            className={`window-action ${pinned ? "window-action--active" : ""}`}
+            onClick={onTogglePinned}
+            aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+            aria-pressed={pinned}
+            title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          >
+            <PushPinSimple size={17} weight={pinned ? "fill" : "light"} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-action"
+            onClick={() => runWindowAction(minimizeWindow)}
+            aria-label="最小化"
+            title="最小化"
+          >
+            <Minus size={17} weight="light" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-action window-action--close"
+            onClick={() => runWindowAction(closeWindow)}
+            aria-label="隐藏到托盘"
+            title="隐藏到托盘"
+          >
+            <X size={17} weight="light" aria-hidden="true" />
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -762,7 +766,7 @@ function StripBar({
     agentId,
     cell: stripCellData(agentQuotaFor(snapshot, agentId)),
   }));
-  const dragProps = pinned ? {} : { "data-tauri-drag-region": true };
+  const dragProps = pinned || IS_MAC ? {} : { "data-tauri-drag-region": true };
   const vertical = orientation === "vertical";
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   return (
@@ -847,16 +851,18 @@ function StripBar({
           className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
           aria-hidden="true"
         />
-        <button
-          type="button"
-          className={`strip-button ${pinned ? "strip-button--active" : ""}`}
-          onClick={onTogglePinned}
-          aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-          aria-pressed={pinned}
-          title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-        >
-          <PushPinSimple size={13} weight={pinned ? "fill" : "light"} aria-hidden="true" />
-        </button>
+        {!IS_MAC && (
+          <button
+            type="button"
+            className={`strip-button ${pinned ? "strip-button--active" : ""}`}
+            onClick={onTogglePinned}
+            aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+            aria-pressed={pinned}
+            title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          >
+            <PushPinSimple size={13} weight={pinned ? "fill" : "light"} aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
           className="strip-button"
@@ -945,16 +951,15 @@ function CompactWidget({
             />
           )}
         </div>
-        {!IS_MAC && (
-          <WindowActions
-            mode="compact"
-            pinned={pinned}
-            transparent={transparent}
-            onToggleMode={onExpand}
-            onTogglePinned={onTogglePinned}
-            onToggleTransparent={onToggleTransparent}
-          />
-        )}
+        <WindowActions
+          mode="compact"
+          pinned={pinned}
+          transparent={transparent}
+          macMinimal={IS_MAC}
+          onToggleMode={onExpand}
+          onTogglePinned={onTogglePinned}
+          onToggleTransparent={onToggleTransparent}
+        />
       </header>
 
       <div className="widget-content">
@@ -2812,7 +2817,10 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     const apply = () => {
-      setWindowGlass(transparent && viewMode !== "expanded")
+      setWindowGlass(
+        transparent && viewMode !== "expanded",
+        viewMode === "strip" ? 20 : 14,
+      )
         .then((mode) => {
           if (!cancelled) setGlassMode(mode);
         })
@@ -2855,13 +2863,14 @@ export function App() {
     return snapshot.agents.find((agent) => agent.id === selectedAgent)?.tokens || 0;
   }, [selectedAgent, snapshot]);
 
-  // 配额卡可在有官方数据的 Agent 间循环；没有任何数据时保底显示 Codex。
+  // Codex 与 Claude 始终可切换：即使某个官方配额来源尚未启用，也要让用户
+  // 看到明确的不可用/设置提示；其它 Agent 仍只在有可靠配额数据时加入循环。
   const quotaAgents = useMemo(() => {
     const withData = (snapshot.agentQuotas || [])
       .filter(quotaHasData)
       .map((entry) => entry.agent)
       .filter((agent) => AGENT_META[agent]);
-    return withData.length ? withData : ["codex"];
+    return [...new Set(["codex", "claude", ...withData])];
   }, [snapshot]);
   const activeQuotaAgent = quotaAgents.includes(quotaAgent) ? quotaAgent : quotaAgents[0];
   // 自动模式：胶囊条显示全部有官方配额数据的 agent（快照顺序）。
@@ -2914,7 +2923,6 @@ export function App() {
   // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
   const stripApplied = useRef(false);
   useEffect(() => {
-    if (IS_MAC) return;
     if (viewMode !== "strip") {
       stripApplied.current = false;
       return;
@@ -2977,9 +2985,17 @@ export function App() {
   }, [activeNav, viewMode, period]);
 
   const handleWindowMode = useCallback((nextMode) => {
-    // macOS：完整视图是另一个窗口，面板只负责把它开出来，自己保持原样。
+    // macOS：完整视图是另一个窗口；紧凑卡片与胶囊条仍在同一个菜单栏
+    // NSPanel 内切换，并由后端在改尺寸后重新锚定到菜单栏图标。
     if (IS_MAC) {
-      if (nextMode === "expanded") runWindowAction(() => openExpandedWindow());
+      if (nextMode === "expanded") {
+        runWindowAction(() => openExpandedWindow());
+        return;
+      }
+      setViewMode(nextMode);
+      if (nextMode === "compact") setActiveNav("overview");
+      localStorage.setItem("metrik:viewMode", nextMode);
+      if (nextMode !== "strip") runWindowAction(() => applyWindowMode(nextMode));
       return;
     }
     setViewMode(nextMode);

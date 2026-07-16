@@ -12,7 +12,7 @@
 ## 形态与平台
 
 - 新增 `mode === "strip"`，与 compact/expanded 同属主窗口变形，复用 `applyWindowMode` 机制（`src/windowClient.js`）。
-- **仅 Windows/Linux 生效**。macOS 上小插件是菜单栏 NSPanel，位置与形态由平台语义决定（`windowClient.js` 的 mac 分支全部跳过），本期不动 macOS。
+- Windows/Linux 使用普通桌面浮窗；macOS 在菜单栏 NSPanel 内提供同样的卡片/胶囊入口。Mac 变形后必须重新锚定菜单栏图标，不启用拖动、置顶或位置记忆。
 - 窗口参数：高约 36 逻辑像素；宽 = 格数 × ~64px + 两端留白，agent 格数变化时自动 `setSize`。无边框、不可缩放、`skipTaskbar`、置顶跟随现有"固定"开关。
 - 外观走现有玻璃管线（`setWindowGlass`：原生可用走原生，否则 CSS 近实心玻璃），整体一枚大圆角胶囊。
 
