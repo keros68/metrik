@@ -2146,21 +2146,37 @@ function heatLevel(tokens, thresholds) {
   return 4;
 }
 
-// 按周（周一起始）汇总每 Agent 的 token，用于趋势折线。
-function weeklySeries(days) {
-  const weeks = new Map();
+// 按周（周一起始）汇总每 Agent 的 token，用于趋势折线与构成。
+// 以当前周为终点补零生成连续 rangeWeeks 个周：无数据的周保留为零，
+// 周与周在 X 轴上等距，日期刻度才对得上。
+function weeklySeries(days, rangeWeeks) {
+  const byWeek = new Map();
   days.forEach((day) => {
     const date = new Date(`${day.date}T00:00:00`);
     const monday = new Date(date);
     monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
     const key = dateKey(monday);
-    const bucket = weeks.get(key) || { label: key, byAgent: {} };
+    const bucket = byWeek.get(key) || { label: key, byAgent: {} };
     Object.entries(day.byAgent || {}).forEach(([id, value]) => {
       bucket.byAgent[id] = (bucket.byAgent[id] || 0) + Number(value || 0);
     });
-    weeks.set(key, bucket);
+    byWeek.set(key, bucket);
   });
-  return [...weeks.values()].sort((a, b) => (a.label < b.label ? -1 : 1));
+  const currentMonday = new Date();
+  currentMonday.setHours(0, 0, 0, 0);
+  currentMonday.setDate(currentMonday.getDate() - ((currentMonday.getDay() + 6) % 7));
+  return Array.from({ length: rangeWeeks }, (_, index) => {
+    const monday = new Date(currentMonday);
+    monday.setDate(monday.getDate() - (rangeWeeks - 1 - index) * 7);
+    const key = dateKey(monday);
+    return byWeek.get(key) || { label: key, byAgent: {} };
+  });
+}
+
+// 周一日期 → "M/D" 短刻度。
+function weekTickLabel(key) {
+  const date = new Date(`${key}T00:00:00`);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 // 图表专用降饱和配色：品牌色直接上图会显得"纯"，
@@ -2194,9 +2210,11 @@ function smoothPath(points) {
   return d;
 }
 
-function ReportTrendChart({ days }) {
-  const weeks = weeklySeries(days);
+function ReportTrendChart({ weeks }) {
   const agents = AGENT_ORDER.filter((id) => weeks.some((week) => (week.byAgent[id] || 0) > 0));
+  if (!agents.length) {
+    return <p className="settings-muted">所选时间段内没有已索引的用量。</p>;
+  }
   const max = Math.max(1, ...weeks.flatMap((week) => agents.map((id) => week.byAgent[id] || 0)));
   const width = 620;
   const height = 210;
@@ -2205,6 +2223,9 @@ function ReportTrendChart({ days }) {
   const y = (value) => height - pad.bottom - (value / max) * (height - pad.top - pad.bottom);
   const linePoints = (id) => weeks.map((week, index) => [x(index), y(week.byAgent[id] || 0)]);
   const baseline = height - pad.bottom;
+  // X 轴最多 ~6 个周刻度；Y 轴给半程和峰值两条虚线参考。
+  const tickStride = Math.max(1, Math.ceil(weeks.length / 6));
+  const gridValues = [max / 2, max];
 
   return (
     <div>
@@ -2212,7 +2233,7 @@ function ReportTrendChart({ days }) {
         className="report-trend"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="近 26 周每周 token 用量趋势，按 Agent 分色"
+        aria-label={`近 ${weeks.length} 周每周 token 用量趋势，按 Agent 分色`}
       >
         <defs>
           {agents.map((id) => (
@@ -2223,9 +2244,9 @@ function ReportTrendChart({ days }) {
           ))}
         </defs>
         <line x1={pad.left} y1={baseline} x2={width - pad.right} y2={baseline} className="trend-axis" />
-        <text x={pad.left} y={pad.top + 2} className="trend-label">{compactTokens(max)}</text>
-        <text x={pad.left} y={height - 6} className="trend-label">{weeks[0]?.label}</text>
-        <text x={width - pad.right} y={height - 6} className="trend-label" textAnchor="end">{weeks[weeks.length - 1]?.label}</text>
+        {gridValues.map((value) => (
+          <line key={value} x1={pad.left} y1={y(value)} x2={width - pad.right} y2={y(value)} className="trend-grid" />
+        ))}
         {agents.map((id) => {
           const pts = linePoints(id);
           const line = smoothPath(pts);
@@ -2237,6 +2258,23 @@ function ReportTrendChart({ days }) {
             </g>
           );
         })}
+        {/* 刻度文字画在曲线之后，避免被面积填充和线盖住。 */}
+        {gridValues.map((value) => (
+          <text key={value} x={pad.left} y={y(value) - 4} className="trend-label">{compactTokens(value)}</text>
+        ))}
+        {weeks.map((week, index) =>
+          index % tickStride === 0 ? (
+            <text
+              key={week.label}
+              x={x(index)}
+              y={height - 6}
+              className="trend-label"
+              textAnchor={index === 0 ? "start" : x(index) > width - 30 ? "end" : "middle"}
+            >
+              {weekTickLabel(week.label)}
+            </text>
+          ) : null,
+        )}
       </svg>
       <div className="chart-legend chart-legend--report" aria-label="图例">
         {agents.map((id) => (
@@ -2247,15 +2285,18 @@ function ReportTrendChart({ days }) {
   );
 }
 
-function ReportShareDonut({ agents, totalTokens }) {
+function ReportShareDonut({ agents, totalTokens, weeksCount }) {
   const rows = agents.filter((agent) => agent.tokens > 0);
+  if (!rows.length) {
+    return <p className="settings-muted">所选时间段内没有已索引的用量。</p>;
+  }
   const total = rows.reduce((sum, agent) => sum + agent.tokens, 0) || 1;
   const radius = 74;
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   return (
     <div className="report-donut">
-      <svg viewBox="0 0 200 200" role="img" aria-label="26 周内各 Agent 用量占比环形图">
+      <svg viewBox="0 0 200 200" role="img" aria-label={`近 ${weeksCount} 周内各 Agent 用量占比环形图`}>
         {rows.map((agent) => {
           const fraction = agent.tokens / total;
           const dash = fraction * circumference;
@@ -2277,7 +2318,7 @@ function ReportShareDonut({ agents, totalTokens }) {
           return segment;
         })}
         <text x="100" y="96" textAnchor="middle" className="donut-total">{compactTokens(totalTokens)}</text>
-        <text x="100" y="114" textAnchor="middle" className="donut-caption">tokens · 26 周</text>
+        <text x="100" y="114" textAnchor="middle" className="donut-caption">{`tokens · 近 ${weeksCount} 周`}</text>
       </svg>
       <ul className="comp-legend">
         {rows.map((agent) => (
@@ -2298,8 +2339,19 @@ const REPORT_VIEWS = [
   { id: "share", label: "构成" },
 ];
 
+// 周趋势/构成的统计时间段档位；热力图固定 26 周日历不参与。
+const REPORT_RANGE_WEEKS = [4, 8, 13, 26];
+
 function ReportsSection({ report }) {
   const [view, setView] = useState("heatmap");
+  const [rangeWeeks, setRangeWeeks] = useState(() => {
+    const stored = Number(localStorage.getItem("metrik:reportWeeks"));
+    return REPORT_RANGE_WEEKS.includes(stored) ? stored : 8;
+  });
+  const handleRangeWeeks = (next) => {
+    setRangeWeeks(next);
+    localStorage.setItem("metrik:reportWeeks", String(next));
+  };
   if (!report || report.status === "loading") {
     return (
       <main className="reports-section" aria-busy="true">
@@ -2339,6 +2391,19 @@ function ReportsSection({ report }) {
   const coverageStart = Number.isFinite(data.firstEventMs)
     ? new Date(data.firstEventMs).toLocaleDateString("zh-CN")
     : null;
+  // 周趋势与构成共用同一份按档位截取的周序列；热力图仍是固定 26 周日历。
+  const trendWeeks = weeklySeries(data.days, rangeWeeks);
+  const rangeTotals = {};
+  trendWeeks.forEach((week) => {
+    Object.entries(week.byAgent).forEach(([id, value]) => {
+      rangeTotals[id] = (rangeTotals[id] || 0) + value;
+    });
+  });
+  const rangeAgents = AGENT_ORDER.filter((id) => rangeTotals[id] > 0).map((id) => ({
+    id,
+    tokens: rangeTotals[id],
+  }));
+  const rangeTotal = rangeAgents.reduce((sum, agent) => sum + agent.tokens, 0);
 
   return (
     <main className="reports-section" aria-labelledby="reports-title">
@@ -2359,25 +2424,42 @@ function ReportsSection({ report }) {
       </div>
 
       <section className="report-card" aria-label="活动可视化">
-        <div className="report-view-toggle" role="group" aria-label="切换图表形式">
-          {REPORT_VIEWS.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={view === item.id ? "is-selected" : ""}
-              aria-pressed={view === item.id}
-              onClick={() => setView(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
+        <div className="report-toolbar">
+          <div className="report-view-toggle" role="group" aria-label="切换图表形式">
+            {REPORT_VIEWS.map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                className={view === item.id ? "is-selected" : ""}
+                aria-pressed={view === item.id}
+                onClick={() => setView(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {view !== "heatmap" && (
+            <div className="report-view-toggle" role="group" aria-label="统计时间段">
+              {REPORT_RANGE_WEEKS.map((num) => (
+                <button
+                  type="button"
+                  key={num}
+                  className={rangeWeeks === num ? "is-selected" : ""}
+                  aria-pressed={rangeWeeks === num}
+                  onClick={() => handleRangeWeeks(num)}
+                >
+                  {num} 周
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* 固定高度：三种视图内容高度不同，卡片会随切换忽大忽小。 */}
         <div className="report-view-body">
         {view === "trend" ? (
-          <ReportTrendChart days={data.days} />
+          <ReportTrendChart weeks={trendWeeks} />
         ) : view === "share" ? (
-          <ReportShareDonut agents={data.agents} totalTokens={data.totalTokens} />
+          <ReportShareDonut agents={rangeAgents} totalTokens={rangeTotal} weeksCount={trendWeeks.length} />
         ) : (
           <>
         <div className="heatmap-months" aria-hidden="true">

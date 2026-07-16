@@ -2551,11 +2551,20 @@ html:has(.strip-shell) #root {
   height: 272px;
 }
 
+/* 视图切换在左、时间段档位在右；窄窗口换行。 */
+.report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 .report-view-toggle {
   display: inline-grid;
   grid-auto-flow: column;
   gap: 2px;
-  margin-bottom: 16px;
   padding: 2px;
   background: rgba(31, 33, 36, 0.045);
   border-radius: 10px;
@@ -2591,7 +2600,16 @@ html:has(.strip-shell) #root {
 }
 
 .trend-axis { stroke: rgba(31, 33, 36, 0.14); stroke-width: 1; }
-.trend-label { fill: #83858a; font-size: 10px; font-variant-numeric: tabular-nums; }
+.trend-grid { stroke: rgba(31, 33, 36, 0.09); stroke-width: 1; stroke-dasharray: 3 6; }
+/* 卡片底色描边光晕：刻度文字压在曲线上时仍可读。 */
+.trend-label {
+  fill: #83858a;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: rgba(251, 251, 250, 0.9);
+  stroke-width: 3px;
+}
 
 .chart-legend--report { margin: 10px 0 0; font-size: 12px; gap: 20px; }
 
@@ -3212,7 +3230,8 @@ html:has(.strip-shell) #root {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 :root[data-theme="dark"] .trend-axis { stroke: rgba(255, 255, 255, 0.16); }
-:root[data-theme="dark"] .trend-label { fill: var(--d-faint); }
+:root[data-theme="dark"] .trend-grid { stroke: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .trend-label { fill: var(--d-faint); stroke: var(--d-card); }
 :root[data-theme="dark"] .donut-total { fill: var(--d-strong); }
 :root[data-theme="dark"] .donut-caption { fill: var(--d-faint); }
 
