@@ -717,6 +717,129 @@ button:focus-visible {
 
 .widget-shell--transparent .widget-expand:hover { background: rgba(255, 255, 255, 0.22); }
 
+/* ============ 胶囊条（strip 第三形态） ============
+   近实心深色玻璃拟态（窗口本身透明，圆角由 CSS 画）；
+   不启用原生方形背板，避免从胶囊圆角外露出。 */
+
+/* 胶囊条窗口比 320px 的全局最小宽度还窄，strip 形态下放开限制。 */
+html:has(.strip-shell),
+html:has(.strip-shell) body,
+html:has(.strip-shell) #root {
+  min-width: 0;
+}
+
+.strip-shell {
+  display: flex;
+  align-items: center;
+  width: 100vw;
+  height: 100dvh;
+  padding: 0 6px 0 8px;
+  gap: 4px;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
+    rgba(21, 23, 28, 0.93);
+  border-radius: 13px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.12);
+  cursor: default;
+  user-select: none;
+}
+
+.strip-cell {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 9px;
+  transition: background-color 240ms var(--motion);
+}
+
+.strip-cell > * { pointer-events: none; }
+
+.strip-cell:hover { background: rgba(255, 255, 255, 0.07); }
+
+.strip-cell-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.strip-cell-body {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+
+.strip-cell-body em {
+  color: rgba(255, 255, 255, 0.92);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.strip-cell-track {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--quota-accent, #7fabef) 22%, rgba(255, 255, 255, 0.06));
+  border-radius: 2px;
+}
+
+.strip-cell-track i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--quota-accent, #7fabef);
+  border-radius: inherit;
+  filter: brightness(1.22) saturate(0.92);
+  transform-origin: left center;
+  transition: transform 700ms var(--motion);
+}
+
+/* 陈旧快照整格降透明度；接近耗尽换警示色（沿用 85/95 分级）。 */
+.strip-cell--stale { opacity: 0.55; }
+.strip-cell--warn em { color: #e8b04a; }
+.strip-cell--warn .strip-cell-track i { background: #e8b04a; filter: none; }
+.strip-cell--critical em { color: #ec7a63; }
+.strip-cell--critical .strip-cell-track i { background: #ec7a63; filter: none; }
+
+.strip-empty {
+  flex: 1;
+  padding-left: 4px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+}
+
+.strip-shell .status-dot { flex: none; }
+
+.strip-restore {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition-property: color, background-color;
+  transition-duration: 240ms;
+  transition-timing-function: var(--motion);
+}
+
+.strip-restore:hover {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

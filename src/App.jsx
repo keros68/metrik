@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   ArrowDown,
   ArrowUp,
+  ArrowsInLineVertical,
   ArrowsInSimple,
   ArrowsOutSimple,
   CaretRight,
@@ -50,6 +51,7 @@ import {
   isMacPlatform,
   minimizeWindow,
   openExpandedWindow,
+  resizeStripWindow,
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
@@ -122,6 +124,14 @@ const AGENT_META = {
 };
 
 const AGENT_ORDER = Object.keys(AGENT_META);
+
+// 胶囊条一格约 68px（图标 + 百分比 + 微型进度条），两端留白 + 回卡片按钮约 48px。
+const STRIP_CELL_WIDTH = 68;
+const STRIP_CHROME_WIDTH = 48;
+
+function stripWindowWidth(count) {
+  return STRIP_CHROME_WIDTH + STRIP_CELL_WIDTH * Math.max(1, count);
+}
 
 const AGENT_LABELS = Object.fromEntries(
   AGENT_ORDER.map((id) => [id, AGENT_META[id].label]),
@@ -229,6 +239,37 @@ function compactQuotaWindows(entry) {
     { key: "seven_day", label: "每周", view: UNAVAILABLE_QUOTA },
   ];
   return [0, 1].map((index) => entry.windows?.[index] || placeholders[index]);
+}
+
+// 胶囊条一格取"最紧张"窗口：可用窗口里已用百分比最高者。
+function stripCellData(entry) {
+  const windows = (entry.windows || []).filter(
+    (window) => window.view.available && !window.view.resetExpired,
+  );
+  if (!windows.length) return null;
+  const tightest = windows.reduce(
+    (worst, window) =>
+      quotaUsedPercent(window.view) > quotaUsedPercent(worst.view) ? window : worst,
+    windows[0],
+  );
+  return { tightest, windows };
+}
+
+// 原生 title tooltip：列出全部窗口的剩余与重置倒计时；快照数据标注更新时间。
+function stripTooltip(agentId, windows) {
+  const lines = windows.map((window) => {
+    const view = window.view;
+    const reset = Number.isFinite(view.resetsInMinutes)
+      ? ` · ${formatReset(view.resetsInMinutes)}后重置`
+      : "";
+    return `${window.label || shortWindowLabel(window.key)}：剩余 ${Math.round(view.remainingPercent)}%${reset}`;
+  });
+  const first = windows[0].view;
+  const head =
+    first.stale || first.quality === "official_snapshot"
+      ? `${AGENT_META[agentId].label}（官方快照 · ${formatQuotaAge(first.ageMinutes)}）`
+      : AGENT_META[agentId].label;
+  return [head, ...lines].join("\n");
 }
 
 function quotaUsedPercent(view) {
@@ -631,6 +672,17 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
       {mode === "compact" && (
         <button
           type="button"
+          className="window-action"
+          onClick={() => onToggleMode("strip")}
+          aria-label="折叠为胶囊条"
+          title="折叠为胶囊条"
+        >
+          <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
+        </button>
+      )}
+      {mode === "compact" && (
+        <button
+          type="button"
           className={`window-action ${transparent ? "window-action--active" : ""}`}
           onClick={onToggleTransparent}
           aria-label={transparent ? "关闭玻璃材质" : "使用玻璃材质"}
@@ -669,6 +721,64 @@ function WindowActions({ mode, pinned, transparent = false, onToggleMode, onTogg
         <X size={17} weight="light" aria-hidden="true" />
       </button>
     </div>
+  );
+}
+
+function StripBar({ snapshot, agents, pinned, loading, onRestore }) {
+  const cells = agents
+    .map((agentId) => ({ agentId, cell: stripCellData(agentQuotaFor(snapshot, agentId)) }))
+    .filter((item) => item.cell);
+  const dragProps = pinned ? {} : { "data-tauri-drag-region": true };
+  return (
+    <main className="strip-shell" {...dragProps} style={pinned ? { cursor: "default" } : undefined}>
+      <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
+      {cells.length ? (
+        cells.map(({ agentId, cell }) => {
+          const meta = AGENT_META[agentId];
+          const view = cell.tightest.view;
+          const severity = quotaSeverity(view);
+          const isSnapshot = view.stale || view.quality === "official_snapshot";
+          return (
+            <div
+              key={agentId}
+              className={`strip-cell ${isSnapshot ? "strip-cell--stale" : ""} ${severity ? `strip-cell--${severity}` : ""}`}
+              style={{ "--quota-accent": meta.accent }}
+              title={stripTooltip(agentId, cell.windows)}
+              {...dragProps}
+            >
+              <img className="strip-cell-icon" src={meta.iconSrc} alt={meta.label} draggable={false} />
+              <span className="strip-cell-body">
+                <em>{Math.round(view.remainingPercent)}%</em>
+                <span className="strip-cell-track" aria-hidden="true">
+                  <i
+                    style={{
+                      transform: `scaleX(${Math.max(0, Math.min(1, view.remainingPercent / 100))})`,
+                    }}
+                  />
+                </span>
+              </span>
+            </div>
+          );
+        })
+      ) : (
+        <span className="strip-empty" {...dragProps}>
+          配额不可用
+        </span>
+      )}
+      <i
+        className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
+        aria-hidden="true"
+      />
+      <button
+        type="button"
+        className="strip-restore"
+        onClick={onRestore}
+        aria-label="展开为桌面小插件"
+        title="展开为桌面小插件"
+      >
+        <ArrowsOutSimple size={13} weight="light" aria-hidden="true" />
+      </button>
+    </main>
   );
 }
 
@@ -2137,9 +2247,9 @@ function EmptySection({ section, onReturn }) {
 
 function initialWindowMode() {
   if (typeof window === "undefined") return "compact";
-  return new URLSearchParams(window.location.search).get("view") === "expanded"
-    ? "expanded"
-    : "compact";
+  if (new URLSearchParams(window.location.search).get("view") === "expanded") return "expanded";
+  // 上次收成胶囊条则恢复；expanded 不恢复。
+  return localStorage.getItem("metrik:viewMode") === "strip" ? "strip" : "compact";
 }
 
 /// 托盘菜单的"设置"直接开在设置页；其余情况从概览进。
@@ -2285,7 +2395,8 @@ export function App() {
   useEffect(() => {
     // 历史索引未补齐时快速迭代：每次快照只花掉一小段补齐预算，靠连续刷新把
     // 剩余文件啃完，界面全程可用。补齐结束后回到常规节奏。
-    const refreshEvery = indexing ? 400 : viewMode === "compact" ? 300_000 : 60_000;
+    // strip 与 compact 同档：都是常驻小组件，不需要展开视图的高频刷新。
+    const refreshEvery = indexing ? 400 : viewMode === "expanded" ? 60_000 : 300_000;
     let timer;
 
     const schedule = () => {
@@ -2316,7 +2427,8 @@ export function App() {
     if (IS_MAC) return;
     if (pinned) runWindowAction(() => setWindowPinned(true));
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
-    runWindowAction(() => restoreWindowPosition());
+    // strip 形态的启动定位在 strip 专属 effect 里做。
+    if (viewMode === "compact") runWindowAction(() => restoreWindowPosition("compact"));
   }, []);
 
   const pinnedRef = useRef(pinned);
@@ -2367,6 +2479,23 @@ export function App() {
     };
   }, []);
 
+  // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
+  const stripApplied = useRef(false);
+  useEffect(() => {
+    if (IS_MAC) return;
+    if (viewMode !== "strip") {
+      stripApplied.current = false;
+      return;
+    }
+    const width = stripWindowWidth(stripAgents.length);
+    if (stripApplied.current) {
+      runWindowAction(() => resizeStripWindow(width));
+    } else {
+      stripApplied.current = true;
+      runWindowAction(() => applyWindowMode("strip", { width }));
+    }
+  }, [viewMode, stripAgents.length]);
+
   useEffect(() => {
     if (!drawerOpen) return undefined;
     const closeOnEscape = (event) => {
@@ -2390,6 +2519,15 @@ export function App() {
     return withData.length ? withData : ["codex"];
   }, [snapshot]);
   const activeQuotaAgent = quotaAgents.includes(quotaAgent) ? quotaAgent : quotaAgents[0];
+  // 胶囊条只上有官方配额数据的 agent；两类事实不混排，无数据就是无数据。
+  const stripAgents = useMemo(
+    () =>
+      (snapshot.agentQuotas || [])
+        .filter(quotaHasData)
+        .map((entry) => entry.agent)
+        .filter((agent) => AGENT_META[agent]),
+    [snapshot],
+  );
   const handleCycleQuotaAgent = useCallback(() => {
     const index = quotaAgents.indexOf(activeQuotaAgent);
     const next = quotaAgents[(index + 1) % quotaAgents.length];
@@ -2447,7 +2585,9 @@ export function App() {
     }
     setViewMode(nextMode);
     if (nextMode === "compact") setActiveNav("overview");
-    runWindowAction(() => applyWindowMode(nextMode));
+    if (nextMode !== "expanded") localStorage.setItem("metrik:viewMode", nextMode);
+    // strip 的变形由 strip 专属 effect 统一处理（含启动恢复与格数变宽）。
+    if (nextMode !== "strip") runWindowAction(() => applyWindowMode(nextMode));
   }, []);
 
   const handleTogglePinned = useCallback(() => {
@@ -2501,6 +2641,18 @@ export function App() {
       rebuildInFlight.current = false;
     }
   }, [loadSnapshot]);
+
+  if (viewMode === "strip") {
+    return (
+      <StripBar
+        snapshot={snapshot}
+        agents={stripAgents}
+        pinned={pinned}
+        loading={appBusy}
+        onRestore={() => handleWindowMode("compact")}
+      />
+    );
+  }
 
   if (viewMode === "compact") {
     return (
