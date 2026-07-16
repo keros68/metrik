@@ -58,6 +58,44 @@ async function applyStartupUiScale(mode) {
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES.compact;
   await appWindow.setSize(await scaledPhysicalSize(api, appWindow, size.width, size.height));
+  await clampIntoWorkArea(api, appWindow);
+}
+
+/// 窗口重设尺寸后可能伸出屏幕（固定状态下竖条切横条最典型：位置不动、
+/// 宽度暴涨，控制按钮全在屏幕外，固定态又没有拖拽区，用户就被锁死了）。
+/// 把窗口钳回重叠面积最大的显示器工作区内；完全不与任何屏幕重叠时
+/// 返回 false，由调用方居中。
+async function clampIntoWorkArea(api, appWindow) {
+  const [pos, outer, monitors] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+    api.availableMonitors().catch(() => []),
+  ]);
+  if (!pos || !outer || !(monitors || []).length) return false;
+  let best = null;
+  let bestOverlap = 0;
+  monitors.forEach((monitor) => {
+    const area = {
+      x: monitor.workArea?.position?.x ?? monitor.position.x,
+      y: monitor.workArea?.position?.y ?? monitor.position.y,
+      width: monitor.workArea?.size?.width ?? monitor.size.width,
+      height: monitor.workArea?.size?.height ?? monitor.size.height,
+    };
+    const overlapX = Math.min(pos.x + outer.width, area.x + area.width) - Math.max(pos.x, area.x);
+    const overlapY = Math.min(pos.y + outer.height, area.y + area.height) - Math.max(pos.y, area.y);
+    const overlap = Math.max(0, overlapX) * Math.max(0, overlapY);
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      best = area;
+    }
+  });
+  if (!best) return false;
+  const x = Math.min(Math.max(pos.x, best.x), best.x + best.width - outer.width);
+  const y = Math.min(Math.max(pos.y, best.y), best.y + best.height - outer.height);
+  if (x !== pos.x || y !== pos.y) {
+    await appWindow.setPosition(new api.PhysicalPosition(Math.round(x), Math.round(y))).catch(() => {});
+  }
+  return true;
 }
 
 // compact 与 strip 各自记位，互不覆盖；expanded 不记位。
@@ -261,24 +299,10 @@ async function applyWindowMode(mode, options = {}) {
       lastPositions.strip ||
       (storedStrip ? new api.PhysicalPosition(storedStrip.x, storedStrip.y) : null);
     if (stripTarget) await appWindow.setPosition(stripTarget).catch(() => {});
-    // 最终坐标不在任何屏幕的可见区域内（挂靠残留、拔了扩展屏等）时居中，
-    // 保证胶囊条永远出现在看得见的地方。
-    const [pos, outer, monitors] = await Promise.all([
-      appWindow.outerPosition().catch(() => null),
-      appWindow.outerSize().catch(() => null),
-      api.availableMonitors().catch(() => []),
-    ]);
-    const onScreen = Boolean(
-      pos &&
-        (monitors || []).some(
-          (monitor) =>
-            pos.x + (outer?.width || 0) > monitor.position.x &&
-            pos.x < monitor.position.x + monitor.size.width &&
-            pos.y + (outer?.height || 0) > monitor.position.y &&
-            pos.y < monitor.position.y + monitor.size.height,
-        ),
-    );
-    if (!onScreen) await appWindow.center().catch(() => {});
+    // 伸出屏幕的部分钳回工作区（挂靠残留、方向切换变宽等）；
+    // 完全不在任何屏幕上（拔了扩展屏等）时居中，胶囊条永远看得见、够得着。
+    const clamped = await clampIntoWorkArea(api, appWindow);
+    if (!clamped) await appWindow.center().catch(() => {});
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
     return;
@@ -293,6 +317,8 @@ async function applyWindowMode(mode, options = {}) {
     lastPositions.compact || (stored ? new api.PhysicalPosition(stored.x, stored.y) : null);
   if (target) {
     await appWindow.setPosition(target).catch(() => appWindow.center());
+    // 缩放档位调大后，记忆位置 + 新尺寸可能伸出屏幕，钳回工作区。
+    await clampIntoWorkArea(api, appWindow);
   } else {
     await appWindow.center();
   }
@@ -320,6 +346,8 @@ async function resizeStripWindow({ width, height }) {
   await appWindow
     .setSize(await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight))
     .catch(() => {});
+  // 变宽/变高可能把窗口顶出屏幕（固定态没有拖拽区，一出去就够不着了）。
+  await clampIntoWorkArea(api, appWindow);
 }
 
 function glassOptions() {
