@@ -167,8 +167,8 @@ function isWindowsPlatform() {
   return typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 }
 
-/// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定；compact 与
-/// strip 可在同一面板内变形，但窗口按钮/边缘挂靠/位置记忆/置顶仍由平台语义取代。
+/// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定；零占地摘要直接
+/// 画进菜单栏状态图标，不使用 strip 悬浮窗。窗口按钮/挂靠/位置记忆/置顶由平台语义取代。
 function isMacPlatform() {
   return typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 }
@@ -190,18 +190,26 @@ async function openExpandedWindow(nav) {
   await invoke("open_expanded_window", { nav: nav || null });
 }
 
+/// 按用户选择更新 macOS 菜单栏 Agent 状态项；null 表示该 Agent 没有可靠的
+/// 官方额度，后端会显示 "--"，不会填零或伪造数字。
+async function updateMacStatusItems(items) {
+  if (!isDesktop() || !isMacPlatform()) return;
+  await invoke("update_macos_status_items", {
+    agents: items.map((item) => item.agent),
+    remaining: items.map((item) =>
+      Number.isFinite(item.remaining) ? item.remaining : null,
+    ),
+    stale: items.map((item) => Boolean(item.stale)),
+  });
+}
+
 async function applyWindowMode(mode, options = {}) {
-  // macOS 的完整视图仍是独立窗口；compact/strip 共用菜单栏 NSPanel。
-  // 改尺寸交给后端完成，随后会按新宽度重新对齐菜单栏图标。
+  // macOS 的完整视图是独立窗口；菜单栏 NSPanel 只保留 compact 卡片。
   if (isMacPlatform()) {
     if (!isDesktop()) return;
-    const size = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
-    const width = mode === "strip"
-      ? Math.max(size.minWidth, Math.round(options.width || size.width))
-      : size.width;
-    const height = mode === "strip"
-      ? Math.max(size.minHeight, Math.round(options.height || size.height))
-      : size.height;
+    const size = WINDOW_SIZES.compact;
+    const width = size.width;
+    const height = size.height;
     await invoke("resize_macos_panel", { width, height });
     return;
   }
@@ -303,12 +311,6 @@ async function applyWindowMode(mode, options = {}) {
 /// 胶囊条格数或方向变化时只调尺寸，不走 hide/show，避免闪烁。
 async function resizeStripWindow({ width, height }) {
   if (isMacPlatform()) {
-    if (!isDesktop()) return;
-    const size = WINDOW_SIZES.strip;
-    await invoke("resize_macos_panel", {
-      width: Math.max(size.minWidth, Math.round(width || size.width)),
-      height: Math.max(size.minHeight, Math.round(height || size.height)),
-    });
     return;
   }
   const api = await windowApi();
@@ -607,6 +609,7 @@ export {
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
+  updateMacStatusItems,
   setWindowGlass,
   setWindowPinned,
   setWindowUiScale,

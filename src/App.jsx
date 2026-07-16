@@ -58,6 +58,7 @@ import {
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
+  updateMacStatusItems,
   setWindowGlass,
   setWindowPinned,
   setWindowUiScale,
@@ -687,7 +688,7 @@ function WindowActions({ mode, pinned, transparent = false, macMinimal = false, 
           <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
         </button>
       )}
-      {mode === "compact" && (
+      {mode === "compact" && !macMinimal && (
         <button
           type="button"
           className="window-action"
@@ -1659,7 +1660,9 @@ function UiScaleCard({ uiScale, onUiScale }) {
     <div className="settings-card">
       <h2>小组件缩放</h2>
       <p className="settings-muted">
-        整体放大桌面小插件与胶囊条（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。
+        {IS_MAC
+          ? "整体放大菜单栏面板（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。"
+          : "整体放大桌面小插件与胶囊条（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。"}
       </p>
       <div className="theme-toggle" role="group" aria-label="小组件缩放档位">
         {UI_SCALE_OPTIONS.map((option) => (
@@ -1681,9 +1684,11 @@ function UiScaleCard({ uiScale, onUiScale }) {
 function WidgetAgentsCard({ widgetAgents, onToggleWidgetAgent }) {
   return (
     <div className="settings-card">
-      <h2>小组件显示的 Agent</h2>
+      <h2>{IS_MAC ? "菜单栏与小组件显示的 Agent" : "小组件显示的 Agent"}</h2>
       <p className="settings-muted">
-        选择桌面小插件里展示哪些 Agent，可单选也可多选（至少保留一个）。完整视图始终展示全部。
+        {IS_MAC
+          ? "选择菜单栏状态项和小组件里展示哪些 Agent，可单选也可多选（至少保留一个）。完整视图始终展示全部。"
+          : "选择桌面小插件里展示哪些 Agent，可单选也可多选（至少保留一个）。完整视图始终展示全部。"}
       </p>
       <ul className="settings-agent-toggle">
         {AGENT_ORDER.map((agentId) => {
@@ -1886,11 +1891,13 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
 
       <WidgetAgentsCard widgetAgents={widgetAgents} onToggleWidgetAgent={onToggleWidgetAgent} />
 
-      <StripAgentsCard
-        stripAgents={stripAgents}
-        onToggleStripAgent={onToggleStripAgent}
-        onMoveStripAgent={onMoveStripAgent}
-      />
+      {!IS_MAC && (
+        <StripAgentsCard
+          stripAgents={stripAgents}
+          onToggleStripAgent={onToggleStripAgent}
+          onMoveStripAgent={onMoveStripAgent}
+        />
+      )}
 
       <GlassAlphaCard glassAlpha={glassAlpha} onGlassAlpha={onGlassAlpha} />
 
@@ -2559,6 +2566,8 @@ function EmptySection({ section, onReturn }) {
 function initialWindowMode() {
   if (typeof window === "undefined") return "compact";
   if (new URLSearchParams(window.location.search).get("view") === "expanded") return "expanded";
+  // macOS 的零占地摘要属于菜单栏状态图标，不再把面板压成一条悬浮胶囊。
+  if (IS_MAC) return "compact";
   // 上次收成胶囊条则恢复；expanded 不恢复。
   return localStorage.getItem("metrik:viewMode") === "strip" ? "strip" : "compact";
 }
@@ -2898,6 +2907,34 @@ export function App() {
     return null;
   });
   const stripAgents = stripAgentsSetting ?? autoStripAgents;
+
+  // macOS 菜单栏与紧凑小组件共用 widgetAgents：用户勾选哪些 Agent，状态栏就
+  // 显示哪些品牌图标与官方额度。无可靠额度时传 null，原生状态项明确显示 "--"。
+  const macStatusItems = useMemo(() => {
+    const statusFor = (agentId) => {
+      const cell = stripCellData(agentQuotaFor(snapshot, agentId));
+      const view = cell?.tightest?.view;
+      if (!view?.available) return { remaining: null, stale: false };
+      return {
+        remaining: Math.max(0, Math.min(100, Math.round(view.remainingPercent))),
+        stale: Boolean(view.stale || view.quality === "official_snapshot"),
+      };
+    };
+    return widgetAgents.map((agent) => {
+      const status = statusFor(agent);
+      return {
+        agent,
+        remaining: status.remaining,
+        stale: Boolean(snapshot.pending || snapshot.loadError || status.stale),
+      };
+    });
+  }, [snapshot, widgetAgents]);
+
+  useEffect(() => {
+    if (!IS_MAC) return;
+    runWindowAction(() => updateMacStatusItems(macStatusItems));
+  }, [macStatusItems]);
+
   // 勾选即追加到末尾（勾选顺序 = 显示顺序）；首次改动时以当前自动列表为基准。
   const handleToggleStripAgent = useCallback((agentId) => {
     setStripAgentsSetting((current) => {
@@ -2923,6 +2960,7 @@ export function App() {
   // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
   const stripApplied = useRef(false);
   useEffect(() => {
+    if (IS_MAC) return;
     if (viewMode !== "strip") {
       stripApplied.current = false;
       return;
@@ -2985,17 +3023,17 @@ export function App() {
   }, [activeNav, viewMode, period]);
 
   const handleWindowMode = useCallback((nextMode) => {
-    // macOS：完整视图是另一个窗口；紧凑卡片与胶囊条仍在同一个菜单栏
-    // NSPanel 内切换，并由后端在改尺寸后重新锚定到菜单栏图标。
+    // macOS：菜单栏状态图标承担零占地摘要；面板只保留紧凑卡片，完整视图
+    // 另开标准窗口，不再把 NSPanel 变形成一条悬浮胶囊。
     if (IS_MAC) {
       if (nextMode === "expanded") {
         runWindowAction(() => openExpandedWindow());
         return;
       }
-      setViewMode(nextMode);
-      if (nextMode === "compact") setActiveNav("overview");
-      localStorage.setItem("metrik:viewMode", nextMode);
-      if (nextMode !== "strip") runWindowAction(() => applyWindowMode(nextMode));
+      setViewMode("compact");
+      setActiveNav("overview");
+      localStorage.setItem("metrik:viewMode", "compact");
+      runWindowAction(() => applyWindowMode("compact"));
       return;
     }
     setViewMode(nextMode);
@@ -3067,7 +3105,7 @@ export function App() {
     }
   }, [loadSnapshot]);
 
-  if (viewMode === "strip") {
+  if (viewMode === "strip" && !IS_MAC) {
     return (
       <StripBar
         snapshot={snapshot}

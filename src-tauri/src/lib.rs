@@ -1010,6 +1010,26 @@ fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<
     }
 }
 
+/// macOS 菜单栏按用户选择显示 Agent 图标和官方额度；其它平台没有对应状态项，
+/// 前端也不会调用。None 表示额度不可用，不能按 0% 处理。
+#[tauri::command]
+fn update_macos_status_items(
+    app: tauri::AppHandle,
+    agents: Vec<String>,
+    remaining: Vec<Option<f64>>,
+    stale: Vec<bool>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::update_status_items(&app, &agents, &remaining, &stale)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, agents, remaining, stale);
+        Err("菜单栏用量状态项仅用于 macOS".into())
+    }
+}
+
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1168,7 +1188,8 @@ pub fn run() {
             set_glass_backdrop,
             set_native_theme,
             open_expanded_window,
-            resize_macos_panel
+            resize_macos_panel,
+            update_macos_status_items
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

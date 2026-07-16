@@ -12,6 +12,7 @@
 
 use std::sync::Mutex;
 
+use image::imageops::FilterType;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -33,10 +34,161 @@ const SCREEN_MARGIN: f64 = 8.0;
 
 const PANEL_LABEL: &str = "main";
 const EXPANDED_LABEL: &str = "expanded";
+const STATUS_ICON_SIZE: u32 = 44;
+const PROVIDER_MARK_SIZE: u32 = 32;
+
+const CHATGPT_MARK: &[u8] = include_bytes!("../../src/assets/chatgpt-app-icon.png");
+const CLAUDE_MARK: &[u8] = include_bytes!("../../src/assets/claude-app-icon.jpg");
+const ZCODE_MARK: &[u8] = include_bytes!("../../src/assets/zcode-app-icon.png");
+const OPENCODE_MARK: &[u8] = include_bytes!("../../src/assets/opencode-app-icon.png");
+const KIMI_MARK: &[u8] = include_bytes!("../../src/assets/kimi-app-icon.png");
+const ANTIGRAVITY_MARK: &[u8] = include_bytes!("../../src/assets/antigravity-app-icon.png");
+
+#[derive(Clone, Copy)]
+struct StatusItemSpec {
+    id: &'static str,
+    name: &'static str,
+    icon: &'static [u8],
+}
+
+const STATUS_ITEMS: [StatusItemSpec; 6] = [
+    StatusItemSpec {
+        id: "codex",
+        name: "ChatGPT",
+        icon: CHATGPT_MARK,
+    },
+    StatusItemSpec {
+        id: "claude",
+        name: "Claude",
+        icon: CLAUDE_MARK,
+    },
+    StatusItemSpec {
+        id: "zcode",
+        name: "ZCode / GLM",
+        icon: ZCODE_MARK,
+    },
+    StatusItemSpec {
+        id: "opencode",
+        name: "OpenCode",
+        icon: OPENCODE_MARK,
+    },
+    StatusItemSpec {
+        id: "kimi",
+        name: "Kimi",
+        icon: KIMI_MARK,
+    },
+    StatusItemSpec {
+        id: "antigravity",
+        name: "Antigravity",
+        icon: ANTIGRAVITY_MARK,
+    },
+];
 
 /// 托盘图标最后一次上报的屏幕矩形。菜单项里的"显示 / 隐藏"拿不到点击事件的 rect，
 /// 用它把面板对齐到图标下方；托盘的任何一次事件（点击/移入/移动）都会刷新。
 static TRAY_RECT: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+
+fn normalized_percent(value: Option<f64>) -> Option<u8> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 100.0).round().clamp(0.0, 100.0) as u8)
+}
+
+/// 把应用里已有的官方品牌图标转成 macOS template image。背景由四角颜色推断并
+/// 去除，保留原始品牌轮廓；系统负责按浅/深菜单栏自动反色。
+fn provider_status_icon(source: &[u8]) -> Result<Image<'static>, String> {
+    let decoded = image::load_from_memory(source)
+        .map_err(|error| format!("菜单栏品牌图标无法解码：{error}"))?
+        .to_rgba8();
+    let resized = image::imageops::resize(
+        &decoded,
+        PROVIDER_MARK_SIZE,
+        PROVIDER_MARK_SIZE,
+        FilterType::Lanczos3,
+    );
+    let corners = [
+        resized.get_pixel(0, 0),
+        resized.get_pixel(PROVIDER_MARK_SIZE - 1, 0),
+        resized.get_pixel(0, PROVIDER_MARK_SIZE - 1),
+        resized.get_pixel(PROVIDER_MARK_SIZE - 1, PROVIDER_MARK_SIZE - 1),
+    ];
+    let background = [0, 1, 2].map(|channel| {
+        (corners
+            .iter()
+            .map(|pixel| u32::from(pixel[channel]))
+            .sum::<u32>()
+            / corners.len() as u32) as u8
+    });
+
+    let mut rgba = vec![0; (STATUS_ICON_SIZE * STATUS_ICON_SIZE * 4) as usize];
+    let offset = (STATUS_ICON_SIZE - PROVIDER_MARK_SIZE) / 2;
+    for (x, y, pixel) in resized.enumerate_pixels() {
+        let distance = [0, 1, 2]
+            .map(|channel| pixel[channel].abs_diff(background[channel]))
+            .into_iter()
+            .max()
+            .unwrap_or_default();
+        // JPEG 背景会有少量压缩噪点，8 以下视为背景；150 的色差即完全不透明。
+        let alpha = u16::from(distance.saturating_sub(8)) * 255 / 142;
+        let alpha = alpha.min(255) as u8;
+        let alpha = (u16::from(alpha) * u16::from(pixel[3]) / 255) as u8;
+        let output_x = x + offset;
+        let output_y = y + offset;
+        let index = ((output_y * STATUS_ICON_SIZE + output_x) * 4) as usize;
+        rgba[index..index + 3].fill(255);
+        rgba[index + 3] = alpha;
+    }
+
+    Ok(Image::new_owned(rgba, STATUS_ICON_SIZE, STATUS_ICON_SIZE))
+}
+
+fn status_item_title(remaining: Option<f64>, stale: bool) -> String {
+    match normalized_percent(remaining) {
+        Some(percent) if stale => format!("~{percent}%"),
+        Some(percent) => format!("{percent}%"),
+        None => "--".into(),
+    }
+}
+
+pub fn update_status_items(
+    app: &AppHandle,
+    agents: &[String],
+    remaining: &[Option<f64>],
+    stale: &[bool],
+) -> Result<(), String> {
+    if agents.len() != remaining.len() || agents.len() != stale.len() {
+        return Err("macOS 菜单栏状态项参数长度不一致".into());
+    }
+
+    for spec in STATUS_ITEMS {
+        let Some(tray) = app.tray_by_id(spec.id) else {
+            return Err(format!("macOS {} 菜单栏状态项不存在", spec.name));
+        };
+        let selected_index = agents.iter().position(|agent| agent == spec.id);
+        tray.set_visible(selected_index.is_some())
+            .map_err(|error| error.to_string())?;
+        let Some(index) = selected_index else {
+            continue;
+        };
+        let item_remaining = remaining[index];
+        let item_stale = stale[index];
+        tray.set_title(Some(status_item_title(item_remaining, item_stale)))
+            .map_err(|error| error.to_string())?;
+        let label = match normalized_percent(item_remaining) {
+            Some(percent) => format!("{} {percent}% 剩余", spec.name),
+            None => format!("{} 配额不可用", spec.name),
+        };
+        let suffix = if item_stale {
+            " · 数据可能已过期"
+        } else {
+            ""
+        };
+        tray.set_tooltip(Some(format!("Metrik · {label}{suffix}")))
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
 
 pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     // 只保留菜单栏图标，不占 Dock；打开完整视图时再临时切回 Regular。
@@ -52,8 +204,8 @@ fn to_menubar_panel(app: &AppHandle) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
-    // 与 CodexBar 的原生 NSMenu 一样跟随系统当前外观；不要把 vibrancy 锁死
-    // 为 dark。内容层会分别为 light/dark 材质保证对比度。
+    // 跟随 macOS 当前系统外观，不把 vibrancy 锁死为 dark。内容层会分别为
+    // light/dark 材质保证对比度。
     let _ = window.set_theme(None);
     let panel = match window.to_panel() {
         Ok(panel) => panel,
@@ -221,19 +373,22 @@ fn remember_tray_rect(window_scale: f64, rect: Rect) {
     *TRAY_RECT.lock().unwrap() = Some((position.x, position.y, size.width, size.height));
 }
 
-fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    // 面板里没有窗口按钮（macOS 上那四个按钮不渲染），被移除的功能落在这个菜单里。
+fn build_status_item(
+    app: &mut tauri::App,
+    spec: StatusItemSpec,
+    icon: Image<'static>,
+    visible: bool,
+) -> tauri::Result<()> {
+    // 每个 Agent 状态项都能独立打开同一个面板，右键菜单也保持一致。
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
     let expanded = MenuItem::with_id(app, "expanded", "完整视图", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&toggle, &expanded, &settings, &quit])?;
 
-    // 菜单栏要的是单色字形，不是彩色 App 图标：template 图由系统按浅/深色菜单栏反色。
-    let icon = Image::from_bytes(include_bytes!("../icons/tray-macos.png"))?;
-
-    TrayIconBuilder::with_id("main")
-        .tooltip("Metrik")
+    let tray = TrayIconBuilder::with_id(spec.id)
+        .tooltip(format!("Metrik · {}", spec.name))
+        .title(status_item_title(None, false))
         .icon(icon)
         .icon_as_template(true)
         .menu(&menu)
@@ -275,5 +430,45 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    tray.set_visible(visible)?;
     Ok(())
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    // Metrik 自己的状态栏语法：每个已选 Agent 一个品牌状态项，只带额度数字。
+    // 不复制第三方工具的多账户、重置倒计时或菜单布局。
+    // macOS 会把后创建的状态项放在左侧，所以反向创建，最终视觉顺序与设置列表一致。
+    for spec in STATUS_ITEMS.into_iter().rev() {
+        let icon = provider_status_icon(spec.icon)
+            .map_err(|error| tauri::Error::Anyhow(anyhow::Error::msg(error)))?;
+        let visible = matches!(spec.id, "codex" | "claude");
+        build_status_item(app, spec, icon, visible)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_title_clamps_percentages_and_marks_stale_data() {
+        assert_eq!(normalized_percent(Some(-5.0)), Some(0));
+        assert_eq!(normalized_percent(Some(120.0)), Some(100));
+        assert_eq!(normalized_percent(Some(f64::NAN)), None);
+        assert_eq!(status_item_title(Some(94.0), false), "94%");
+        assert_eq!(status_item_title(Some(94.0), true), "~94%");
+        assert_eq!(status_item_title(None, false), "--");
+    }
+
+    #[test]
+    fn provider_status_icons_use_real_brand_assets_as_template_images() {
+        for spec in STATUS_ITEMS {
+            let icon = provider_status_icon(spec.icon).expect("provider mark should decode");
+            assert_eq!(icon.width(), STATUS_ICON_SIZE);
+            assert_eq!(icon.height(), STATUS_ICON_SIZE);
+            assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] > 200));
+            assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+        }
+    }
 }
