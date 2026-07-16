@@ -44,6 +44,7 @@ import {
   setClaudeHook,
 } from "./usageClient";
 import {
+  applyStartupUiScale,
   applyWindowMode,
   checkForUpdate,
   closeWindow,
@@ -59,6 +60,7 @@ import {
   setNativeTheme,
   setWindowGlass,
   setWindowPinned,
+  setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
 } from "./windowClient";
@@ -1595,6 +1597,36 @@ function GlassAlphaCard({ glassAlpha, onGlassAlpha }) {
   );
 }
 
+const UI_SCALE_OPTIONS = [
+  { value: 1, label: "100%" },
+  { value: 1.25, label: "125%" },
+  { value: 1.5, label: "150%" },
+];
+
+function UiScaleCard({ uiScale, onUiScale }) {
+  return (
+    <div className="settings-card">
+      <h2>小组件缩放</h2>
+      <p className="settings-muted">
+        整体放大桌面小插件与胶囊条（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。
+      </p>
+      <div className="theme-toggle" role="group" aria-label="小组件缩放档位">
+        {UI_SCALE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={uiScale === option.value ? "is-selected" : ""}
+            aria-pressed={uiScale === option.value}
+            onClick={() => onUiScale(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WidgetAgentsCard({ widgetAgents, onToggleWidgetAgent }) {
   return (
     <div className="settings-card">
@@ -1674,7 +1706,7 @@ function StripAgentsCard({ stripAgents, onToggleStripAgent, onMoveStripAgent }) 
   );
 }
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, theme, onThemeChange }) {
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, theme, onThemeChange }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1806,6 +1838,8 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       />
 
       <GlassAlphaCard glassAlpha={glassAlpha} onGlassAlpha={onGlassAlpha} />
+
+      <UiScaleCard uiScale={uiScale} onUiScale={onUiScale} />
 
       <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
 
@@ -2486,6 +2520,18 @@ export function App() {
     setGlassAlpha(next);
     localStorage.setItem("metrik:glassAlpha", String(next));
   }, []);
+  // 卡片/胶囊的整体缩放档位：窗口尺寸与 WebView 原生 zoom 同乘一个系数，
+  // 等比放大不会变形；expanded 不参与。生效在 windowClient 的形态切换里，
+  // 设置页改档后下次回到卡片/胶囊时应用。
+  const [uiScale, setUiScale] = useState(() => {
+    const stored = Number(localStorage.getItem("metrik:uiScale"));
+    return UI_SCALE_OPTIONS.some((option) => option.value === stored) ? stored : 1;
+  });
+  const handleUiScale = useCallback((next) => {
+    setUiScale(next);
+    localStorage.setItem("metrik:uiScale", String(next));
+    setWindowUiScale(next);
+  }, []);
   const handleToggleWidgetAgent = useCallback((agentId) => {
     setWidgetAgents((current) => {
       const next = current.includes(agentId)
@@ -2579,7 +2625,11 @@ export function App() {
     if (pinned) runWindowAction(() => setWindowPinned(true));
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
     // strip 形态的启动定位在 strip 专属 effect 里做。
-    if (viewMode === "compact") runWindowAction(() => restoreWindowPosition("compact"));
+    if (viewMode === "compact") {
+      runWindowAction(() => restoreWindowPosition("compact"));
+      // 启动时窗口尺寸来自 tauri.conf.json（未缩放），就地应用缩放档位。
+      runWindowAction(() => applyStartupUiScale("compact"));
+    }
   }, []);
 
   const pinnedRef = useRef(pinned);
@@ -2988,6 +3038,8 @@ export function App() {
             onMoveStripAgent={handleMoveStripAgent}
             glassAlpha={glassAlpha}
             onGlassAlpha={handleGlassAlpha}
+            uiScale={uiScale}
+            onUiScale={handleUiScale}
             theme={theme}
             onThemeChange={handleThemeChange}
           />

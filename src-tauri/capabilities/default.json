@@ -19,6 +19,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-unmaximize",
     "core:webview:allow-set-webview-background-color",
+    "core:webview:allow-set-webview-zoom",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",

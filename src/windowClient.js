@@ -6,6 +6,60 @@ const WINDOW_SIZES = {
   strip: { width: 240, height: 40, minWidth: 48, minHeight: 40 },
 };
 
+// 卡片/胶囊的整体缩放档位（1 / 1.25 / 1.5）。窗口尺寸与页面 zoom 同乘一个系数，
+// 比例不变所以不会变形；expanded 不参与（窗口本身可自由缩放）。
+const UI_SCALE_KEY = "metrik:uiScale";
+const UI_SCALE_STEPS = [1, 1.25, 1.5];
+
+function readStoredUiScale() {
+  try {
+    const stored = Number(localStorage.getItem(UI_SCALE_KEY));
+    return UI_SCALE_STEPS.includes(stored) ? stored : 1;
+  } catch {
+    return 1;
+  }
+}
+
+let uiScale = readStoredUiScale();
+
+function setWindowUiScale(scale) {
+  uiScale = UI_SCALE_STEPS.includes(scale) ? scale : 1;
+}
+
+/// compact/strip 的窗口尺寸：乘缩放档位后取整到物理像素再下发，
+/// 避免分数 DPI（125%/150%）下逻辑尺寸取整产生的半像素裁切。
+async function scaledPhysicalSize(api, appWindow, width, height) {
+  const factor = await appWindow.scaleFactor().catch(() => 1);
+  return new api.PhysicalSize(
+    Math.round(width * uiScale * factor),
+    Math.round(height * uiScale * factor),
+  );
+}
+
+/// 内容缩放用 WebView 原生 zoom（等同浏览器 Ctrl+缩放）：视口单位、媒体查询
+/// 全部自洽。CSS zoom 做不到——100vw 元素在 zoom 下会溢出视口（实测）。
+async function applyWebviewZoom(factor) {
+  if (!isDesktop()) return;
+  const api = await import("@tauri-apps/api/webview");
+  await api
+    .getCurrentWebview()
+    .setZoom(factor)
+    .catch(() => {});
+}
+
+/// 启动时就地应用缩放档位（不走 applyWindowMode 的 hide/show，避免闪烁）。
+/// strip 的启动尺寸由 strip 专属 effect 走 applyWindowMode，这里只管 compact。
+async function applyStartupUiScale(mode) {
+  if (isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  await applyWebviewZoom(uiScale);
+  if (mode !== "compact" || uiScale === 1) return;
+  const appWindow = api.getCurrentWindow();
+  const size = WINDOW_SIZES.compact;
+  await appWindow.setSize(await scaledPhysicalSize(api, appWindow, size.width, size.height));
+}
+
 // compact 与 strip 各自记位，互不覆盖；expanded 不记位。
 const POSITION_KEYS = {
   compact: "metrik:widgetPosition",
@@ -151,6 +205,8 @@ async function applyWindowMode(mode, options = {}) {
     // 无边框窗口的任务栏按钮由 WS_EX_APPWINDOW 决定，setSkipTaskbar 补不上它，
     // 所以走后端改窗口样式；样式必须在隐藏状态下改，重新显示后 shell 才重读。
     await appWindow.hide().catch(() => {});
+    // 缩放档位只作用卡片/胶囊，完整视图恢复 1:1；藏起来再改，避免闪缩放跳变。
+    await applyWebviewZoom(1);
     await appWindow.setSkipTaskbar(false).catch(() => {});
     await invoke("set_taskbar_button", { visible: true }).catch(() => {});
     lastPositions.compact = await appWindow.outerPosition().catch(() => null);
@@ -175,6 +231,8 @@ async function applyWindowMode(mode, options = {}) {
     await appWindow.unmaximize();
   }
   await appWindow.hide().catch(() => {});
+  // 卡片/胶囊按用户的缩放档位显示；藏起来再改，避免闪缩放跳变。
+  await applyWebviewZoom(uiScale);
   await appWindow.setSkipTaskbar(true).catch(() => {});
   await invoke("set_taskbar_button", { visible: false }).catch(() => {});
   await appWindow.setMinSize(null);
@@ -183,7 +241,7 @@ async function applyWindowMode(mode, options = {}) {
   if (mode === "strip") {
     const width = Math.max(size.minWidth, Math.round(options.width || size.width));
     const height = Math.max(size.minHeight, Math.round(options.height || size.height));
-    await appWindow.setSize(new api.LogicalSize(width, height));
+    await appWindow.setSize(await scaledPhysicalSize(api, appWindow, width, height));
     await appWindow.setResizable(false);
     // 有记忆位置回记忆位置；首次进入保持当前位置（出现在卡片原地）。
     const storedStrip = readStoredPosition("strip");
@@ -214,9 +272,9 @@ async function applyWindowMode(mode, options = {}) {
     return;
   }
 
-  await appWindow.setSize(new api.LogicalSize(size.width, size.height));
+  await appWindow.setSize(await scaledPhysicalSize(api, appWindow, size.width, size.height));
   await appWindow.setResizable(false);
-  await appWindow.setMinSize(new api.LogicalSize(size.minWidth, size.minHeight));
+  await appWindow.setMinSize(new api.LogicalSize(size.minWidth * uiScale, size.minHeight * uiScale));
 
   const stored = readStoredPosition("compact");
   const target =
@@ -234,12 +292,12 @@ async function applyWindowMode(mode, options = {}) {
 async function resizeStripWindow({ width, height }) {
   const api = await windowApi();
   if (!api) return;
+  const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES.strip;
   const targetWidth = Math.max(size.minWidth, Math.round(width || size.width));
   const targetHeight = Math.max(size.minHeight, Math.round(height || size.height));
-  await api
-    .getCurrentWindow()
-    .setSize(new api.LogicalSize(targetWidth, targetHeight))
+  await appWindow
+    .setSize(await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight))
     .catch(() => {});
 }
 
@@ -516,6 +574,7 @@ async function closeWindow() {
 
 export {
   WINDOW_SIZES,
+  applyStartupUiScale,
   applyWindowMode,
   checkForUpdate,
   closeWindow,
@@ -531,6 +590,7 @@ export {
   setNativeTheme,
   setWindowGlass,
   setWindowPinned,
+  setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
 };
