@@ -748,8 +748,8 @@ html:has(.strip-shell) #root {
 .strip-shell--vertical {
   flex-direction: column;
   align-items: stretch;
-  padding: 6px 6px 5px;
-  gap: 2px;
+  padding: 8px 5px 6px;
+  gap: 4px;
 }
 
 /* 玻璃模式与小卡片同一条管线：原生材质填满方形窗口，窗口由 DWM 加
@@ -777,7 +777,25 @@ html:has(.strip-shell) #root {
   transition: background-color 240ms var(--motion);
 }
 
-.strip-shell--vertical .strip-cell { flex: none; }
+/* 竖条 = 横条立起来：图标在上、百分比居中、进度条在下。 */
+.strip-shell--vertical .strip-cell {
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+}
+
+.strip-shell--vertical .strip-cell-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.strip-shell--vertical .strip-cell-body {
+  flex: none;
+  width: 100%;
+}
+
+.strip-shell--vertical .strip-cell-body em { text-align: center; }
 
 .strip-cell > * { pointer-events: none; }
 
@@ -863,8 +881,10 @@ html:has(.strip-shell) #root {
 }
 
 .strip-shell--vertical .strip-controls {
-  justify-content: center;
-  padding-top: 3px;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-top: 4px;
 }
 
 .strip-shell .status-dot { flex: none; }

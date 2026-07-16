@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 const WINDOW_SIZES = {
   compact: { width: 320, height: 320, minWidth: 320, minHeight: 320 },
   expanded: { width: 1120, height: 760, minWidth: 960, minHeight: 700 },
-  strip: { width: 240, height: 40, minWidth: 168, minHeight: 40 },
+  strip: { width: 240, height: 40, minWidth: 48, minHeight: 40 },
 };
 
 // compact 与 strip 各自记位，互不覆盖；expanded 不记位。

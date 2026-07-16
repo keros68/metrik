@@ -127,21 +127,22 @@ const AGENT_META = {
 
 const AGENT_ORDER = Object.keys(AGENT_META);
 
-// 胶囊条尺寸：横条一格约 68px 宽，竖条一格约 32px 高；
-// chrome 是两端留白 + 状态点 + 方向/还原两个按钮。
+// 胶囊条尺寸：横条一格约 68px 宽；竖条是横条立起来的窄长条，
+// 一格约 54px 高（图标/百分比/进度条纵向堆叠）。
+// chrome 是留白 + 状态点 + 方向/还原两个按钮（竖条里竖排）。
 const STRIP_CELL_WIDTH = 68;
 const STRIP_CHROME_WIDTH = 76;
 const STRIP_BAR_HEIGHT = 40;
-const STRIP_CELL_HEIGHT = 32;
-const STRIP_CHROME_HEIGHT = 38;
-const STRIP_VERTICAL_WIDTH = 96;
+const STRIP_VERTICAL_WIDTH = 52;
+const STRIP_VCELL_HEIGHT = 54;
+const STRIP_VCHROME_HEIGHT = 84;
 
 function stripWindowSize(orientation, count) {
   const cells = Math.max(1, count);
   if (orientation === "vertical") {
     return {
       width: STRIP_VERTICAL_WIDTH,
-      height: STRIP_CHROME_HEIGHT + STRIP_CELL_HEIGHT * cells,
+      height: STRIP_VCHROME_HEIGHT + STRIP_VCELL_HEIGHT * cells,
     };
   }
   return { width: STRIP_CHROME_WIDTH + STRIP_CELL_WIDTH * cells, height: STRIP_BAR_HEIGHT };
