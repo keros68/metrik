@@ -175,7 +175,9 @@ fn codex_app_server_command() -> Command {
         command
             .args(["/D", "/C"])
             .arg(script)
-            .args(["app-server", "--stdio"])
+            // stdio is the default transport across Codex CLI versions. Newer
+            // releases removed the old `--stdio` compatibility flag entirely.
+            .arg("app-server")
             .creation_flags(0x0800_0000);
         command
     }
@@ -183,7 +185,8 @@ fn codex_app_server_command() -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new(resolve_unix_codex_binary());
-        command.args(["app-server", "--stdio"]);
+        // Do not pass the removed `--stdio` flag; app-server defaults to stdio.
+        command.arg("app-server");
         command
     }
 }
@@ -287,6 +290,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_server_command_uses_the_cross_version_default_stdio_transport() {
+        let command = codex_app_server_command();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(arguments.iter().any(|argument| argument == "app-server"));
+        assert!(!arguments.iter().any(|argument| argument == "--stdio"));
+    }
+
+    #[test]
     fn parses_primary_and_secondary_windows() {
         let value = json!({
             "rateLimits": {
@@ -322,7 +337,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn timeout_terminates_windows_process_tree() {
+    fn managed_child_terminates_windows_process_tree_after_descendant_is_ready() {
         use std::os::windows::process::CommandExt;
 
         let marker = std::env::temp_dir().join(format!(
@@ -345,15 +360,32 @@ mod tests {
             "-Command",
             &script,
         ]);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000);
 
-        let result = read_codex_quota_with_command(command, Duration::from_secs(2));
-        assert!(result.is_err());
+        let mut child = ManagedChild::new(
+            command
+                .spawn()
+                .expect("test PowerShell process should start"),
+        );
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.is_file() && Instant::now() < ready_deadline {
+            if let Ok(Some(status)) = child.child_mut().try_wait() {
+                panic!("test PowerShell process exited before recording its descendant: {status}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
         let descendant_pid = std::fs::read_to_string(&marker)
             .expect("test child should record its descendant pid")
             .trim()
             .parse::<u32>()
             .expect("recorded descendant pid should be numeric");
+        child.terminate();
+
         let filter = format!("PID eq {descendant_pid}");
         let output = Command::new("tasklist.exe")
             .args(["/FI", &filter, "/FO", "CSV", "/NH"])
