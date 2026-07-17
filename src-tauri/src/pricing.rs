@@ -1,24 +1,36 @@
-//! 静态成本估算定价表（美元每百万 token）。
+//! 成本估算定价表（美元每百万 token）。
 //!
-//! 数据来源：OpenAI 官方定价页（<https://openai.com/api/pricing/>）与
-//! Anthropic 官方定价页（<https://www.anthropic.com/pricing>），调研/核对日期
-//! 2026-07-13（见 `PRICING_AS_OF`）。
+//! 数据来源：LiteLLM 的公开价格表（`model_prices_and_context_window.json`），
+//! 只取 openai 与 anthropic 两个 provider，构建期由
+//! `scripts/update-pricing.mjs` 生成 `pricing_table.rs`（`npm run pricing:update`）。
+//! 运行时不联网——价格随发版更新，留在 git 里可审计。
 //!
-//! - OpenAI 的 prompt 缓存写入不计费，所以 `cache_write` 一律记 0。
-//! - Anthropic 的缓存写入价按 5 分钟 TTL 场景的 1.25× 基础输入价**近似**给出
-//!   （官方按 TTL 分级定价，这里不区分 TTL，只取最常见档位的近似值，估算存在
-//!   系统性偏差，不是账单精确值）。
-//! - GLM（智谱）官方定价页公开的人民币价格与第三方转载相互矛盾，未能核实到
-//!   稳定口径，故不纳入定价表；GLM、opencode 使用的模型以及任何未匹配到前缀
-//!   的模型一律归入 unpriced，不猜价格。
+//! ## 匹配规则：精确匹配，绝不前缀猜测
 //!
-//! 匹配规则：对事件的 `model` 字符串做**最长前缀匹配**，例如
-//! `claude-sonnet-4-5-20250929` 命中 `claude-sonnet-4-5`；
-//! `gpt-5.2-codex` 优先于 `gpt-5.2`、`gpt-5.1-codex`/`gpt-5.1`、`gpt-5` 命中，
-//! 因为按前缀长度降序比较，不依赖表内顺序。
+//! 只认表里**完全同名**的模型；仅有一个例外，是把 `-YYYYMMDD` 日期快照后缀剥掉
+//! 再试一次（`claude-haiku-4-5-20251001` 与 `claude-haiku-4-5` 是同一模型的两种
+//! 写法，同价），这是别名归一化，不是猜价。
+//!
+//! 这里曾经用「最长前缀匹配」，结果是一场事故：表最新只到 `gpt-5.2`，而实际用的
+//! 是 `gpt-5.6-sol`/`gpt-5.5`，于是它们静默命中了 `gpt-5` 的老价格——占 60% 用量
+//! 的模型被按低 74% 的价格估算，总成本低估 42%。前缀匹配把"猜价格"伪装成了特性，
+//! 正面违反 AGENTS.md 的硬约束。**匹配不上就归入 unpriced，不要再加兜底。**
+//!
+//! ## 覆盖范围
+//!
+//! GLM(zcode)、Kimi、OpenCode 用的模型不在表里，一律 unpriced：它们走订阅制
+//! coding plan，按 token 估价本就无意义；LiteLLM 里那些名字只有 Bedrock/Azure 等
+//! 第三方转售价，拿来当官方价就是猜价格。
+//!
+//! 缓存口径：OpenAI 的 prompt 缓存写入不计费（LiteLLM 里无该字段 → 记 0）；
+//! Anthropic 按 TTL 分级，LiteLLM 给的是最常见的 5 分钟档，1 小时档更贵——
+//! 长 TTL 场景会低估。这是估算，不是账单。
 
-/// 定价表最后核实日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-07-13";
+#[path = "pricing_table.rs"]
+mod table;
+
+pub use table::PRICING_AS_OF;
+use table::PRICING_TABLE;
 
 /// 单个模型的分量单价，单位：美元 / 百万 token。
 #[derive(Clone, Copy, Debug)]
@@ -29,181 +41,24 @@ pub struct Pricing {
     pub output: f64,
 }
 
-const PRICING_TABLE: &[(&str, Pricing)] = &[
-    // --- OpenAI（cache_write 免费，记 0） ---
-    (
-        "gpt-5.2-codex",
-        Pricing {
-            input: 1.75,
-            cache_read: 0.175,
-            cache_write: 0.0,
-            output: 14.0,
-        },
-    ),
-    (
-        "gpt-5.2",
-        Pricing {
-            input: 1.75,
-            cache_read: 0.175,
-            cache_write: 0.0,
-            output: 14.0,
-        },
-    ),
-    (
-        "gpt-5.1-codex",
-        Pricing {
-            input: 1.25,
-            cache_read: 0.125,
-            cache_write: 0.0,
-            output: 10.0,
-        },
-    ),
-    (
-        "gpt-5.1",
-        Pricing {
-            input: 1.25,
-            cache_read: 0.125,
-            cache_write: 0.0,
-            output: 10.0,
-        },
-    ),
-    (
-        "gpt-5-codex",
-        Pricing {
-            input: 1.25,
-            cache_read: 0.125,
-            cache_write: 0.0,
-            output: 10.0,
-        },
-    ),
-    (
-        "gpt-5-mini",
-        Pricing {
-            input: 0.25,
-            cache_read: 0.025,
-            cache_write: 0.0,
-            output: 2.0,
-        },
-    ),
-    (
-        "gpt-5",
-        Pricing {
-            input: 1.25,
-            cache_read: 0.125,
-            cache_write: 0.0,
-            output: 10.0,
-        },
-    ),
-    // --- Anthropic（cache_write 为 5 分钟 TTL 近似值） ---
-    (
-        "claude-fable-5",
-        Pricing {
-            input: 10.0,
-            cache_read: 1.0,
-            cache_write: 12.5,
-            output: 50.0,
-        },
-    ),
-    (
-        "claude-sonnet-5",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-            output: 15.0,
-        },
-    ),
-    (
-        "claude-opus-4-8",
-        Pricing {
-            input: 5.0,
-            cache_read: 0.5,
-            cache_write: 6.25,
-            output: 25.0,
-        },
-    ),
-    (
-        "claude-opus-4-5",
-        Pricing {
-            input: 5.0,
-            cache_read: 0.5,
-            cache_write: 6.25,
-            output: 25.0,
-        },
-    ),
-    (
-        "claude-sonnet-4-5",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-            output: 15.0,
-        },
-    ),
-    (
-        "claude-sonnet-4",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-            output: 15.0,
-        },
-    ),
-    (
-        "claude-3-7-sonnet",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-            output: 15.0,
-        },
-    ),
-    (
-        "claude-3-5-sonnet",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-            output: 15.0,
-        },
-    ),
-    (
-        "claude-haiku-4-5",
-        Pricing {
-            input: 1.0,
-            cache_read: 0.1,
-            cache_write: 1.25,
-            output: 5.0,
-        },
-    ),
-    (
-        "claude-opus-4-1",
-        Pricing {
-            input: 15.0,
-            cache_read: 1.5,
-            cache_write: 18.75,
-            output: 75.0,
-        },
-    ),
-    (
-        "claude-opus-4",
-        Pricing {
-            input: 15.0,
-            cache_read: 1.5,
-            cache_write: 18.75,
-            output: 75.0,
-        },
-    ),
-];
-
-/// 对 `model` 做最长前缀匹配，返回定价；未匹配到任何前缀则返回 `None`
-/// （调用方应将这些 token 归入 unpriced，不得臆造价格）。
+/// 返回 `model` 的定价；表里没有则返回 `None`（调用方归入 unpriced，
+/// 不得臆造价格）。见模块文档：只精确匹配，日期快照后缀除外。
 pub fn price_for(model: &str) -> Option<Pricing> {
+    exact(model).or_else(|| exact(strip_date_suffix(model)?))
+}
+
+fn exact(model: &str) -> Option<Pricing> {
     PRICING_TABLE
-        .iter()
-        .filter(|(prefix, _)| model.starts_with(prefix))
-        .max_by_key(|(prefix, _)| prefix.len())
-        .map(|(_, pricing)| *pricing)
+        .binary_search_by(|(name, _)| (*name).cmp(model))
+        .ok()
+        .map(|index| PRICING_TABLE[index].1)
+}
+
+/// `claude-haiku-4-5-20251001` → `claude-haiku-4-5`。只认 8 位数字结尾，
+/// 所以 `gpt-5.6-sol` 这种非日期后缀不会被剥掉去碰运气。
+fn strip_date_suffix(model: &str) -> Option<&str> {
+    let (base, date) = model.rsplit_once('-')?;
+    (date.len() == 8 && date.bytes().all(|byte| byte.is_ascii_digit())).then_some(base)
 }
 
 #[cfg(test)]
@@ -211,45 +66,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_exact_and_dated_suffix() {
-        let base = price_for("claude-sonnet-4-5").expect("priced");
-        let dated = price_for("claude-sonnet-4-5-20250929").expect("priced");
+    fn table_is_sorted_and_nonempty_so_binary_search_is_valid() {
+        assert!(PRICING_TABLE.len() > 50, "生成的价格表异常地小");
+        assert!(
+            PRICING_TABLE.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "价格表必须按模型名严格有序，否则 binary_search 会漏查",
+        );
+    }
+
+    #[test]
+    fn dated_snapshot_falls_back_to_the_undated_alias() {
+        let base = price_for("claude-haiku-4-5").expect("priced");
+        // LiteLLM 恰好也收录了这个日期版；剥后缀的回退对它未收录的新快照才关键。
+        let dated = price_for("claude-haiku-4-5-20251001").expect("priced");
         assert_eq!(base.input, dated.input);
         assert_eq!(base.output, dated.output);
+
+        // 表里没有的未来快照，靠剥后缀命中别名。
+        let future = price_for("claude-opus-4-8-20260401").expect("priced");
+        assert_eq!(future.input, price_for("claude-opus-4-8").unwrap().input);
     }
 
     #[test]
-    fn kimi_models_stay_unpriced_rather_than_borrow_another_vendors_rate() {
-        // Kimi 是订阅制，公开单价未经核实：宁可归入"未计价"也不臆造价格。
-        assert!(price_for("kimi-code/kimi-for-coding").is_none());
-        assert!(price_for("kimi-for-coding").is_none());
+    fn new_generation_never_borrows_an_older_models_price() {
+        // 这是回归测试：前缀匹配曾让 gpt-5.6-sol 命中 gpt-5 的价格，低估 74%。
+        let sol = price_for("gpt-5.6-sol").expect("priced");
+        let five = price_for("gpt-5").expect("priced");
+        assert_ne!(
+            sol.input, five.input,
+            "gpt-5.6-sol 必须用自己的价格，不能退回 gpt-5",
+        );
+
+        // 非日期后缀不得被剥掉去撞别的模型。
+        assert!(strip_date_suffix("gpt-5.6-sol").is_none());
+        assert!(strip_date_suffix("gpt-5-mini").is_none());
     }
 
     #[test]
-    fn prefers_longest_prefix_gpt_5_2_codex() {
-        let pricing = price_for("gpt-5.2-codex").expect("priced");
-        assert_eq!(pricing.input, 1.75);
-        assert_eq!(pricing.output, 14.0);
-    }
-
-    #[test]
-    fn prefers_longest_prefix_gpt_5_1_codex_over_gpt_5_1() {
-        let pricing = price_for("gpt-5.1-codex-20260101").expect("priced");
-        assert_eq!(pricing.input, 1.25);
-        assert_eq!(pricing.output, 10.0);
-    }
-
-    #[test]
-    fn gpt_5_mini_does_not_match_bare_gpt_5() {
-        let pricing = price_for("gpt-5-mini").expect("priced");
-        assert_eq!(pricing.input, 0.25);
-        assert_eq!(pricing.output, 2.0);
+    fn subscription_billed_agents_stay_unpriced_rather_than_borrow_a_resale_rate() {
+        // GLM/Kimi 走订阅 coding plan；LiteLLM 只有第三方转售价，不能冒充官方价。
+        assert!(price_for("kimi-code/k3").is_none());
+        assert!(price_for("GLM-5.2").is_none());
+        assert!(price_for("glm-5-turbo").is_none());
     }
 
     #[test]
     fn unknown_model_is_unpriced() {
-        assert!(price_for("glm-4.7").is_none());
         assert!(price_for("unknown").is_none());
         assert!(price_for("").is_none());
+        // 未知模型带日期后缀也不能靠剥后缀蒙混过关。
+        assert!(price_for("totally-made-up-20260101").is_none());
     }
 }

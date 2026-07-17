@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test src/platformDetection.test.js",
     "preview": "vite preview",
+    "pricing:update": "node --use-env-proxy scripts/update-pricing.mjs",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build"
