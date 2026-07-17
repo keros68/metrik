@@ -50,6 +50,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Platform UI regression tests
+        run: npm test
+
       - name: Format check
         run: cargo fmt --check
         working-directory: src-tauri
