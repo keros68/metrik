@@ -337,7 +337,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn timeout_terminates_windows_process_tree() {
+    fn managed_child_terminates_windows_process_tree_after_descendant_is_ready() {
         use std::os::windows::process::CommandExt;
 
         let marker = std::env::temp_dir().join(format!(
@@ -360,15 +360,32 @@ mod tests {
             "-Command",
             &script,
         ]);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000);
 
-        let result = read_codex_quota_with_command(command, Duration::from_secs(2));
-        assert!(result.is_err());
+        let mut child = ManagedChild::new(
+            command
+                .spawn()
+                .expect("test PowerShell process should start"),
+        );
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.is_file() && Instant::now() < ready_deadline {
+            if let Ok(Some(status)) = child.child_mut().try_wait() {
+                panic!("test PowerShell process exited before recording its descendant: {status}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
         let descendant_pid = std::fs::read_to_string(&marker)
             .expect("test child should record its descendant pid")
             .trim()
             .parse::<u32>()
             .expect("recorded descendant pid should be numeric");
+        child.terminate();
+
         let filter = format!("PID eq {descendant_pid}");
         let output = Command::new("tasklist.exe")
             .args(["/FI", &filter, "/FO", "CSV", "/NH"])
