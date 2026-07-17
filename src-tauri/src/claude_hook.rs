@@ -14,7 +14,8 @@ use std::path::PathBuf;
 ///
 /// 用户已有自定义 statusLine 时不覆盖而是串联：原命令备份到
 /// `metrik-statusline.backup.json`，脚本落完额度数据后把 stdin 原样转给
-/// 原命令渲染显示，并在行尾追加 5h/7d 百分比。卸载时原样恢复备份。
+/// 原命令渲染显示；单行输出在行尾追加 5h/7d 百分比，多行输出原样透传
+/// （多行 statusLine 自带排版）。卸载时原样恢复备份。
 const QUOTA_FILE: &str = "metrik-quota.json";
 const BACKUP_FILE: &str = "metrik-statusline.backup.json";
 const DELEGATE_PLACEHOLDER: &str = "{{DELEGATE}}";
@@ -50,22 +51,27 @@ $quotaParts = @()
 if ($payload.windows -and $payload.windows.five_hour) { $quotaParts += ('5h ' + [math]::Round($payload.windows.five_hour.usedPercentage) + '%') }
 if ($payload.windows -and $payload.windows.seven_day) { $quotaParts += ('7d ' + [math]::Round($payload.windows.seven_day.usedPercentage) + '%') }
 if ($delegate) {
-  # 串联模式：显示交给用户原有的 statusLine 命令，行尾追加额度。
+  # 串联模式：显示交给用户原有的 statusLine 命令。单行输出在行尾追加额度；
+  # 多行输出原样透传（多行 statusLine 自带排版，追加会把它压坏）。
   # PowerShell 脚本走进程内执行（SetIn 喂 stdin），零编码转换；
   # 其他命令回退到子进程管道（$input 转发 stdin）。
-  $line = ''
+  $lines = @()
   try {
     $psFile = [regex]::Match($delegate, '-File\s+"?([^"]+\.ps1)"?')
     if ($psFile.Success -and (Test-Path $psFile.Groups[1].Value)) {
       [Console]::SetIn((New-Object System.IO.StringReader($raw)))
-      $line = @(& $psFile.Groups[1].Value 2>$null) -join ' '
+      $lines = @(& $psFile.Groups[1].Value 2>$null)
     } else {
       try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-      $line = @($raw | & ([scriptblock]::Create('$input | ' + $delegate)) 2>$null) -join ' '
+      # '& ' 调用运算符必不可少：委托命令以带引号的 exe 路径开头时，
+      # 没有它 scriptblock 创建会直接抛管道语法错误，委托整个不执行。
+      $lines = @($raw | & ([scriptblock]::Create('$input | & ' + $delegate)) 2>$null)
     }
   } catch {}
-  if ($line -and $quotaParts) { "$line | " + ($quotaParts -join ' ') }
-  elseif ($line) { $line }
+  $lines = @($lines | ForEach-Object { [string]$_ })
+  $out = $lines -join "`n"
+  if ($lines.Count -eq 1 -and $out -and $quotaParts) { "$out | " + ($quotaParts -join ' ') }
+  elseif ($out) { $out }
   elseif ($quotaParts) { $quotaParts -join ' ' }
 } else {
   $model = if ($data.model.display_name) { $data.model.display_name } else { 'Claude' }
@@ -110,17 +116,21 @@ if "seven_day" in windows:
     quota_parts.append(f"7d {round(windows['seven_day']['usedPercentage'])}%")
 
 if DELEGATE:
-    # 串联模式：显示交给用户原有的 statusLine 命令，行尾追加额度。
-    line = ""
+    # 串联模式：显示交给用户原有的 statusLine 命令。单行输出在行尾追加额度；
+    # 多行输出原样透传（多行 statusLine 自带排版，追加会把它压坏）。
+    out = ""
     try:
         result = subprocess.run(DELEGATE, shell=True, input=raw.encode(), capture_output=True, timeout=10)
-        line = result.stdout.decode(errors="replace").strip()
+        out = result.stdout.decode(errors="replace").rstrip("\n")
     except Exception:
         pass
-    if line and quota_parts:
-        print(f"{line} | {' '.join(quota_parts)}")
-    elif line:
-        print(line)
+    if not out.strip():
+        out = ""
+    lines = out.split("\n") if out else []
+    if len(lines) == 1 and quota_parts:
+        print(f"{out} | {' '.join(quota_parts)}")
+    elif out:
+        print(out)
     elif quota_parts:
         print(" ".join(quota_parts))
 else:

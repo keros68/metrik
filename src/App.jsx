@@ -1301,7 +1301,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
       <p className="settings-muted">
         Claude Code 本身会把官方 5 小时 / 7 天额度推送给状态栏脚本。开启后 Metrik 安装一个只提取
         额度数字的 statusLine 钩子（不读取对话内容、不接触登录凭据）。已有自定义 statusLine
-        时会自动串联：原有显示原样保留，行尾追加 5h/7d 额度；卸载时原样恢复。
+        时会自动串联：原有显示原样保留（单行的在行尾追加 5h/7d 额度，多行的不追加）；卸载时原样恢复。
       </p>
       {status?.demo ? (
         <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
