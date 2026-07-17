@@ -175,7 +175,9 @@ fn codex_app_server_command() -> Command {
         command
             .args(["/D", "/C"])
             .arg(script)
-            .args(["app-server", "--stdio"])
+            // stdio is the default transport across Codex CLI versions. Newer
+            // releases removed the old `--stdio` compatibility flag entirely.
+            .arg("app-server")
             .creation_flags(0x0800_0000);
         command
     }
@@ -183,7 +185,8 @@ fn codex_app_server_command() -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new(resolve_unix_codex_binary());
-        command.args(["app-server", "--stdio"]);
+        // Do not pass the removed `--stdio` flag; app-server defaults to stdio.
+        command.arg("app-server");
         command
     }
 }
@@ -285,6 +288,18 @@ fn integer(value: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_server_command_uses_the_cross_version_default_stdio_transport() {
+        let command = codex_app_server_command();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(arguments.iter().any(|argument| argument == "app-server"));
+        assert!(!arguments.iter().any(|argument| argument == "--stdio"));
+    }
 
     #[test]
     fn parses_primary_and_secondary_windows() {
