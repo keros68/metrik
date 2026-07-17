@@ -53,6 +53,7 @@ import {
   isDesktop,
   isMacPlatform,
   minimizeWindow,
+  onTrayShowExpanded,
   openExpandedWindow,
   resizeStripWindow,
   restoreWindowPosition,
@@ -3051,6 +3052,19 @@ export function App() {
     }
     setActiveNav("settings");
     handleWindowMode("expanded");
+  }, [handleWindowMode]);
+
+  // 托盘右键"显示完整视图"：胶囊/卡片直达完整视图，跳过中间那一步。
+  // macOS 的完整视图是独立窗口，由菜单栏自己开，不发这个事件。
+  useEffect(() => {
+    if (IS_MAC) return undefined;
+    const stopPromise = onTrayShowExpanded(() => {
+      setActiveNav("overview");
+      handleWindowMode("expanded");
+    });
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
   }, [handleWindowMode]);
 
   const handleTogglePinned = useCallback(() => {

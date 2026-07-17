@@ -1030,6 +1030,11 @@ fn update_macos_status_items(
     }
 }
 
+/// 托盘菜单请求完整视图；前端监听后自己完成变形（见 windowClient 的
+/// onTrayShowExpanded）。macOS 的完整视图是独立窗口，走 macos.rs 自己的菜单栏。
+#[cfg(all(desktop, not(target_os = "macos")))]
+const TRAY_SHOW_EXPANDED: &str = "tray://show-expanded";
+
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1048,12 +1053,15 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::Emitter;
 
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
+    let expanded = MenuItem::with_id(app, "expanded", "显示完整视图", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &expanded, &separator, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Metrik")
@@ -1061,6 +1069,12 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => toggle_main_window(app),
+            // 胶囊/卡片直达完整视图，省掉"先弹卡片再点展开"这一步。窗口形态归
+            // 前端所有（Windows 是单窗口变形），所以这里只发意图：前端切到
+            // expanded 时自己会 show + focus，托盘再动窗口只会抢出闪帧。
+            "expanded" => {
+                let _ = app.emit(TRAY_SHOW_EXPANDED, ());
+            }
             "quit" => app.exit(0),
             _ => {}
         })

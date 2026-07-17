@@ -181,6 +181,15 @@ async function restoreWindowPosition(mode = "compact") {
   await appWindow.setPosition(lastPositions[mode]).catch(() => {});
 }
 
+/// 托盘右键"显示完整视图"：让用户从胶囊/卡片直达完整视图，不必先弹出卡片
+/// 再点展开。变形仍由前端做（Windows 单窗口变形），托盘只发意图。
+/// macOS 的完整视图是独立窗口，由 macos.rs 的菜单栏负责，不发这个事件。
+async function onTrayShowExpanded(handler) {
+  if (!isDesktop()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("tray://show-expanded", () => handler());
+}
+
 /// 拖动结束后持久化窗口位置（compact 与 strip 各记各的；expanded 不记）。
 async function startPositionMemory(getMode) {
   if (isMacPlatform()) return () => {};
@@ -649,6 +658,7 @@ export {
   isDesktop,
   isMacPlatform,
   minimizeWindow,
+  onTrayShowExpanded,
   openExpandedWindow,
   resizeStripWindow,
   restoreWindowPosition,
