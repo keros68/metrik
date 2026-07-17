@@ -12,6 +12,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 版本号是两台开发机共享的全局资源（见 AGENTS.md 的发版协议）。两边曾各自
+  # 把 0.6.6 提成 0.6.7，先打上 tag 的那侧胜出，另一侧的发版提交只能作废。
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      # 需要全部 tag 才能判断版本号是否已被占用；PR 检出真实的 head 提交而不是
+      # 合并提交，否则 base 上的 tag 永远算祖先，撞车就检测不出来。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Version files agree and the version is not already taken
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pkg=$(jq -r .version package.json)
+          lock_top=$(jq -r .version package-lock.json)
+          lock_pkg=$(jq -r '.packages[""].version' package-lock.json)
+          tauri=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo_toml=$(sed -n '/^\[package\]/,/^\[[^p]/p' src-tauri/Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+          cargo_lock=$(grep -A1 '^name = "metrik"$' src-tauri/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+
+          status=0
+          check() {
+            if [ "$2" != "$pkg" ]; then
+              echo "::error::$1 的版本是 '$2'，与 package.json 的 '$pkg' 不一致"
+              status=1
+            fi
+          }
+          check "package-lock.json (top)" "$lock_top"
+          check "package-lock.json (packages[\"\"])" "$lock_pkg"
+          check "src-tauri/tauri.conf.json" "$tauri"
+          check "src-tauri/Cargo.toml" "$cargo_toml"
+          check "src-tauri/Cargo.lock" "$cargo_lock"
+          [ "$status" -eq 0 ] || exit 1
+          echo "五个版本文件一致：$pkg"
+
+          # vX 已存在却不在本次提交的历史里 = 另一台机器已经用掉了这个号。
+          tag="v$pkg"
+          if git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
+            if git merge-base --is-ancestor "$tag^{commit}" HEAD; then
+              echo "$tag 已存在且在本次提交的历史内，正常。"
+            else
+              echo "::error::$tag 已被 $(git rev-parse --short "$tag^{commit}") 占用，且不在本次提交的历史内。另一台机器已经发过这个号：请 fetch + rebase 后改用下一个版本号，不要复用已 tag 的版本。"
+              exit 1
+            fi
+          else
+            echo "$tag 尚未被占用。"
+          fi
+
   check:
     strategy:
       fail-fast: false
