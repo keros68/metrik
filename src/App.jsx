@@ -1881,6 +1881,25 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
             )}
           </dl>
         )}
+
+        {settings?.enabled && (
+          <div className="settings-subsection">
+            <h3>已发现的设备</h3>
+            {settings.devices.length === 0 ? (
+              <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
+            ) : (
+              <ul className="settings-device-list">
+                {settings.devices.map((device) => (
+                  <li key={device.id}>
+                    <strong>{device.label}</strong>
+                    <span>{device.id}</span>
+                    <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       <StartupCard
@@ -1904,25 +1923,6 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       <UiScaleCard uiScale={uiScale} onUiScale={onUiScale} />
 
       <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
-
-      {settings?.enabled && (
-        <div className="settings-card">
-          <h2>已发现的设备</h2>
-          {settings.devices.length === 0 ? (
-            <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
-          ) : (
-            <ul className="settings-device-list">
-              {settings.devices.map((device) => (
-                <li key={device.id}>
-                  <strong>{device.label}</strong>
-                  <span>{device.id}</span>
-                  <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
       </div>
     </main>
   );
