@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { platform as tauriPlatform } from "@tauri-apps/plugin-os";
+import { detectRuntimePlatform } from "./platformDetection";
 
 const WINDOW_SIZES = {
   compact: { width: 320, height: 320, minWidth: 320, minHeight: 320 },
@@ -202,13 +204,28 @@ async function startPositionMemory(getMode) {
 }
 
 function isWindowsPlatform() {
-  return typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
+  return runtimePlatform() === "windows";
 }
 
 /// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定；零占地摘要直接
 /// 画进菜单栏状态图标，不使用 strip 悬浮窗。窗口按钮/挂靠/位置记忆/置顶由平台语义取代。
 function isMacPlatform() {
-  return typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
+  return runtimePlatform() === "macos";
+}
+
+/// 桌面包优先使用 Tauri 编译期写入的平台值，避免 WebView user-agent 变化让
+/// macOS 误入 Windows 的 strip 分支。纯网页预览才使用 UA 兜底。
+function runtimePlatform() {
+  let nativePlatform = null;
+  if (isDesktop()) {
+    try {
+      nativePlatform = tauriPlatform();
+    } catch {
+      // 开发预览或插件尚未初始化时继续走 UA 兜底。
+    }
+  }
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return detectRuntimePlatform(nativePlatform, userAgent);
 }
 
 async function windowApi() {

@@ -1083,7 +1083,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    // 前端窗口形态必须使用编译期真实平台，不能依赖 WebView user-agent。
+    let builder = tauri::Builder::default().plugin(tauri_plugin_os::init());
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());

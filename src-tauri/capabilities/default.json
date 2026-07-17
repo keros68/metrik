@@ -23,6 +23,7 @@
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
+    "os:allow-platform",
     "updater:default",
     "process:allow-restart"
   ]
