@@ -8,17 +8,21 @@
 //! 隐私/诚实约束：拿不到凭据或接口失败时返回 Err，上层据此**不写任何配额行**
 //! （卡片如实显示"配额不可用"），绝不用本地 token 用量估算冒充官方配额。
 //!
-//! 设计取舍：只接**主动暴露明文凭据**的来源（环境变量、OpenCode `auth.json`）。
-//! 原生 zcode 桌面端把 OAuth token 加密存 `~/.zcode/v2/credentials.json`
-//! （`enc:v1` 设备绑定，且不开本地端口），已在真机确认第三方读不到——不去逆向
-//! 解密它（脆弱、分平台、侵入其内部）。故 OAuth-only 的原生用户会如实显示
-//! "配额不可用"，用明文 key（含 OpenCode 生态）的用户自动生效。
+//! 设计取舍：只接**主动暴露明文凭据**的来源（环境变量、OpenCode `auth.json`、
+//! Kimi Code 的明文 OAuth 文件）。原生 zcode 桌面端把 OAuth token 加密存
+//! `~/.zcode/v2/credentials.json`（`enc:v1` 设备绑定，且不开本地端口），已在
+//! 真机确认第三方读不到——不去逆向解密它（脆弱、分平台、侵入其内部）。故
+//! zcode 的 OAuth-only 用户会如实显示"配额不可用"。
 //!
-//! 未在真机验证（上线前须核对，字段名来自参考实现而非真实账号抓包）：
-//! - Kimi 的环境变量名未能确认，故不从环境变量取 Kimi key；其原生 config 若
-//!   同样加密，`extract_scalar` 只会拿到 `enc:` 串 → 拉取失败 → 如实不可用。
-//! - 响应字段名按参考实现（cc-switch、opencode-quota、kimi-code-usage）取，
-//!   做了多别名兜底；真机对不上时改这里的解析，别改账本口径。
+//! Kimi：**已按真机账号抓包核对**（2026-07）。Kimi Code 走 OAuth，`config.toml`
+//! 的 `api_key` 恒为空串，凭据是 `credentials/kimi-code.json` 里的明文
+//! access_token，配额接口认它。该令牌**只活 15 分钟**且由 Kimi Code 自行续期；
+//! Metrik 只读不刷新，所以令牌过期时拉取失败 → 上层保留上次的配额行、按陈旧
+//! 标注（`official_live` 超过 7 分钟即标 `~`），不会伪装成新数据。
+//! 环境变量名仍未确认，故不从环境变量取 Kimi key。
+//!
+//! GLM 的响应字段名仍来自参考实现（cc-switch、opencode-quota）而非真实抓包，
+//! 做了多别名兜底；真机对不上时改这里的解析，别改账本口径。
 
 use crate::domain::QuotaSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -32,7 +36,9 @@ use std::time::Duration;
 // GLM coding-plan 配额端点：国内 bigmodel 与国际 z.ai 两套，按 key 来源择一。
 const GLM_BIGMODEL_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 const GLM_ZAI_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
-// Kimi coding-plan 用量端点（须用 Kimi Code 控制台 key，非开放平台 key）。
+// Kimi coding-plan 用量端点。认 Kimi Code 的 OAuth access_token（实测响应里
+// `authentication.method` 回 METHOD_ACCESS_TOKEN），也认控制台 key；开放平台
+// key 不是这套。
 const KIMI_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 
 // ── 拉取入口（供 engine 层带缓存调用） ─────────────────────────
@@ -62,8 +68,9 @@ pub fn fetch_zcode_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
 }
 
 pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
-    let token = resolve_kimi_credential()
-        .context("未找到 Kimi 的 coding API key（~/.kimi/config.toml 或 OpenCode auth.json）")?;
+    let token = resolve_kimi_credential().context(
+        "未找到 Kimi 的凭据（~/.kimi-code 的 config.toml/credentials 或 OpenCode auth.json）",
+    )?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     let response = agent
         .get(KIMI_USAGE_URL)
@@ -148,8 +155,9 @@ fn resolve_glm_credential() -> Option<GlmCredential> {
     None
 }
 
-/// Kimi key 解析：原生 `~/.kimi[-code]/config.toml|json` → OpenCode `auth.json`
-/// 的 `kimi-for-coding`。环境变量名未确认，不猜。
+/// Kimi key 解析：原生 `~/.kimi[-code]/config.toml|json` 的 `api_key` → 原生
+/// OAuth 凭据文件 → OpenCode `auth.json` 的 `kimi-for-coding`。
+/// 环境变量名未确认，不猜。
 fn resolve_kimi_credential() -> Option<String> {
     for path in kimi_config_paths() {
         if let Ok(raw) = std::fs::read_to_string(&path) {
@@ -158,7 +166,28 @@ fn resolve_kimi_credential() -> Option<String> {
             }
         }
     }
+    for path in kimi_oauth_paths() {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Some(token) = extract_scalar(&raw, "access_token") {
+                return Some(token);
+            }
+        }
+    }
     nonempty(read_opencode_auth().get("kimi-for-coding"))
+}
+
+/// Kimi Code 用 OAuth 登录：`config.toml` 的 `api_key` 恒为空串，真凭据是这里的
+/// 明文 access_token（实测配额接口认它，`authentication.method` 回
+/// `METHOD_ACCESS_TOKEN`）。只读，不刷新也不写回——续期是 Kimi Code 自己的事；
+/// 令牌过期就照实显示不可用。加密存储的凭据一律不碰（见 zcode）。
+fn kimi_oauth_paths() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    [".kimi-code", ".kimi"]
+        .into_iter()
+        .map(|dir| home.join(dir).join("credentials").join("kimi-code.json"))
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -329,65 +358,69 @@ fn parse_glm_quota(value: &Value) -> Vec<QuotaSample> {
         .collect()
 }
 
-/// Kimi：`data[]`（或兜底 `limits[]`）每条一个限流窗口。按 `duration`+`timeUnit`
-/// 归到 5 小时 / 每周窗口；`model_name == "all"` 是每周汇总，优先保留。
+/// Kimi：`limits[]` 每条是一个限流窗口——长度在 `window`（`duration` +
+/// `TIME_UNIT_*`），数值在 `detail` 里且是字符串（`"100"`）。每周窗口不在
+/// `limits[]` 里，而是顶层的 `usage` 块。形状据真机抓包（2026-07）。
 fn parse_kimi_quota(value: &Value) -> Vec<QuotaSample> {
-    let entries = value
-        .get("data")
-        .and_then(Value::as_array)
-        .or_else(|| value.get("limits").and_then(Value::as_array))
-        .or_else(|| value.as_array());
-    let Some(entries) = entries else {
-        return Vec::new();
-    };
-
     let now = chrono::Utc::now().timestamp_millis();
-    let mut by_key: BTreeMap<&'static str, (bool, QuotaSample)> = BTreeMap::new();
-    for entry in entries {
-        let limit = first_f64(entry, &["limit", "limit_amount"]);
-        let remaining = first_f64(entry, &["remaining"]);
-        let used = first_f64(entry, &["used", "used_amount"]);
-        let remaining_percent = match (remaining, limit) {
-            (Some(r), Some(l)) if l > 0.0 => r / l * 100.0,
-            _ => match (used, limit) {
-                (Some(u), Some(l)) if l > 0.0 => 100.0 - u / l * 100.0,
-                _ => continue,
-            },
-        };
-        let is_all = entry.get("model_name").and_then(Value::as_str) == Some("all");
-        let key = kimi_window_key(entry, is_all);
-        let reset = first_time(entry, &["resetTime", "reset_at", "reset_time"]).or_else(|| {
-            entry
-                .get("reset_in")
-                .and_then(Value::as_i64)
-                .map(|seconds| now + seconds * 1000)
-        });
-        let sample = QuotaSample {
-            adapter_id: "kimi",
-            window_key: key.to_owned(),
-            remaining_percent: remaining_percent.clamp(0.0, 100.0),
-            resets_at_ms: reset,
-            collected_at_ms: now,
-            source_label: "Kimi 官方配额".into(),
-            quality: "official_live",
-        };
-        // 每周窗口优先采用 model_name=="all" 的汇总行。
-        match by_key.get(key) {
-            Some((existing_all, _)) if *existing_all && !is_all => {}
-            _ => {
-                by_key.insert(key, (is_all, sample));
+    let mut by_key: BTreeMap<&'static str, QuotaSample> = BTreeMap::new();
+
+    if let Some(limits) = value.get("limits").and_then(Value::as_array) {
+        for entry in limits {
+            let key = kimi_window_key(entry);
+            // 数值嵌在 detail 里；直接挂在条目上时同样能取到。
+            let numbers = entry.get("detail").unwrap_or(entry);
+            if let Some(sample) = kimi_sample(key, numbers, now) {
+                by_key.entry(key).or_insert(sample);
             }
         }
     }
-    by_key.into_values().map(|(_, sample)| sample).collect()
+    // 每周窗口只有顶层 usage 有；limits[] 里不含它。
+    if let Some(usage) = value.get("usage") {
+        if let Some(sample) = kimi_sample("seven_day", usage, now) {
+            by_key.entry("seven_day").or_insert(sample);
+        }
+    }
+    by_key.into_values().collect()
 }
 
-fn kimi_window_key(entry: &Value, is_all: bool) -> &'static str {
+fn kimi_sample(key: &'static str, numbers: &Value, now: i64) -> Option<QuotaSample> {
+    let limit = first_f64(numbers, &["limit", "limit_amount"])?;
+    if limit <= 0.0 {
+        return None;
+    }
+    // 有 remaining 就直接用，否则由 used 反推。
+    let remaining_percent = match first_f64(numbers, &["remaining"]) {
+        Some(remaining) => remaining / limit * 100.0,
+        None => 100.0 - first_f64(numbers, &["used", "used_amount"])? / limit * 100.0,
+    };
+    let reset = first_time(numbers, &["resetTime", "reset_at", "reset_time"]).or_else(|| {
+        numbers
+            .get("reset_in")
+            .and_then(Value::as_i64)
+            .map(|seconds| now + seconds * 1000)
+    });
+    Some(QuotaSample {
+        adapter_id: "kimi",
+        window_key: key.to_owned(),
+        remaining_percent: remaining_percent.clamp(0.0, 100.0),
+        resets_at_ms: reset,
+        collected_at_ms: now,
+        source_label: "Kimi 官方配额".into(),
+        quality: "official_live",
+    })
+}
+
+fn kimi_window_key(entry: &Value) -> &'static str {
     let window = entry.get("window").unwrap_or(entry);
     let duration = window.get("duration").and_then(Value::as_i64);
     let unit =
         first_str(window, &["timeUnit", "time_unit"]).map(|value| value.to_ascii_uppercase());
-    if let (Some(duration), Some(unit)) = (duration, unit.as_deref()) {
+    // 实测单位带 TIME_UNIT_ 前缀（TIME_UNIT_MINUTE）；裸单位也照样认。
+    let unit = unit
+        .as_deref()
+        .map(|unit| unit.trim_start_matches("TIME_UNIT_"));
+    if let (Some(duration), Some(unit)) = (duration, unit) {
         let minutes = match unit {
             "MINUTE" => duration,
             "HOUR" => duration * 60,
@@ -404,17 +437,18 @@ fn kimi_window_key(entry: &Value, is_all: bool) -> &'static str {
             };
         }
     }
-    if is_all {
-        "seven_day"
-    } else {
-        "five_hour"
-    }
+    "five_hour"
 }
 
 fn first_f64(value: &Value, names: &[&str]) -> Option<f64> {
-    names
-        .iter()
-        .find_map(|name| value.get(name).and_then(Value::as_f64))
+    names.iter().find_map(|name| {
+        value.get(name).and_then(|found| {
+            // Kimi 的配额数字以字符串返回（"100"）。
+            found
+                .as_f64()
+                .or_else(|| found.as_str()?.trim().parse().ok())
+        })
+    })
 }
 
 fn first_str<'a>(value: &'a Value, names: &[&str]) -> Option<&'a str> {
@@ -493,50 +527,91 @@ mod tests {
         assert!(parse_glm_quota(&json).is_empty());
     }
 
+    /// 真机抓包（2026-07，Kimi Code + OAuth 登录），只把 userId 换成占位符。
+    /// 之前的夹具照参考实现编造了 `data[]`/`model_name`，真实接口里并不存在。
+    const KIMI_LIVE_RESPONSE: &str = r#"{
+        "user": {"userId": "test-user", "region": "REGION_CN", "membership": {"level": "LEVEL_INTERMEDIATE"}, "businessId": ""},
+        "usage": {"limit": "100", "remaining": "100", "resetTime": "2026-07-24T08:31:19.749909Z"},
+        "limits": [
+            {"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+             "detail": {"limit": "100", "used": "2", "remaining": "98", "resetTime": "2026-07-17T13:31:19.749909Z"}}
+        ],
+        "parallel": {"limit": "20"},
+        "totalQuota": {"limit": "100", "remaining": "99"},
+        "authentication": {"method": "METHOD_ACCESS_TOKEN", "scope": "FEATURE_CODING"},
+        "subType": "TYPE_PURCHASE"
+    }"#;
+
     #[test]
-    fn kimi_quota_classifies_windows_and_prefers_weekly_summary() {
-        let json: Value = serde_json::from_str(
-            r#"{
-                "data": [
-                    {"model_name": "kimi-k2", "limit": 100, "used": 30, "duration": 5, "timeUnit": "HOUR", "resetTime": 1800000000},
-                    {"model_name": "all", "limit": 200, "remaining": 60, "duration": 7, "timeUnit": "DAY", "reset_in": 3600}
-                ]
-            }"#,
-        )
-        .unwrap();
+    fn kimi_quota_reads_the_live_shape_nested_detail_and_string_numbers() {
+        let json: Value = serde_json::from_str(KIMI_LIVE_RESPONSE).unwrap();
         let mut samples = parse_kimi_quota(&json);
         samples.sort_by(|a, b| a.window_key.cmp(&b.window_key));
         assert_eq!(samples.len(), 2);
-        // five_hour：由 used/limit 推得 remaining=70%
+
+        // 300 分钟 = 5 小时窗；数值嵌在 detail 里且是字符串。
         let five = samples
             .iter()
             .find(|s| s.window_key == "five_hour")
             .unwrap();
-        assert_eq!(five.remaining_percent, 70.0);
-        assert_eq!(five.resets_at_ms, Some(1800000000000)); // 秒→毫秒
+        assert_eq!(five.remaining_percent, 98.0);
         assert_eq!(five.adapter_id, "kimi");
-        // seven_day：由 remaining/limit 推得 30%
+        assert_eq!(
+            five.resets_at_ms,
+            chrono::DateTime::parse_from_rfc3339("2026-07-17T13:31:19.749909Z")
+                .ok()
+                .map(|value| value.timestamp_millis())
+        );
+
+        // 每周窗口来自顶层 usage，limits[] 里没有它。
         let week = samples
             .iter()
             .find(|s| s.window_key == "seven_day")
             .unwrap();
-        assert_eq!(week.remaining_percent, 30.0);
+        assert_eq!(week.remaining_percent, 100.0);
+        assert_eq!(
+            week.resets_at_ms,
+            chrono::DateTime::parse_from_rfc3339("2026-07-24T08:31:19.749909Z")
+                .ok()
+                .map(|value| value.timestamp_millis())
+        );
+    }
+
+    /// 解析器只能证明"对得上夹具"；接口形状会漂移（这个 bug 就是这么来的：
+    /// 字段名照参考实现编造，真接口对不上）。这个烟测打真接口，是唯一能发现
+    /// 漂移的地方。需要本机装了 Kimi Code 并已登录。
+    #[test]
+    #[ignore = "reads the current user's Kimi Code credential and calls the live quota API"]
+    fn live_kimi_quota_smoke_test() {
+        let samples = fetch_kimi_quota(Duration::from_secs(15)).expect("fetch kimi quota");
+        assert!(!samples.is_empty(), "配额响应里没有可用窗口");
+        for sample in &samples {
+            println!(
+                "kimi quota: window={} remaining={:.1}% resets_at={:?}",
+                sample.window_key, sample.remaining_percent, sample.resets_at_ms
+            );
+            assert_eq!(sample.adapter_id, "kimi");
+            assert!((0.0..=100.0).contains(&sample.remaining_percent));
+        }
     }
 
     #[test]
-    fn kimi_weekly_all_row_wins_over_per_model_for_same_window() {
-        // 两条都归为每周窗口：model_name=="all" 的汇总应胜出。
+    fn kimi_quota_derives_remaining_from_used_and_ignores_zero_limit() {
+        // 只有 used：由 used/limit 反推剩余。
         let json: Value = serde_json::from_str(
-            r#"{"data": [
-                {"model_name": "kimi-k2", "limit": 100, "remaining": 10, "duration": 7, "timeUnit": "DAY"},
-                {"model_name": "all", "limit": 100, "remaining": 80, "duration": 7, "timeUnit": "DAY"}
-            ]}"#,
+            r#"{"limits": [{"window": {"duration": 5, "timeUnit": "HOUR"},
+                            "detail": {"limit": 200, "used": 50}}]}"#,
         )
         .unwrap();
         let samples = parse_kimi_quota(&json);
         assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].window_key, "seven_day");
-        assert_eq!(samples[0].remaining_percent, 80.0);
+        assert_eq!(samples[0].window_key, "five_hour");
+        assert_eq!(samples[0].remaining_percent, 75.0);
+
+        // limit 为 0 时不能按 0% 处理，直接跳过该窗口。
+        let json: Value =
+            serde_json::from_str(r#"{"usage": {"limit": "0", "remaining": "0"}}"#).unwrap();
+        assert!(parse_kimi_quota(&json).is_empty());
     }
 
     #[test]
