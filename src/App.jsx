@@ -599,6 +599,9 @@ function AgentMark({ agentId }) {
 function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
   const dataUnavailable = snapshot.pending || snapshot.loadError;
   const partial = snapshotIsPartial(snapshot);
+  // 用得最多的排最上面。后端按注册表顺序返回，那个顺序对读者没有意义。
+  // Array.sort 是稳定的：并列（尤其一堆 0）时保持注册表顺序，不会每次刷新乱跳。
+  const rankedAgents = [...snapshot.agents].sort((left, right) => right.tokens - left.tokens);
   return (
     <aside className="inspector" aria-label="配额与 Agent 明细">
       <div className="quota-groups" aria-label="各 Agent 官方配额">
@@ -636,7 +639,7 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources }) {
       </div>
 
       <div className="agent-list" aria-label="按 Agent 筛选">
-        {snapshot.agents.map((agent) => {
+        {rankedAgents.map((agent) => {
           const meta = AGENT_META[agent.id];
           if (!meta) return null;
           const isSelected = selectedAgent === agent.id;
@@ -2511,7 +2514,11 @@ function ReportsSection({ report }) {
         <section className="report-card" aria-label="Agent 排行">
           <h2>Agent 排行</h2>
           <ul className="model-list">
-            {data.agents.filter((agent) => agent.tokens > 0).map((agent) => {
+            {/* 后端按注册表顺序返回，之前直接渲染——一个叫"排行"的列表其实没排过序。 */}
+            {data.agents
+              .filter((agent) => agent.tokens > 0)
+              .sort((left, right) => right.tokens - left.tokens)
+              .map((agent) => {
               const meta = AGENT_META[agent.id];
               const max = Math.max(...data.agents.map((entry) => entry.tokens), 1);
               return (
