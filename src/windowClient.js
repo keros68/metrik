@@ -28,6 +28,61 @@ function setWindowUiScale(scale) {
   uiScale = UI_SCALE_STEPS.includes(scale) ? scale : 1;
 }
 
+// 各形态最近一次由内容测量收敛出的窗口尺寸（CSS px，跨会话持久化）。
+// 变形首帧直接按它设置，避免"先按常量估计显示、240ms 后再跳到真实尺寸"
+// 的两段式卡顿；内容变化时仍由测量观察器静悄悄修正。
+const STRIP_SIZE_CACHE_KEY = "metrik:stripContentSize";
+const COMPACT_HEIGHT_CACHE_KEY = "metrik:compactContentHeight";
+
+function readJson(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/// 只接受合理范围的缓存尺寸；损坏/越界一律丢弃回退常量。
+function saneSize(value, minW, minH, maxW, maxH) {
+  if (!value || !Number.isFinite(value.width) || !Number.isFinite(value.height)) return null;
+  if (value.width < minW || value.width > maxW) return null;
+  if (value.height < minH || value.height > maxH) return null;
+  return { width: Math.round(value.width), height: Math.round(value.height) };
+}
+
+let stripSizeCache = readJson(STRIP_SIZE_CACHE_KEY) || {};
+let compactHeightCache = saneSize(
+  { width: 320, height: Number(readJson(COMPACT_HEIGHT_CACHE_KEY)?.height) },
+  320, 320, 320, 2000,
+)?.height || null;
+
+/// 胶囊条变形时的首帧尺寸：优先上次测量缓存，没有就用常量估计。
+function stripContentSize(orientation, fallback) {
+  const cached = saneSize(stripSizeCache[orientation], 40, 40, 2000, 2000);
+  return cached || fallback;
+}
+
+function rememberStripSize(width, height) {
+  // 竖条恒为窄高、横条恒为宽矮，从尺寸本身推断方向。
+  const orientation = height > width ? "vertical" : "horizontal";
+  stripSizeCache = { ...stripSizeCache, [orientation]: { width, height } };
+  try {
+    localStorage.setItem(STRIP_SIZE_CACHE_KEY, JSON.stringify(stripSizeCache));
+  } catch {}
+}
+
+function compactContentHeight(fallback) {
+  return compactHeightCache || fallback;
+}
+
+function rememberCompactHeight(height) {
+  compactHeightCache = height;
+  try {
+    localStorage.setItem(COMPACT_HEIGHT_CACHE_KEY, JSON.stringify({ height }));
+  } catch {}
+}
+
 /// compact/strip 的窗口尺寸：乘缩放档位后取整到物理像素再下发，
 /// 避免分数 DPI（125%/150%）下逻辑尺寸取整产生的半像素裁切。
 async function scaledPhysicalSize(api, appWindow, width, height) {
@@ -59,7 +114,9 @@ async function applyStartupUiScale(mode) {
   if (mode !== "compact" || uiScale === 1) return;
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES.compact;
-  await appWindow.setSize(await scaledPhysicalSize(api, appWindow, size.width, size.height));
+  await appWindow.setSize(
+    await scaledPhysicalSize(api, appWindow, size.width, compactContentHeight(size.height)),
+  );
   await clampIntoWorkArea(api, appWindow);
 }
 
@@ -100,6 +157,19 @@ async function clampIntoWorkArea(api, appWindow) {
   return true;
 }
 
+/// Windows 偶尔丢弃隐藏窗口的 setPosition：显示后校验一次坐标，
+/// 与钳位/居中后的预期不符就补发并重新钳位（否则窗口"复位"到变形前位置）。
+async function ensurePositionAfterShow(api, appWindow, target) {
+  if (!target) return;
+  const current = await appWindow.outerPosition().catch(() => null);
+  if (!current) return;
+  if (Math.abs(current.x - target.x) <= 2 && Math.abs(current.y - target.y) <= 2) return;
+  await appWindow
+    .setPosition(new api.PhysicalPosition(Math.round(target.x), Math.round(target.y)))
+    .catch(() => {});
+  await clampIntoWorkArea(api, appWindow);
+}
+
 // compact 与 strip 各自记位，互不覆盖；expanded 不记位。
 const POSITION_KEYS = {
   compact: "metrik:widgetPosition",
@@ -129,11 +199,30 @@ function readStoredPosition(mode) {
 async function rememberWindowPosition(api, appWindow, mode) {
   const key = POSITION_KEYS[mode];
   if (!key) return;
-  const [pos, monitor] = await Promise.all([
+  const [pos, monitor, monitors] = await Promise.all([
     appWindow.outerPosition().catch(() => null),
     api.currentMonitor().catch(() => null),
+    api.availableMonitors().catch(() => []),
   ]);
   if (!pos) return;
+  // Windows 把最小化窗口报在 (-32000, -32000)：不是用户摆放，不记。
+  if (pos.x <= -32000 || pos.y <= -32000) return;
+  // 完全掉出所有屏幕的坐标不记（钳位/锚定失效的残留、拔了扩展屏），
+  // 否则坏坐标会被持久化，以后每次进入该形态都恢复到屏外。
+  const outer = await appWindow.outerSize().catch(() => null);
+  if (outer && (monitors || []).length) {
+    const onAnyScreen = monitors.some((screen) => {
+      const left = screen.position.x;
+      const top = screen.position.y;
+      return (
+        pos.x + outer.width > left &&
+        pos.x < left + screen.size.width &&
+        pos.y + outer.height > top &&
+        pos.y < top + screen.size.height
+      );
+    });
+    if (!onAnyScreen) return;
+  }
   if (monitor) {
     const top = monitor.position.y;
     const workBottom = monitor.workArea
@@ -273,7 +362,8 @@ async function applyWindowMode(mode, options = {}) {
     if (!isDesktop()) return;
     const size = WINDOW_SIZES.compact;
     const width = size.width;
-    const height = size.height;
+    // 首帧直接用上次内容测量的高度（同 Windows 的尺寸缓存），避免两段式跳变。
+    const height = compactContentHeight(size.height);
     await invoke("resize_macos_panel", { width, height });
     return;
   }
@@ -284,7 +374,18 @@ async function applyWindowMode(mode, options = {}) {
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
 
+  // 变形前记下离开的悬浮形态的坐标：compact/strip 各记各的，互不污染
+  // （以前无条件写 lastPositions.compact，从胶囊条进大视图会把小插件的
+  // 记忆污染成胶囊条坐标，回来时就"复位"了）。同形态重入（启动恢复、
+  // 自检重断言）不是变形，不记。
+  if (POSITION_KEYS[options.fromMode] && options.fromMode !== mode) {
+    lastPositions[options.fromMode] = await appWindow.outerPosition().catch(() => null);
+  }
+
   if (mode === "expanded") {
+    // 完整视图是常规窗口：一律解除置顶。固定（置顶 + 锁位置）只属于
+    // compact/strip 悬浮形态，否则 1120x760 的大窗口盖住所有应用切不走。
+    await appWindow.setAlwaysOnTop(false).catch(() => {});
     // 小插件不占任务栏；完整视图是常规窗口，要出现在任务栏里。
     // 无边框窗口的任务栏按钮由 WS_EX_APPWINDOW 决定，setSkipTaskbar 补不上它，
     // 所以走后端改窗口样式；样式必须在隐藏状态下改，重新显示后 shell 才重读。
@@ -293,7 +394,6 @@ async function applyWindowMode(mode, options = {}) {
     await applyWebviewZoom(1);
     await appWindow.setSkipTaskbar(false).catch(() => {});
     await invoke("set_taskbar_button", { visible: true }).catch(() => {});
-    lastPositions.compact = await appWindow.outerPosition().catch(() => null);
     const monitor = await api.currentMonitor().catch(() => null);
     const workArea = monitor?.workArea?.size?.toLogical(monitor.scaleFactor);
     const targetWidth = Math.min(size.width, Math.max(WINDOW_SIZES.compact.width, (workArea?.width || size.width) - 32));
@@ -337,12 +437,17 @@ async function applyWindowMode(mode, options = {}) {
     // 完全不在任何屏幕上（拔了扩展屏等）时居中，胶囊条永远看得见、够得着。
     const clamped = await clampIntoWorkArea(api, appWindow);
     if (!clamped) await appWindow.center().catch(() => {});
+    // 钳位/居中后的最终坐标是显示后校验的基准。
+    const stripFinal = await appWindow.outerPosition().catch(() => null);
     await appWindow.show().catch(() => {});
+    await ensurePositionAfterShow(api, appWindow, stripFinal);
     await appWindow.setFocus().catch(() => {});
     return;
   }
 
-  await appWindow.setSize(await scaledPhysicalSize(api, appWindow, size.width, size.height));
+  await appWindow.setSize(
+    await scaledPhysicalSize(api, appWindow, size.width, compactContentHeight(size.height)),
+  );
   await appWindow.setResizable(false);
   await appWindow.setMinSize(new api.LogicalSize(size.minWidth * uiScale, size.minHeight * uiScale));
 
@@ -356,7 +461,10 @@ async function applyWindowMode(mode, options = {}) {
   } else {
     await appWindow.center();
   }
+  // 钳位/居中后的最终坐标是显示后校验的基准。
+  const compactFinal = await appWindow.outerPosition().catch(() => null);
   await appWindow.show().catch(() => {});
+  await ensurePositionAfterShow(api, appWindow, compactFinal);
   await appWindow.setFocus().catch(() => {});
 }
 
@@ -371,11 +479,104 @@ async function resizeStripWindow({ width, height }) {
   const size = WINDOW_SIZES.strip;
   const targetWidth = Math.max(size.minWidth, Math.round(width || size.width));
   const targetHeight = Math.max(size.minHeight, Math.round(height || size.height));
+  // 变形前记下贴边状态：用户把条贴在屏幕右/下缘时，方向切换或格数变化
+  // 只改尺寸会把它从边缘"撕"下来（只保左上角），必须按原贴边重新锚定。
+  const [pos, outer, monitor] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+    api.currentMonitor().catch(() => null),
+  ]);
+  const workArea = monitor?.workArea;
+  const anchor = { right: false, bottom: false };
+  if (pos && outer && workArea) {
+    const workRight = workArea.position.x + workArea.size.width;
+    const workBottom = workArea.position.y + workArea.size.height;
+    anchor.right = Math.abs(pos.x + outer.width - workRight) <= 8;
+    anchor.bottom = Math.abs(pos.y + outer.height - workBottom) <= 8;
+  }
+  const physical = await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight);
+  await appWindow.setSize(physical).catch(() => {});
+  // 测量收敛出的尺寸记作下次变形的首帧（否则首帧永远是常量估计）。
+  rememberStripSize(targetWidth, targetHeight);
+  if ((anchor.right || anchor.bottom) && pos && workArea) {
+    // 新尺寸必须用自己算出的 physical：setSize 是异步生效的，紧接着读
+    // outerSize 会拿到旧值（Windows 实测拿到过 ~0），把窗口锚出屏幕。
+    const workRight = workArea.position.x + workArea.size.width;
+    const workBottom = workArea.position.y + workArea.size.height;
+    const nextX = anchor.right ? workRight - physical.width : pos.x;
+    const nextY = anchor.bottom ? workBottom - physical.height : pos.y;
+    await appWindow
+      .setPosition(new api.PhysicalPosition(Math.round(nextX), Math.round(nextY)))
+      .catch(() => {});
+  }
+  // 变宽/变高可能把窗口顶出屏幕（固定态没有拖拽区，一出去就够不着了）；
+  // 完全掉出所有屏幕时居中找回，胶囊条永远看得见、够得着。
+  const clamped = await clampIntoWorkArea(api, appWindow);
+  if (!clamped) await appWindow.center().catch(() => {});
+}
+
+/// 小组件内容（Agent 行数）变化时只调高度，宽度恒为 320，不走 hide/show。
+/// 上限取工作区高度留 48px 呼吸位（CSS px），超出部分由列表内部滚动承担。
+async function resizeCompactWindow({ height }) {
+  if (isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  const appWindow = api.getCurrentWindow();
+  const size = WINDOW_SIZES.compact;
+  let targetHeight = Math.max(size.minHeight, Math.round(height));
+  const [factor, monitor] = await Promise.all([
+    appWindow.scaleFactor().catch(() => 1),
+    api.currentMonitor().catch(() => null),
+  ]);
+  if (monitor?.workArea?.size?.height) {
+    const capCss = monitor.workArea.size.height / factor / uiScale - 48;
+    targetHeight = Math.min(targetHeight, Math.max(size.minHeight, Math.floor(capCss)));
+  }
   await appWindow
-    .setSize(await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight))
+    .setSize(await scaledPhysicalSize(api, appWindow, size.width, targetHeight))
     .catch(() => {});
-  // 变宽/变高可能把窗口顶出屏幕（固定态没有拖拽区，一出去就够不着了）。
+  // 高度收敛值记作下次变形的首帧。
+  rememberCompactHeight(targetHeight);
+  // 变高可能把窗口底边顶出屏幕；完全掉出所有屏幕时居中找回。
+  const clamped = await clampIntoWorkArea(api, appWindow);
+  if (!clamped) await appWindow.center().catch(() => {});
+}
+
+/// DPI 变化（拖到另一台显示器、系统改缩放）后按当前缩放档位重算 compact
+/// 物理尺寸：zoom 不变、不 hide/show，只把视口校正回 320 CSS px。
+/// 否则 zoom 与物理尺寸失配时视口缩成 ~256px，320 的最小内容宽度被裁。
+async function reassertCompactSize() {
+  if (isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  const appWindow = api.getCurrentWindow();
+  const size = WINDOW_SIZES.compact;
+  await appWindow
+    .setSize(
+      await scaledPhysicalSize(api, appWindow, size.width, compactContentHeight(size.height)),
+    )
+    .catch(() => {});
   await clampIntoWorkArea(api, appWindow);
+}
+
+/// macOS 菜单栏面板的高度跟随内容（宽度恒为 compact 设计宽）。
+/// 面板顶部锚定菜单栏图标，长高向下延伸——macos.rs 的 resize_panel 会
+/// 在尺寸变化后重算锚点，不会漂移。
+async function resizeMacosPanel({ width, height }) {
+  if (!isDesktop() || !isMacPlatform()) return;
+  await invoke("resize_macos_panel", { width, height }).catch(() => {});
+}
+
+/// 显示器 DPI 变化时回调；调用方据此重算悬浮形态的物理尺寸。
+async function onScaleFactorChanged(handler) {
+  if (!isDesktop() || isMacPlatform()) return () => {};
+  const api = await windowApi();
+  if (!api) return () => {};
+  const unlistenPromise = api.getCurrentWindow().onScaleChanged(() => handler());
+  return async () => {
+    const unlisten = await unlistenPromise.catch(() => null);
+    unlisten?.();
+  };
 }
 
 function glassOptions() {
@@ -658,8 +859,12 @@ export {
   isDesktop,
   isMacPlatform,
   minimizeWindow,
+  onScaleFactorChanged,
   onTrayShowExpanded,
   openExpandedWindow,
+  reassertCompactSize,
+  resizeCompactWindow,
+  resizeMacosPanel,
   resizeStripWindow,
   restoreWindowPosition,
   setAutostart,
@@ -670,4 +875,5 @@ export {
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  stripContentSize,
 };

@@ -53,8 +53,12 @@ import {
   isDesktop,
   isMacPlatform,
   minimizeWindow,
+  onScaleFactorChanged,
   onTrayShowExpanded,
   openExpandedWindow,
+  reassertCompactSize,
+  resizeCompactWindow,
+  resizeMacosPanel,
   resizeStripWindow,
   restoreWindowPosition,
   setAutostart,
@@ -65,6 +69,7 @@ import {
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  stripContentSize,
 } from "./windowClient";
 
 // macOS 是菜单栏应用：小插件是贴着菜单栏图标的面板（没有窗口按钮、不可拖动、
@@ -117,13 +122,15 @@ const AGENT_META = {
   },
   kimi: {
     label: "Kimi",
-    accent: "#3f74f2",
+    // 品红：与 codex 蓝彻底拉开（原来 #3f74f2 和 ChatGPT 的蓝在图里分不清）。
+    accent: "#c6538c",
     iconSrc: kimiAppIcon,
     iconClass: "agent-icon--kimi",
   },
   antigravity: {
     label: "Antigravity",
-    accent: "#4d84f0",
+    // 琥珀金：六个 Agent 各占一个色相，不与 Claude 的珊瑚橙混淆。
+    accent: "#cf9526",
     iconSrc: antigravityAppIcon,
     iconClass: "agent-icon--antigravity",
   },
@@ -131,9 +138,11 @@ const AGENT_META = {
 
 const AGENT_ORDER = Object.keys(AGENT_META);
 
-// 胶囊条尺寸：横条一格约 68px 宽；竖条是横条立起来的窄长条，
+// 胶囊条首帧尺寸估计：横条一格约 68px 宽；竖条是横条立起来的窄长条，
 // 一格约 54px 高（图标/百分比/进度条纵向堆叠）。
-// chrome 是留白 + 状态点 + 方向/还原两个按钮（竖条里竖排）。
+// 这些常量只用于进入 strip 的第一帧，之后的窗口尺寸由 StripBar 里的
+// 内容测量观察器按真实渲染结果收敛——不同字体/DPI/缩放档位、有无更新点
+// 都不会再裁掉内容（曾因常量与 CSS 脱钩裁掉竖条最后一个按钮）。
 const STRIP_CELL_WIDTH = 68;
 const STRIP_CHROME_WIDTH = IS_MAC ? 76 : 102;
 const STRIP_BAR_HEIGHT = 40;
@@ -152,9 +161,48 @@ function stripWindowSize(orientation, count) {
   return { width: STRIP_CHROME_WIDTH + STRIP_CELL_WIDTH * cells, height: STRIP_BAR_HEIGHT };
 }
 
+/// 竖条内容高度：第一格到控件区 + 外壳 padding（CSS px）。竖条的格子是
+/// flex:none，高度由真实内容决定，测量值双向可信（过裁则长、过高则收）。
+function measureStripVerticalContent(shell) {
+  const first = shell.querySelector(".strip-cell, .strip-empty");
+  const controls = shell.querySelector(".strip-controls");
+  if (!first || !controls) return null;
+  const style = window.getComputedStyle(shell);
+  const firstRect = first.getBoundingClientRect();
+  const controlsRect = controls.getBoundingClientRect();
+  // 1px 余量：分数 DPI 下物理像素取整最多吃掉不到 1 个 CSS px。
+  return (
+    controlsRect.bottom - firstRect.top +
+    parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + 1
+  );
+}
+
+/// 横条目标宽度：格子按设计宽 68/格（图标 + 三位百分比 + 进度条是字体无关的
+/// 有界内容），控件区取实测自然宽（flex:none 永不被压缩；有无更新点、macOS
+/// 有无固定键都会变）。横条格子 flex:1 会拉伸填满窗口，布局测量推不出
+/// "窗口过宽"，所以格数部分必须用设计宽计算，窗口才能随格数增减伸缩。
+function measureStripHorizontalTarget(shell) {
+  const controls = shell.querySelector(".strip-controls");
+  if (!controls) return null;
+  const style = window.getComputedStyle(shell);
+  const cellCount = Math.max(1, shell.querySelectorAll(".strip-cell").length);
+  const controlsWidth = controls.getBoundingClientRect().width;
+  return (
+    STRIP_CELL_WIDTH * cellCount + controlsWidth +
+    parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 1
+  );
+}
+
 const AGENT_LABELS = Object.fromEntries(
   AGENT_ORDER.map((id) => [id, AGENT_META[id].label]),
 );
+
+/// 状态灯的含义：绿 = 数据正常，黄（呼吸）= 正在更新，红 = 读取失败。
+/// 灯本身只是装饰，含义必须悬浮可见，否则用户永远猜不到。
+function statusDotTitle(loading, loadError) {
+  if (loadError) return "数据读取失败，仍显示上次成功的数据";
+  return loading ? "正在更新数据…" : "数据正常";
+}
 
 // 位数自适应：数值越大小数越少，保证任何量级都不超过 4 个有效字符
 // （紧凑态 41px 大字的容器只有约 5 字符宽）。
@@ -163,6 +211,12 @@ function scaledUnit(amount, divisor, unit) {
   const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
   return `${value.toFixed(decimals).replace(/\.0+$/, "")}${unit}`;
 }
+
+// 小组件窗口高度跟随 Agent 行数。内容自然高 = 各行 getBoundingClientRect
+// 实测之和（行高固定 52px，见 styles.css）；非列表部分（标题栏/周期/主区/
+// 页脚/间距）也是实测（shell.clientHeight - list.clientHeight）。不写布局
+// 常量——写死的常量差 4px 就会逼出一条本不该出现的滚动条。列表至少两行高。
+const COMPACT_LIST_MIN_HEIGHT = 104;
 
 function compactTokens(value) {
   const amount = Number(value || 0);
@@ -682,15 +736,26 @@ function WindowActions({ mode, pinned, transparent = false, macMinimal = false, 
   return (
     <div className={`window-actions window-actions--${mode}`} aria-label="窗口操作">
       {mode === "expanded" && (
-        <button
-          type="button"
-          className="window-action"
-          onClick={() => onToggleMode("compact")}
-          aria-label="收起为桌面小插件"
-          title="收起为桌面小插件"
-        >
-          <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
-        </button>
+        <>
+          <button
+            type="button"
+            className="window-action"
+            onClick={() => onToggleMode("compact")}
+            aria-label="收起为桌面小插件"
+            title="收起为桌面小插件"
+          >
+            <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-action"
+            onClick={() => onToggleMode("strip")}
+            aria-label="折叠为胶囊条"
+            title="折叠为胶囊条"
+          >
+            <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
+          </button>
+        </>
       )}
       {mode === "compact" && !macMinimal && (
         <button
@@ -715,18 +780,20 @@ function WindowActions({ mode, pinned, transparent = false, macMinimal = false, 
           <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
         </button>
       )}
+      {!macMinimal && mode !== "expanded" && (
+        <button
+          type="button"
+          className={`window-action ${pinned ? "window-action--active" : ""}`}
+          onClick={onTogglePinned}
+          aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          aria-pressed={pinned}
+          title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+        >
+          <PushPinSimple size={17} weight={pinned ? "fill" : "light"} aria-hidden="true" />
+        </button>
+      )}
       {!macMinimal && (
         <>
-          <button
-            type="button"
-            className={`window-action ${pinned ? "window-action--active" : ""}`}
-            onClick={onTogglePinned}
-            aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-            aria-pressed={pinned}
-            title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
-          >
-            <PushPinSimple size={17} weight={pinned ? "fill" : "light"} aria-hidden="true" />
-          </button>
           <button
             type="button"
             className="window-action"
@@ -774,8 +841,55 @@ function StripBar({
   const dragProps = pinned || IS_MAC ? {} : { "data-tauri-drag-region": true };
   const vertical = orientation === "vertical";
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
+  const shellRef = useRef(null);
+  // 窗口尺寸跟随真实内容（通用方案，替代手写常量）：每次渲染后与视口变化时
+  // 复核目标尺寸，差 ≥1px 才调窗；量的是 CSS px，resizeStripWindow 内部统一
+  // 乘缩放档位与 DPI。任何字体/DPI/缩放/更新点组合都收敛，不再裁按钮。
+  useLayoutEffect(() => {
+    if (IS_MAC || !isDesktop()) return undefined;
+    const shell = shellRef.current;
+    if (!shell) return undefined;
+    let timer = null;
+    const fit = () => {
+      timer = null;
+      const isVertical = shell.classList.contains("strip-shell--vertical");
+      if (isVertical) {
+        const targetHeight = measureStripVerticalContent(shell);
+        if (!targetHeight) return;
+        // 交叉轴是设计常量：竖条恒为 52 宽（方向切换后窗口可能还停在横条宽度）。
+        if (Math.abs(targetHeight - shell.clientHeight) < 1 && shell.clientWidth === STRIP_VERTICAL_WIDTH) return;
+        runWindowAction(() =>
+          resizeStripWindow({ width: STRIP_VERTICAL_WIDTH, height: Math.ceil(targetHeight) }),
+        );
+        return;
+      }
+      const targetWidth = measureStripHorizontalTarget(shell);
+      if (!targetWidth) return;
+      // 交叉轴是设计常量：横条恒为 40 高。
+      if (Math.abs(targetWidth - shell.clientWidth) < 1 && shell.clientHeight === STRIP_BAR_HEIGHT) return;
+      runWindowAction(() =>
+        resizeStripWindow({ width: Math.ceil(targetWidth), height: STRIP_BAR_HEIGHT }),
+      );
+    };
+    const schedule = () => {
+      window.clearTimeout(timer);
+      // 60ms：缓存未命中时的尺寸修正也要尽量落在同一帧动画里，不让人看见。
+      timer = window.setTimeout(fit, 60);
+    };
+    schedule();
+    if (typeof ResizeObserver === "undefined") {
+      return () => window.clearTimeout(timer);
+    }
+    const observer = new ResizeObserver(schedule);
+    observer.observe(shell);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  });
   return (
     <main
+      ref={shellRef}
       className={`strip-shell ${vertical ? "strip-shell--vertical" : ""} ${transparent ? "strip-shell--transparent" : ""} ${transparent && glassMode === "css" ? "strip-shell--glass-css" : ""} ${IS_MAC ? "strip-shell--mac" : ""}`}
       {...dragProps}
       style={{
@@ -844,18 +958,22 @@ function StripBar({
       )}
       <div className="strip-controls">
         {availableUpdate && (
-          <button
-            type="button"
-            className="update-dot"
-            onClick={onOpenUpdate}
-            aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
-            title={`有新版本 ${availableUpdate.version}，点击更新`}
-          />
+          <span className="strip-control-slot">
+            <button
+              type="button"
+              className="update-dot"
+              onClick={onOpenUpdate}
+              aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
+              title={`有新版本 ${availableUpdate.version}，点击更新`}
+            />
+          </span>
         )}
-        <i
-          className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
-          aria-hidden="true"
-        />
+        <span className="strip-control-slot" title={statusDotTitle(loading, snapshot.loadError)}>
+          <i
+            className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
+            aria-hidden="true"
+          />
+        </span>
         {!IS_MAC && (
           <button
             type="button"
@@ -916,6 +1034,73 @@ function CompactWidget({
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
+  const shellRef = useRef(null);
+  // 一个观察器承担两条自愈：
+  // 1) 宽度失配（zoom×物理尺寸失配，视口 < 320，右侧被裁）→ 整窗重应用（≤3 次）；
+  // 2) Agent 行数变化 → 窗口高度跟随内容（1-2 行回 320，更多行加高，
+  //    工作区装不下的部分由列表内部滚动承担）。行数变化不改外壳尺寸，
+  //    ResizeObserver 感知不到，所以每次渲染后再主动复核一次。
+  useEffect(() => {
+    if (!isDesktop()) return undefined;
+    const shell = shellRef.current;
+    if (!shell || typeof ResizeObserver === "undefined") return undefined;
+    let timer = null;
+    let attempts = 0;
+    const check = () => {
+      timer = null;
+      const rect = shell.getBoundingClientRect();
+      // 宽度失配（zoom×物理尺寸失配，视口 < 320，右侧被裁）是 Windows 单窗口
+      // 变形独有的问题；macOS 面板没有 zoom，不会失配。
+      const widthDesynced =
+        shell.scrollWidth > shell.clientWidth + 1 || rect.width > window.innerWidth + 1;
+      if (!IS_MAC && widthDesynced) {
+        if (attempts >= 3) return;
+        attempts += 1;
+        runWindowAction(() => applyWindowMode("compact"));
+        return;
+      }
+      attempts = 0;
+      const list = shell.querySelector(".widget-agent-list");
+      if (!list) return;
+      // 内容自然高 = 实际行高之和（getBoundingClientRect，与窗口大小无关）。
+      // 绝不能用 list.scrollHeight：它不小于 clientHeight，窗口一大于内容
+      // 就等于窗口高，目标高度会每轮 +4px 无限延伸（实测踩过）。
+      const rowEls = list.querySelectorAll(".widget-agent");
+      let natural = COMPACT_LIST_MIN_HEIGHT;
+      if (rowEls.length) {
+        const firstRow = rowEls[0].getBoundingClientRect();
+        const lastRow = rowEls[rowEls.length - 1].getBoundingClientRect();
+        natural = Math.max(COMPACT_LIST_MIN_HEIGHT, Math.ceil(lastRow.bottom - firstRow.top));
+      }
+      // 非列表部分实测 + 列表自然高 + 4px 余量（1fr 分配与取整的抖动）。
+      const chrome = shell.clientHeight - list.clientHeight;
+      const target = Math.max(320, Math.round(chrome + natural + 4));
+      if (IS_MAC) {
+        // macOS 面板顶部锚定菜单栏图标：高度跟随内容（屏幕可用高 - 80 封顶），
+        // 宽度恒为设计宽；resize 后面板会自己重算锚点。
+        const cap = Math.max(320, Math.floor((window.screen?.availHeight || 900) - 80));
+        const macTarget = Math.min(target, cap);
+        if (Math.abs(macTarget - shell.clientHeight) >= 2) {
+          runWindowAction(() => resizeMacosPanel({ width: rect.width || 320, height: macTarget }));
+        }
+        return;
+      }
+      if (Math.abs(target - shell.clientHeight) >= 2) {
+        runWindowAction(() => resizeCompactWindow({ height: target }));
+      }
+    };
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(check, 120);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(shell);
+    schedule();
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  });
   // 标签必须描述快照本身的周期；切换周期的扫描期间不给旧数据贴新标签。
   const comparisonLabel = snapshot.period === "today" ? "较近 7 日同时段" : "较前一周期";
   const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
@@ -929,6 +1114,7 @@ function CompactWidget({
 
   return (
     <main
+      ref={shellRef}
       className={`widget-shell ${transparent ? "widget-shell--transparent" : ""} ${transparent && glassMode === "css" ? "widget-shell--glass-css" : ""} ${IS_MAC ? "widget-shell--mac" : ""} ${loading ? "is-loading" : ""}`}
       style={transparent ? { "--glass-alpha": glassAlpha } : undefined}
     >
@@ -945,7 +1131,11 @@ function CompactWidget({
           {...(pinned || IS_MAC ? {} : { "data-tauri-drag-region": true })}
         >
           <span>Metrik</span>
-          <i className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`} aria-hidden="true" />
+          <i
+            className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
+            title={statusDotTitle(loading, snapshot.loadError)}
+            aria-hidden="true"
+          />
           {availableUpdate && (
             <button
               type="button"
@@ -1049,32 +1239,39 @@ function CompactWidget({
         </section>
 
         <section className="widget-agent-list" aria-label="按 Agent 筛选">
-          {snapshot.agents.map((agent) => {
-            const meta = AGENT_META[agent.id];
-            if (!meta) return null;
-            // 只展示用户在设置里勾选的 Agent（正被筛选的除外）；完整视图不受影响。
-            if (!widgetAgents.includes(agent.id) && selectedAgent !== agent.id) {
-              return null;
-            }
-            const isSelected = selectedAgent === agent.id;
-            return (
-              <button
-                type="button"
-                className={`widget-agent ${isSelected ? "widget-agent--selected" : ""}`}
-                key={agent.id}
-                aria-pressed={isSelected}
-                onClick={() => onSelectAgent(isSelected ? "all" : agent.id)}
-              >
-                <i className="widget-agent-accent" style={{ backgroundColor: meta.accent }} aria-hidden="true" />
-                <AgentMark agentId={agent.id} />
-                <span>
-                  <strong>{meta.label}</strong>
-                  <small>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(agent.tokens)} tokens</small>
-                </span>
-                <em>{dataUnavailable ? "--" : `${agent.share.toFixed(1)}%`}</em>
-              </button>
-            );
-          })}
+          {(() => {
+            // 行集合只由用户的 Agent 选择决定（与胶囊条同一哲学：自选一律占格），
+            // 没用量/没数据的显示 0 而不是消失——否则周期一切换行数就变，
+            // 窗口高度跟着内容跳来跳去（用户称之为"乱飘"）。
+            const rows = AGENT_ORDER.filter(
+              (id) => widgetAgents.includes(id) || selectedAgent === id,
+            ).map((id) => {
+              const live = snapshot.agents.find((agent) => agent.id === id);
+              return live || { id, tokens: 0, share: 0 };
+            });
+            return rows.map((agent) => {
+              const meta = AGENT_META[agent.id];
+              if (!meta) return null;
+              const isSelected = selectedAgent === agent.id;
+              return (
+                <button
+                  type="button"
+                  className={`widget-agent ${isSelected ? "widget-agent--selected" : ""}`}
+                  key={agent.id}
+                  aria-pressed={isSelected}
+                  onClick={() => onSelectAgent(isSelected ? "all" : agent.id)}
+                >
+                  <i className="widget-agent-accent" style={{ backgroundColor: meta.accent }} aria-hidden="true" />
+                  <AgentMark agentId={agent.id} />
+                  <span>
+                    <strong>{meta.label}</strong>
+                    <small>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(agent.tokens)} tokens</small>
+                  </span>
+                  <em>{dataUnavailable ? "--" : `${agent.share.toFixed(1)}%`}</em>
+                </button>
+              );
+            });
+          })()}
         </section>
 
         <footer className="widget-footer">
@@ -2197,13 +2394,15 @@ function weekTickLabel(key) {
 
 // 图表专用降饱和配色：品牌色直接上图会显得"纯"，
 // 苹果式做法是柔和一档的同源色 + 平滑曲线 + 低透明面积。
+// 六个 Agent 各占一个色相（蓝/珊瑚/紫罗兰/青/品红/琥珀），
+// 任何叠加组合都可分辨——曾经 codex/kimi/antigravity 三个蓝挤在一起。
 const CHART_LINE_COLORS = {
   codex: "#5586d4",
   claude: "#d98663",
   zcode: "#8b80d9",
   opencode: "#4aa392",
-  kimi: "#6f8fd6",
-  antigravity: "#6b8fe4",
+  kimi: "#c4719f",
+  antigravity: "#d1a34e",
 };
 
 function chartColor(id) {
@@ -2809,16 +3008,32 @@ export function App() {
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
     // strip 形态的启动定位在 strip 专属 effect 里做。
     if (viewMode === "compact") {
-      runWindowAction(() => restoreWindowPosition("compact"));
-      // 启动时窗口尺寸来自 tauri.conf.json（未缩放），就地应用缩放档位。
-      runWindowAction(() => applyStartupUiScale("compact"));
+      // 先到位、再按最终所在显示器的 factor 算尺寸：并发执行可能在错误的
+      // factor 下算物理尺寸，视口缩水后 320 的内容被裁。
+      runWindowAction(async () => {
+        await restoreWindowPosition("compact");
+        await applyStartupUiScale("compact");
+      });
     }
+  }, []);
+
+  // DPI 变化（跨屏拖动、系统改缩放）后重算悬浮形态物理尺寸，保持 zoom 与
+  // 窗口尺寸一致；strip 由内容测量观察器自愈，expanded 可缩放不干预。
+  useEffect(() => {
+    const stopPromise = onScaleFactorChanged(() => {
+      if (viewModeRef.current === "compact") runWindowAction(() => reassertCompactSize());
+    });
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
   }, []);
 
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
+  // 变形前的形态：applyWindowMode 的 fromMode 用它按形态分别记位，互不污染。
+  const previousViewModeRef = useRef(viewMode);
 
   // 拖动后记住小组件位置，供下次启动恢复。
   useEffect(() => {
@@ -2965,7 +3180,8 @@ export function App() {
       return base;
     });
   }, []);
-  // 进入 strip 时整窗变形一次（含启动恢复）；之后 agent 格数变化只调宽度。
+  // 进入 strip 时整窗变形一次（含启动恢复）；之后窗口尺寸由 StripBar 的
+  // 内容测量观察器按真实渲染收敛，不再用手写常量重算。
   const stripApplied = useRef(false);
   useEffect(() => {
     if (IS_MAC) return;
@@ -2973,13 +3189,17 @@ export function App() {
       stripApplied.current = false;
       return;
     }
-    const size = stripWindowSize(stripOrientation, stripAgents.length);
-    if (stripApplied.current) {
-      runWindowAction(() => resizeStripWindow(size));
-    } else {
-      stripApplied.current = true;
-      runWindowAction(() => applyWindowMode("strip", size));
-    }
+    if (stripApplied.current) return;
+    stripApplied.current = true;
+    const fromMode = previousViewModeRef.current;
+    runWindowAction(async () => {
+      // 首帧直接用上次测量收敛的尺寸（没有才回退常量估计），
+      // 避免变形后 240ms 再跳一次的两段式卡顿。
+      const estimate = stripWindowSize(stripOrientation, stripAgents.length);
+      await applyWindowMode("strip", { ...stripContentSize(stripOrientation, estimate), fromMode });
+      // expanded 期间置顶被强制解除；回到悬浮形态按用户选择重新断言。
+      await setWindowPinned(pinnedRef.current);
+    });
   }, [viewMode, stripAgents.length, stripOrientation]);
   const handleCycleQuotaAgent = useCallback(() => {
     const index = quotaAgents.indexOf(activeQuotaAgent);
@@ -3044,11 +3264,19 @@ export function App() {
       runWindowAction(() => applyWindowMode("compact"));
       return;
     }
+    const fromMode = viewModeRef.current;
+    previousViewModeRef.current = fromMode;
     setViewMode(nextMode);
     if (nextMode === "compact") setActiveNav("overview");
     if (nextMode !== "expanded") localStorage.setItem("metrik:viewMode", nextMode);
-    // strip 的变形由 strip 专属 effect 统一处理（含启动恢复与格数变宽）。
-    if (nextMode !== "strip") runWindowAction(() => applyWindowMode(nextMode));
+    // strip 的变形由 strip 专属 effect 统一处理（含启动恢复与置顶断言）。
+    // expanded 在 applyWindowMode 里强制解除置顶；回到 compact 后按用户选择
+    // 重新断言，固定只属于悬浮形态。
+    if (nextMode === "strip") return;
+    runWindowAction(async () => {
+      await applyWindowMode(nextMode, { fromMode });
+      if (nextMode === "compact") await setWindowPinned(pinnedRef.current);
+    });
   }, []);
 
   // 小组件上的更新提示点：点击直达设置页。macOS 的设置在独立展开窗口里。

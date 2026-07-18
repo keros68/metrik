@@ -15,8 +15,8 @@ const AGENT_LINE_COLORS = {
   claude: { stroke: "#d98663", fill: "rgba(217, 134, 99, 0.09)" },
   zcode: { stroke: "#8b80d9", fill: "rgba(139, 128, 217, 0.09)" },
   opencode: { stroke: "#4aa392", fill: "rgba(74, 163, 146, 0.09)" },
-  kimi: { stroke: "#6f8fd6", fill: "rgba(111, 143, 214, 0.09)" },
-  antigravity: { stroke: "#6b8fe4", fill: "rgba(107, 143, 228, 0.09)" },
+  kimi: { stroke: "#c4719f", fill: "rgba(196, 113, 159, 0.09)" },
+  antigravity: { stroke: "#d1a34e", fill: "rgba(209, 163, 78, 0.09)" },
   default: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
 };
 
