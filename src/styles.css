@@ -131,7 +131,8 @@ button:focus-visible {
   display: flex;
   width: min(320px, 100vw);
   min-width: 320px;
-  height: min(320px, 100dvh);
+  /* 高度跟随窗口（窗口高度由内容驱动：Agent 行多时窗口加高），320 是下限。 */
+  height: 100dvh;
   min-height: 320px;
   flex-direction: column;
   overflow: hidden;
@@ -249,7 +250,9 @@ button:focus-visible {
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-rows: 34px 86px 106px 30px;
+  /* 列表行吃掉窗口的额外高度：行数少时 104px 起步与原 320 设计一致，
+     行数多时窗口加高、列表随之舒展。 */
+  grid-template-rows: 34px 86px minmax(104px, 1fr) 30px;
   gap: 4px;
   padding: 2px 10px 6px;
   transition-property: opacity;
@@ -467,14 +470,44 @@ button:focus-visible {
 .widget-agent-list {
   display: grid;
   min-height: 0;
-  overflow: hidden;
-  grid-auto-rows: 1fr;
+  /* 每行固定 52px（图标 + 文字的自然高度）：scrollHeight 恒等于内容自然高，
+     供窗口高度跟随内容测量；装不下时内部滚动，不再把 N 行压进固定高度叠字。 */
+  overflow-y: auto;
+  grid-auto-rows: 52px;
   background: rgba(251, 251, 250, 0.78);
   border-radius: 16px;
   box-shadow:
     0 0 0 1px rgba(31, 33, 36, 0.07),
     0 10px 28px rgba(31, 33, 36, 0.04),
     inset 0 1px rgba(255, 255, 255, 0.9);
+  /* 细滚动条：无箭头按钮、透明轨道，不给深色玻璃塞一条系统灰。 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(127, 130, 136, 0.4) transparent;
+}
+
+.widget-agent-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.widget-agent-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.widget-agent-list::-webkit-scrollbar-thumb {
+  background: rgba(127, 130, 136, 0.4);
+  border-radius: 3px;
+}
+
+.widget-agent-list::-webkit-scrollbar-button {
+  display: none;
+}
+
+.widget-shell--transparent .widget-agent-list {
+  scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
+}
+
+.widget-shell--transparent .widget-agent-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.26);
 }
 
 /* 用户可勾选 1–4 个 Agent；3 行起收紧密度，4 行去掉次要信息。 */
@@ -911,6 +944,16 @@ html:has(.strip-shell) #root {
   align-items: center;
   gap: 4px;
   padding-top: 4px;
+}
+
+/* 状态点/更新点与按钮共用 22px 槽位：所有控件恒同心，
+   不再靠"各自恰好居中"的巧合（内容超窗挤压时曾错位）。 */
+.strip-control-slot {
+  display: grid;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  place-items: center;
 }
 
 /* 基础 .status-dot 的 margin-top 是来源抽屉的对齐补偿，胶囊条里要归零，
@@ -1659,8 +1702,8 @@ html:has(.strip-shell) #root {
 .legend-line--claude { background: #d98663; }
 .legend-line--opencode { background: #4aa392; }
 .legend-line--zcode { background: #8b80d9; }
-.legend-line--kimi { background: #6f8fd6; }
-.legend-line--antigravity { background: #6b8fe4; }
+.legend-line--kimi { background: #c4719f; }
+.legend-line--antigravity { background: #d1a34e; }
 
 .inspector-zone {
   min-width: 0;

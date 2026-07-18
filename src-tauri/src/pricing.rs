@@ -1,9 +1,9 @@
 //! 成本估算定价表（美元每百万 token）。
 //!
 //! 数据来源：LiteLLM 的公开价格表（`model_prices_and_context_window.json`），
-//! 只取 openai 与 anthropic 两个 provider，构建期由
-//! `scripts/update-pricing.mjs` 生成 `pricing_table.rs`（`npm run pricing:update`）。
-//! 运行时不联网——价格随发版更新，留在 git 里可审计。
+//! 只取 openai / anthropic / moonshot / zai / gemini 五个官方第一方 API 的
+//! provider，构建期由 `scripts/update-pricing.mjs` 生成 `pricing_table.rs`
+//! （`npm run pricing:update`）。运行时不联网——价格随发版更新，留在 git 里可审计。
 //!
 //! ## 匹配规则：精确匹配，绝不前缀猜测
 //!
@@ -18,13 +18,21 @@
 //!
 //! ## 覆盖范围
 //!
-//! GLM(zcode)、Kimi、OpenCode 用的模型不在表里，一律 unpriced：它们走订阅制
-//! coding plan，按 token 估价本就无意义；LiteLLM 里那些名字只有 Bedrock/Azure 等
-//! 第三方转售价，拿来当官方价就是猜价格。
+//! 表内是五个第一方官方 API 的价目（生成时剥掉 LiteLLM 键的 provider 前缀，
+//! 按裸模型名匹配）。OpenCode、Antigravity 等直连这些官方 API 的用量因此可以
+//! 计价（如 kimi-k2.5、glm-4.6、gemini-3-flash-preview）。
+//!
+//! 订阅制 coding plan 的专属模型 ID 一律 unpriced：Kimi Code 的 kimi-for-coding、
+//! k3，ZCode coding-plan 的 GLM-5.2 等。订阅额度按周期重置、不按 token 卖；
+//! LiteLLM 里那些名字的 Bedrock/Azure/Cloudflare 条目是第三方转售价，拿来当
+//! 官方价就是猜价格。Kimi 官方文档只说 Extra Usage 按量计费且"接近开放平台
+//! 官方 API 价"，但未公布订阅模型 ID 的逐 token 价目——官方公布前不加。
+//! 同理，带 -preview 后缀的官方价不补给稳定版名字（gemini-3.1-pro 不计价）。
 //!
 //! 缓存口径：OpenAI 的 prompt 缓存写入不计费（LiteLLM 里无该字段 → 记 0）；
 //! Anthropic 按 TTL 分级，LiteLLM 给的是最常见的 5 分钟档，1 小时档更贵——
-//! 长 TTL 场景会低估。这是估算，不是账单。
+//! 长 TTL 场景会低估。moonshot / zai / gemini 的缓存写入 LiteLLM 同样无字段，
+//! 记 0。这是估算，不是账单。
 
 #[path = "pricing_table.rs"]
 mod table;
@@ -103,11 +111,26 @@ mod tests {
     }
 
     #[test]
-    fn subscription_billed_agents_stay_unpriced_rather_than_borrow_a_resale_rate() {
-        // GLM/Kimi 走订阅 coding plan；LiteLLM 只有第三方转售价，不能冒充官方价。
+    fn subscription_only_model_ids_stay_unpriced() {
+        // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
+        // 转售价或同系模型的价格蒙混（Kimi Code 订阅、ZCode coding plan）。
         assert!(price_for("kimi-code/k3").is_none());
+        assert!(price_for("kimi-code/kimi-for-coding").is_none());
+        assert!(price_for("kimi-for-coding").is_none());
         assert!(price_for("GLM-5.2").is_none());
         assert!(price_for("glm-5-turbo").is_none());
+        // 有 -preview 后缀的官方价也不补给稳定版名字。
+        assert!(price_for("gemini-3.1-pro").is_none());
+    }
+
+    #[test]
+    fn first_party_api_models_are_priced_by_bare_name() {
+        // OpenCode / Antigravity 等直连官方 API 的用量按第一方价目计价
+        // （LiteLLM 键的 provider 前缀在生成时已剥掉）。
+        assert!(price_for("kimi-k2.5").is_some());
+        assert!(price_for("glm-4.6").is_some());
+        assert!(price_for("gemini-3-flash-preview").is_some());
+        assert!(price_for("gemini-2.5-pro").is_some());
     }
 
     #[test]

@@ -1636,7 +1636,8 @@ mod tests {
             "claude",
             "sess-mixed",
             test_local_time(today, 9).timestamp_millis(),
-            Some("glm-4.7"),
+            // 订阅 coding-plan 专属 ID，没有官方按 token 价目（见 pricing.rs）。
+            Some("GLM-5.2"),
             10,
             0,
             0,
@@ -1662,7 +1663,8 @@ mod tests {
             "claude",
             "sess-none",
             test_local_time(today, 8).timestamp_millis(),
-            Some("glm-4.7"),
+            // 同上：GLM-5.2 是订阅专属 ID，必须保持未计价。
+            Some("GLM-5.2"),
             10,
             0,
             0,
@@ -2176,13 +2178,14 @@ mod tests {
             1_000_000,
             1_000_000,
         );
-        // claude: GLM has no reliable published pricing, must stay unpriced.
+        // claude: GLM-5.2 是订阅 coding-plan 专属 ID，没有官方按 token 价目，
+        // 必须保持未计价（见 pricing.rs 的覆盖范围说明）。
         insert_test_usage_full(
             &connection,
             "claude-glm",
             "claude",
             at,
-            Some("glm-4.7"),
+            Some("GLM-5.2"),
             100,
             0,
             0,
