@@ -10,8 +10,15 @@ use walkdir::WalkDir;
 /// `<data>/storage/message/<sessionID>/<messageID>.json`（新版）或
 /// `<data>/storage/session/message/<sessionID>/<messageID>.json`（旧版）。
 /// assistant 消息带 `tokens` 字段；正文保存在单独的 part 文件中，本 adapter 不读取。
+///
+/// OpenCode 1.2+ 改存 SQLite（`<data>/opencode.db`，其它发布渠道叫
+/// `opencode-<channel>.db`），本 adapter 尚不支持读取。检测到库文件时通过
+/// `coverage_gaps` 上报，让 UI 标"部分覆盖"——否则新版用户会看到静默的 0，
+/// 读起来像"没用过"而不是"读不到"。
 pub struct OpencodeAdapter {
     roots: Vec<PathBuf>,
+    /// `<data>/opencode` 数据根，用于探测 SQLite 库；测试可为 None。
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
@@ -63,24 +70,73 @@ impl OpencodeAdapter {
                     .join(".local")
                     .join("share")
             });
-        let storage = data_home.join("opencode").join("storage");
+        let data_dir = data_home.join("opencode");
+        let storage = data_dir.join("storage");
         Self {
             roots: vec![
                 storage.join("message"),
                 storage.join("session").join("message"),
             ],
+            data_dir: Some(data_dir),
         }
     }
 
     #[cfg(test)]
     fn with_roots(roots: Vec<PathBuf>) -> Self {
-        Self { roots }
+        Self {
+            roots,
+            data_dir: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_data_dir(data_dir: PathBuf) -> Self {
+        Self {
+            roots: Vec::new(),
+            data_dir: Some(data_dir),
+        }
+    }
+
+    /// `<data>` 下的 SQLite 库：`opencode.db`（latest/beta 渠道）或
+    /// `opencode-<channel>.db`。只探测文件名，不打开——我们读不了它，
+    /// 探测的意义就是如实上报读不了。
+    fn sqlite_stores(&self) -> Vec<String> {
+        let Some(data_dir) = &self.data_dir else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(data_dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false)
+            })
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| name.starts_with("opencode") && name.ends_with(".db"))
+            .collect();
+        names.sort();
+        names
     }
 }
 
 impl AgentAdapter for OpencodeAdapter {
     fn id(&self) -> &'static str {
         "opencode"
+    }
+
+    fn coverage_gaps(&self) -> Vec<String> {
+        let stores = self.sqlite_stores();
+        if stores.is_empty() {
+            return Vec::new();
+        }
+        vec![format!(
+            "检测到 OpenCode 1.2+ 的 SQLite 存储（{}），当前版本尚不支持读取，其中的会话未计入统计",
+            stores.join("、")
+        )]
     }
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
@@ -242,6 +298,30 @@ mod tests {
         let path = session.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn sqlite_store_is_reported_as_a_coverage_gap_not_silently_zero() {
+        let test = TestDirectory::new("sqlite-gap");
+        // 没有库文件：无 gap（未安装或旧版 JSON 用户不受影响）。
+        let adapter = OpencodeAdapter::with_data_dir(test.path().to_path_buf());
+        assert!(adapter.coverage_gaps().is_empty());
+
+        // latest 渠道与其它渠道的库都要认出来；伴生的 -wal/-shm 不算独立存储。
+        fs::write(test.path().join("opencode.db"), b"sqlite").unwrap();
+        fs::write(test.path().join("opencode-nightly.db"), b"sqlite").unwrap();
+        fs::write(test.path().join("opencode.db-wal"), b"wal").unwrap();
+        let gaps = adapter.coverage_gaps();
+        assert_eq!(gaps.len(), 1);
+        assert!(gaps[0].contains("opencode.db"));
+        assert!(gaps[0].contains("opencode-nightly.db"));
+        assert!(!gaps[0].contains("db-wal"));
+        assert!(gaps[0].contains("尚不支持读取"));
+
+        // 纯 JSON 测试构造器不探测（data_dir 为 None）。
+        assert!(OpencodeAdapter::with_roots(Vec::new())
+            .coverage_gaps()
+            .is_empty());
     }
 
     fn scan(adapter: &OpencodeAdapter, cutoff_ms: i64) -> Vec<ParsedScan> {

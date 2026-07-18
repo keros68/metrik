@@ -79,6 +79,12 @@ pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate>;
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan>;
+    /// 已知存在、但当前版本读不了的存储形态（例：OpenCode 1.2+ 改用 SQLite）。
+    /// 非空时该 Agent 的覆盖必须标为"部分"并把原因展示给用户——此时显示的 0
+    /// 是"读不到"，不是"没用过"，静默显示 0 违反诚实约束。默认没有。
+    fn coverage_gaps(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub fn discover_jsonl(roots: &[PathBuf], adapter_id: &str, cutoff_ms: i64) -> Vec<SourceCandidate> {

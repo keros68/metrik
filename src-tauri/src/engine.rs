@@ -44,6 +44,9 @@ struct ScanReport {
     refreshed: HashMap<String, usize>,
     errors: HashMap<String, usize>,
     diagnostics: HashMap<String, AdapterDiagnostics>,
+    /// adapter 自报的"存在但读不了"的存储形态（见 AgentAdapter::coverage_gaps）。
+    /// 非空 → 该 Agent 标"部分覆盖"，原因原样展示。
+    coverage_gaps: HashMap<String, Vec<String>>,
     backfill_pending: usize,
 }
 
@@ -578,6 +581,10 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
     for (index, adapter) in adapters.iter().enumerate() {
         let candidates = adapter.discover(horizon_ms);
         let stored_diagnostics = stored_adapter_scan_diagnostics(connection, adapter.id())?;
+        let gaps = adapter.coverage_gaps();
+        if !gaps.is_empty() {
+            report.coverage_gaps.insert(adapter.id().into(), gaps);
+        }
         report
             .discovered
             .insert(adapter.id().into(), candidates.len());
@@ -1117,7 +1124,16 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
     let kimi_diagnostics = diagnostics("kimi");
     let codex_partial = codex_diagnostics.partial_sources > 0 || errors("codex") > 0;
     let claude_partial = claude_diagnostics.partial_sources > 0 || errors("claude") > 0;
-    let opencode_partial = opencode_diagnostics.partial_sources > 0 || errors("opencode") > 0;
+    // 读不了的存储形态（如 OpenCode 1.2+ 的 SQLite）也是覆盖缺口：
+    // 此时的 0 是"读不到"而非"没用过"，必须标部分覆盖。
+    let opencode_gaps = report
+        .coverage_gaps
+        .get("opencode")
+        .cloned()
+        .unwrap_or_default();
+    let opencode_partial = opencode_diagnostics.partial_sources > 0
+        || errors("opencode") > 0
+        || !opencode_gaps.is_empty();
     let kimi_partial = kimi_diagnostics.partial_sources > 0 || errors("kimi") > 0;
     let mut views = vec![
         SourceView {
@@ -1192,10 +1208,15 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             kind: "local".into(),
             label: "OpenCode 本地 Token".into(),
             detail: format!(
-                "发现 {} 条近期消息，本次更新 {} 条。{}读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
+                "发现 {} 条近期消息，本次更新 {} 条。{}{}读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
                 discovered("opencode"),
                 refreshed("opencode"),
-                coverage_detail(&opencode_diagnostics, errors("opencode"))
+                coverage_detail(&opencode_diagnostics, errors("opencode")),
+                if opencode_gaps.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}。", opencode_gaps.join("；"))
+                },
             ),
             quality: if opencode_partial { "partial" } else { "exact" }.into(),
             quality_label: if opencode_partial {
@@ -1801,6 +1822,28 @@ mod tests {
 
         assert_eq!(claude.quality, "partial");
         assert!(claude.detail.contains("1 个会话未能完成更新"));
+    }
+
+    #[test]
+    fn unreadable_store_marks_opencode_partial_with_the_reason() {
+        // OpenCode 1.2+ 的 SQLite 库读不了：0 是"读不到"不是"没用过"，
+        // 必须标部分覆盖并把原因展示出来，不许显示成精确的 0。
+        let mut report = ScanReport::default();
+        report.coverage_gaps.insert(
+            "opencode".into(),
+            vec!["检测到 OpenCode 1.2+ 的 SQLite 存储（opencode.db），当前版本尚不支持读取，其中的会话未计入统计".into()],
+        );
+
+        let views = source_views(report, None);
+        let opencode = views
+            .iter()
+            .find(|source| source.id == "opencode-local")
+            .unwrap();
+
+        assert_eq!(opencode.quality, "partial");
+        assert_eq!(opencode.quality_label, "部分覆盖");
+        assert!(opencode.detail.contains("SQLite"));
+        assert!(opencode.detail.contains("尚不支持读取"));
     }
 
     #[test]
