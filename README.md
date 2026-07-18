@@ -18,7 +18,7 @@ Windows 上是 320 × 320 的桌面小组件，可再折叠成一根横向或竖
 <p align="center">
   <img src="design/shot-strip-vertical.png" height="240" alt="配额胶囊条 · 竖条">
   &nbsp;&nbsp;&nbsp;
-  <img src="design/shot-strip-horizontal.png" width="330" alt="配额胶囊条 · 横条">
+  <img src="design/shot-strip-horizontal.png" width="440" alt="配额胶囊条 · 横条">
 </p>
 <p align="center"><sub>小组件可折叠成配额胶囊条（Windows）：横条或竖立长条，只占一线屏幕。</sub></p>
 
