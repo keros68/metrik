@@ -3,9 +3,11 @@
 // 为什么不在运行时拉取：Metrik 是本地优先的，配额查询之外不该再有网络依赖。
 // 价格月级变动而我们发版频繁，构建期生成足够新鲜，且价格留在 git 里可审计。
 //
-// 为什么只取 openai + anthropic：其余 Agent（GLM/Kimi 等）走订阅制 coding plan，
-// 按 token 估价没有意义；LiteLLM 里它们只有 Bedrock/Azure 等第三方转售价，
-// 拿来当官方价就是猜价格。宁可 unpriced。
+// provider 选择：只取官方第一方 API（openai / anthropic / moonshot / zai / gemini）。
+// 适配器解析出的模型名只有在这些官方价目里有完全同名条目时才计价；
+// 订阅制 coding plan 的专属模型 ID（kimi-for-coding、k3、coding-plan 的 GLM 等）
+// 没有官方按 token 价目，宁可 unpriced 也不借 Bedrock/Azure/Cloudflare 等
+// 第三方转售价冒充官方价。
 //
 // 用法：npm run pricing:update   （改完提交生成的 .rs 文件）
 // 也可离线：node scripts/update-pricing.mjs <本地 json 路径>
@@ -15,7 +17,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const SOURCE =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const OUT = "src-tauri/src/pricing_table.rs";
-const PROVIDERS = new Set(["openai", "anthropic"]);
+const PROVIDERS = new Set(["openai", "anthropic", "moonshot", "zai", "gemini"]);
 
 const localPath = process.argv[2];
 let raw;
@@ -54,8 +56,12 @@ const rows = Object.entries(raw)
     if (entry.output_cost_per_token == null) return false;
     return entry.mode == null || entry.mode === "chat" || entry.mode === "responses";
   })
-  .map(([model, entry]) => ({
-    model,
+  .map(([key, entry]) => ({
+    // 适配器解析出的是裸模型名（kimi-k2.5、glm-4.6、gemini-3-flash-preview），
+    // LiteLLM 的键带 provider 前缀（moonshot/kimi-k2.5），入库前剥掉。
+    model: key.startsWith(`${entry.litellm_provider}/`)
+      ? key.slice(entry.litellm_provider.length + 1)
+      : key,
     input: perMillion(entry.input_cost_per_token),
     // 缓存读价缺失时按未打折的输入价算，宁可高估也不虚报便宜。
     cache_read:
@@ -66,11 +72,14 @@ const rows = Object.entries(raw)
     cache_write: perMillion(entry.cache_creation_input_token_cost),
     output: perMillion(entry.output_cost_per_token),
   }))
+  // 剥前缀后可能撞名（provider/x 与裸 x 同名）：先到先得，绝不两行同名，
+  // 否则 price_for 的二分查找行为未定义。
+  .filter((row, index, all) => all.findIndex((other) => other.model === row.model) === index)
   // price_for 用二分查找，表必须按模型名有序。
   .sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
 
 if (!rows.length) {
-  throw new Error("LiteLLM 价格表里没有匹配到任何 openai/anthropic 模型，拒绝生成空表");
+  throw new Error("LiteLLM 价格表里没有匹配到任何第一方 provider 模型，拒绝生成空表");
 }
 
 /// Rust 的 f64 字段不接受整数字面量（`input: 5` 编译不过），整数补上 `.0`；
@@ -91,7 +100,8 @@ const body = rows
 writeFileSync(
   OUT,
   `//! 由 scripts/update-pricing.mjs 生成，请勿手改。
-//! 来源：LiteLLM 的 model_prices_and_context_window.json（openai + anthropic）。
+//! 来源：LiteLLM 的 model_prices_and_context_window.json
+//! （只取 openai / anthropic / moonshot / zai / gemini 官方第一方 API）。
 //! 重新生成：node scripts/update-pricing.mjs
 //!
 //! 单位：美元 / 百万 token。表按模型名有序，供 price_for 二分查找。
