@@ -22,6 +22,10 @@ When implementing from a selected generated mock, treat that image as the source
 - Pinning (always-on-top + position lock) belongs only to the floating forms (compact widget and quota strip). The expanded view is a normal window: entering it always drops always-on-top and offers no pin button — a pinned 1120x760 window traps the user on top of every app.
 - On Windows the three forms are reachable from each other in one click (compact ↔ strip ↔ expanded), and each form returns to its own last position after a switch; positions are remembered per form and must never overwrite one another. Resizing the strip (orientation toggle, cell count change) preserves the screen edge it is flush to, and any position that falls fully outside every monitor must self-recover to center — a strip the user cannot reach is a trap, pinned strips have no drag region. Never persist an off-screen position either; the same applies on restore.
 - The strip's window size is derived from the rendered content (measure the main-axis length after layout and resize to fit), never from hand-maintained size constants. Constants may seed the first frame only — they drifted out of sync with the CSS once and clipped the vertical strip's buttons on other DPI/font/scale combinations.
+- The compact widget's primary content is per-agent official quota windows (5h/weekly remaining + reset countdown), not local token summaries; token analytics live in the expanded view. Missing or stale quota stays explicitly labeled.
+- The strip prefers the five-hour window per cell, falling back to the first available ranked window.
+- UI scale is continuous and per-form: compact uses `metrik:uiScale` [0.75–2.0]; the strip has its own `metrik:stripScale` [0.75–2.0]. Both are settings-page sliders that apply on next form entry. The expanded view has no scale setting — its window is freely resizable and webview zoom stays 1.
+- Manual refresh triggers `usage_snapshot` with `force: true`, bypassing quota TTL caches; failure still retains and stale-labels old rows — never clears them.
 
 ## Durable cross-platform development workflow
 
