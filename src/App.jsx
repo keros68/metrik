@@ -300,6 +300,15 @@ function shortWindowLabel(key) {
   return key.replace(/^seven_day_/, "").slice(0, 4);
 }
 
+// 模型名展示：本地确实缺模型名的记 "unknown"（未标注模型）；
+// "synced-remote" 是同步事件（导出本就不含模型名，见 sync 架构约束），
+// 不是某个叫这个名字的模型，必须说人话。
+function modelDisplayName(model) {
+  if (model === "synced-remote") return "其他设备同步（无模型名）";
+  if (model === "unknown") return "未标注模型";
+  return model;
+}
+
 // 小插件每行 Agent 最多展示两个配额窗口：按来源排序取前两个可用窗口
 // （已过期窗口也算有来源，单独走"已重置，等待刷新"样式）；一个都没有时
 // 由调用方渲染 "-- / 暂无可靠来源"，绝不编造数字。
@@ -636,7 +645,7 @@ function BreakdownSection({ snapshot, selectedAgent }) {
                   aria-hidden="true"
                   title={AGENT_META[entry.agent]?.label || entry.agent}
                 />
-                <span className="model-name">{entry.model === "unknown" ? "未标注模型" : entry.model}</span>
+                <span className="model-name">{modelDisplayName(entry.model)}</span>
                 <span className="model-track" aria-hidden="true">
                   <i style={{ transform: `scaleX(${entry.tokens / modelMax})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
                 </span>
@@ -2773,7 +2782,7 @@ function ReportsSection({ report }) {
               return (
                 <li key={`${entry.agent}-${entry.model}`}>
                   <i className="model-dot" style={{ backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} aria-hidden="true" />
-                  <span className="model-name">{entry.model === "unknown" ? "未标注模型" : entry.model}</span>
+                  <span className="model-name">{modelDisplayName(entry.model)}</span>
                   <span className="model-track" aria-hidden="true">
                     <i style={{ transform: `scaleX(${entry.tokens / max})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
                   </span>

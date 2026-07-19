@@ -969,15 +969,16 @@ fn period_bucket_count(period: &str, current_hour: u32) -> usize {
 
 fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Vec<StoredEvent>> {
     // 远端同步事件只带处理量总数，不带模型或分量拆解（见架构约束：同步导出
-    // 只含派生统计字段）；用 NULL/0 补齐列，让这些事件归入 "unknown" 模型、
-    // 分量记 0，而不是被丢弃。
+    // 只含派生统计字段）；模型列给哨兵值 "synced-remote"、分量记 0，让这些
+    // 事件在模型聚合里单列成"其他设备同步（无模型名）"，与本地确实缺模型名
+    // 的 "unknown" 区分开，而不是混在一起被误读成一个叫"未标注"的模型。
     let mut statement = connection.prepare(
         "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          UNION ALL
-         SELECT adapter_id, occurred_at_ms, processed_tokens, NULL AS model,
+         SELECT adapter_id, occurred_at_ms, processed_tokens, 'synced-remote' AS model,
                 0, 0, 0, 0
          FROM remote_usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
