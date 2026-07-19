@@ -5,7 +5,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   /* 小组件布局按像素精调，禁止系统文本缩放单独放大文字挤坏布局；
-     用户想放大走设置里的整体缩放档位。 */
+     用户想放大走设置里的整体缩放滑杆。 */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   --canvas: #f7f6f2;
@@ -181,13 +181,6 @@ button:focus-visible {
   box-shadow: 0 1px rgba(255, 255, 255, 0.08);
 }
 
-.widget-shell--transparent .widget-metric {
-  padding-inline: 7px 5px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
-}
-
 /* ============ 玻璃拟态回落层 ============
    原生 Acrylic/HostBackdrop 不可用时（含浏览器预览与 release 失效场景），
    同一套深色 HUD 加深到近实心（0.94），外观不塌。
@@ -252,7 +245,7 @@ button:focus-visible {
   flex: 1;
   /* 列表行吃掉窗口的额外高度：行数少时 104px 起步与原 320 设计一致，
      行数多时窗口加高、列表随之舒展。 */
-  grid-template-rows: 34px 86px minmax(104px, 1fr) 30px;
+  grid-template-rows: minmax(104px, 1fr) 30px;
   gap: 4px;
   padding: 2px 10px 6px;
   transition-property: opacity;
@@ -262,32 +255,14 @@ button:focus-visible {
 
 .widget-shell.is-loading .widget-content { opacity: 0.88; }
 
-.widget-shell .period-control--compact {
-  position: relative;
-  top: auto;
-  left: auto;
-  transform: none;
-  width: 100%;
-  max-width: none;
-  height: 34px;
-  margin: 0;
-  padding: 2px;
-  background: rgba(31, 33, 36, 0.045);
-  border-radius: 11px;
-  box-shadow: none;
+/* 有顶部双块时网格多一行：双块自适应高，列表继续吃剩余空间。 */
+.widget-content--with-primary {
+  grid-template-rows: auto minmax(104px, 1fr) 30px;
+  gap: 6px;
 }
 
-.widget-shell .period-control--compact button.is-selected {
-  box-shadow: 0 1px 3px rgba(28, 30, 33, 0.1), 0 0 0 1px rgba(31, 33, 36, 0.04);
-}
-
-.widget-shell .period-control--compact button {
-  min-height: 30px;
-  padding: 0 7px;
-  border-radius: 9px;
-  font-size: 12px;
-}
-
+/* 顶部双块：左侧焦点 Agent 的大剩余百分比，右侧该 Agent 的窗口明细卡。
+   数据是官方额度；版式沿用原设计（原为 token 大数字 + 单家配额卡），静态展示不可点击。 */
 .widget-primary {
   display: grid;
   min-width: 0;
@@ -380,24 +355,11 @@ button:focus-visible {
   color: #25262a;
   text-align: left;
   background: rgba(251, 251, 250, 0.88);
-  border: 0;
   border-radius: 15px;
-  cursor: pointer;
   box-shadow:
     0 0 0 1px rgba(31, 33, 36, 0.07),
     0 8px 22px rgba(31, 33, 36, 0.045),
     inset 0 1px rgba(255, 255, 255, 0.92);
-  transition-property: background-color, transform, box-shadow;
-  transition-duration: 260ms;
-  transition-timing-function: var(--motion);
-}
-
-.widget-quota:hover {
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow:
-    0 0 0 1px rgba(31, 33, 36, 0.08),
-    0 11px 26px rgba(31, 33, 36, 0.06),
-    inset 0 1px rgba(255, 255, 255, 0.98);
 }
 
 /* 陈旧快照：用透明度编码新鲜度，颜色语义（品牌色/警示色）保持不变。 */
@@ -408,11 +370,6 @@ button:focus-visible {
 .widget-quota-window--warn em { color: #8f681f; }
 .widget-quota-window--critical .widget-quota-track i { background: var(--critical); }
 .widget-quota-window--critical em { color: #a1402e; }
-
-.widget-quota:active,
-.widget-agent:active,
-.widget-source:active,
-.widget-expand:active { transform: scale(0.96); }
 
 .widget-quota-window {
   display: grid;
@@ -438,6 +395,90 @@ button:focus-visible {
   text-align: right;
 }
 
+.widget-quota > small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #66686c;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 每个 Agent 一行：品牌色条 + 图标 + 名称/窗口标签 + 头条窗口剩余百分比（静态行）。 */
+.widget-agent {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  grid-template-columns: 4px 43px minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 4px 11px 4px 0;
+  color: #25262a;
+  text-align: left;
+  background: transparent;
+  box-shadow: 0 1px rgba(31, 33, 36, 0.075);
+}
+
+.widget-agent:last-child { box-shadow: none; }
+
+.widget-agent-accent {
+  width: 3px;
+  height: 34px;
+  border-radius: 0 3px 3px 0;
+  opacity: 0.48;
+  transform: scaleY(0.4);
+}
+
+.widget-agent .agent-icon {
+  width: 36px;
+  height: 36px;
+  margin-left: 7px;
+  border-radius: 10px;
+}
+
+.widget-agent > span:not(.agent-icon) {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+  padding-left: 7px;
+}
+
+.widget-agent > span > strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-agent > span > small {
+  overflow: hidden;
+  color: #65676b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-agent em {
+  color: #2b2d31;
+  font-size: 12.5px;
+  font-style: normal;
+  font-weight: 570;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.widget-agent--stale em { opacity: 0.62; }
+.widget-agent--warn em { color: #8f681f; }
+.widget-agent--critical em { color: #a1402e; }
+
+.widget-source:active,
+.widget-expand:active,
+.widget-refresh:active { transform: scale(0.96); }
+
 .widget-quota-track {
   height: 5px;
   overflow: hidden;
@@ -457,21 +498,11 @@ button:focus-visible {
   transition-timing-function: var(--motion);
 }
 
-.widget-quota > small {
-  margin-top: 3px;
-  overflow: hidden;
-  color: #66686c;
-  font-size: 9px;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .widget-agent-list {
   display: grid;
   min-height: 0;
-  /* 每行固定 52px（图标 + 文字的自然高度）：scrollHeight 恒等于内容自然高，
-     供窗口高度跟随内容测量；装不下时内部滚动，不再把 N 行压进固定高度叠字。 */
+  /* 每行固定 52px（图标 + 文字的自然高度）：内容自然高 = 行数 × 52，
+     供窗口高度跟随内容测量；装不下时内部滚动。 */
   overflow-y: auto;
   grid-auto-rows: 52px;
   background: rgba(251, 251, 250, 0.78);
@@ -510,102 +541,10 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.26);
 }
 
-/* 用户可勾选 1–4 个 Agent；3 行起收紧密度，4 行去掉次要信息。 */
-.widget-agent-list:has(> :nth-child(3)) .agent-icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-}
-
-.widget-agent-list:has(> :nth-child(3)) .widget-agent { grid-template-columns: 4px 33px minmax(0, 1fr) auto; }
-.widget-agent-list:has(> :nth-child(3)) .widget-agent > span { gap: 1px; }
-.widget-agent-list:has(> :nth-child(3)) .widget-agent > span > strong { font-size: 11px; }
-.widget-agent-list:has(> :nth-child(3)) .widget-agent > span > small { font-size: 9px; }
-.widget-agent-list:has(> :nth-child(3)) .widget-agent-accent { height: 24px; }
-
-.widget-agent-list:has(> :nth-child(4)) .widget-agent > span > small { display: none; }
-
-.widget-agent-list:has(> :nth-child(4)) .agent-icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-}
-
-.widget-agent {
-  position: relative;
-  display: grid;
-  width: 100%;
-  min-height: 0;
-  grid-template-columns: 4px 43px minmax(0, 1fr) auto;
-  align-items: center;
-  padding: 4px 11px 4px 0;
-  color: #25262a;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  box-shadow: 0 1px rgba(31, 33, 36, 0.075);
-  transition-property: background-color, transform;
-  transition-duration: 260ms;
-  transition-timing-function: var(--motion);
-}
-
-.widget-agent:last-child { box-shadow: none; }
-
-.widget-agent:hover,
-.widget-agent--selected { background: rgba(36, 107, 219, 0.035); }
-
-.widget-agent-accent {
-  width: 3px;
-  height: 34px;
-  border-radius: 0 3px 3px 0;
-  opacity: 0.48;
-  transform: scaleY(0.4);
-  transition-property: opacity, transform;
-  transition-duration: 260ms;
-  transition-timing-function: var(--motion);
-}
-
-.widget-agent:hover .widget-agent-accent,
-.widget-agent--selected .widget-agent-accent {
-  opacity: 1;
-  transform: scaleY(1);
-}
-
-.widget-agent .agent-icon {
-  width: 36px;
-  height: 36px;
-  margin-left: 7px;
-  border-radius: 10px;
-}
-
-.widget-agent > span:not(.agent-icon) {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-  padding-left: 7px;
-}
-
-.widget-agent > span > strong {
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 560;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.widget-agent > span > small {
-  color: #65676b;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.widget-agent em {
-  color: #717378;
-  font-size: 10px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
+/* 行图标统一全尺寸（36px 填满 52px 行高），不做按行数收缩——收缩后行内
+   上下空白过大，且单行文本时代更明显。 */
+.widget-agent .agent-icon--zcode { width: 44px; height: 44px; margin: -4px 0 -4px 3px; }
+.widget-agent .agent-icon--kimi { width: 40px; height: 40px; margin: -2px 0 -2px 5px; }
 
 .widget-footer {
   display: flex;
@@ -666,6 +605,33 @@ button:focus-visible {
 .widget-expand:hover { background: #111214; }
 .widget-expand span { font-size: 10px; font-weight: 520; }
 
+/* 手动强制刷新：加载期间禁用并让图标旋转，复用 loading 状态。 */
+.widget-refresh {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  color: #66686c;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  transition-property: color, background-color, transform;
+  transition-duration: 250ms;
+  transition-timing-function: var(--motion);
+}
+
+.widget-refresh:hover { color: #34363a; background: rgba(31, 33, 36, 0.06); }
+.widget-refresh:disabled { cursor: default; }
+.widget-refresh:disabled:hover { color: #66686c; background: transparent; }
+.widget-refresh:disabled svg { animation: widget-refresh-spin 0.9s linear infinite; }
+
+@keyframes widget-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ---- 深色 HUD 玻璃的文字与控件层（不随系统主题变化） ---- */
 .widget-shell--transparent .widget-brand { color: rgba(255, 255, 255, 0.94); }
 
@@ -678,21 +644,6 @@ button:focus-visible {
 
 .widget-shell--transparent .window-action--active { color: #9ec1f5; }
 
-.widget-shell--transparent .period-control--compact {
-  background: rgba(255, 255, 255, 0.09);
-  box-shadow: none;
-}
-
-.widget-shell--transparent .period-control--compact button { color: rgba(255, 255, 255, 0.6); }
-
-.widget-shell--transparent .period-control--compact button.is-selected {
-  color: rgba(18, 20, 24, 0.94);
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.widget-shell--transparent .widget-metric strong { color: rgba(255, 255, 255, 0.96); }
-
-.widget-shell--transparent .widget-quota,
 .widget-shell--transparent .widget-agent-list {
   background: rgba(255, 255, 255, 0.06);
   box-shadow:
@@ -700,35 +651,36 @@ button:focus-visible {
     inset 0 1px rgba(255, 255, 255, 0.08);
 }
 
-.widget-shell--transparent .widget-quota { color: rgba(255, 255, 255, 0.94); }
+.widget-shell--transparent .widget-metric strong { color: rgba(255, 255, 255, 0.96); }
 
-.widget-shell--transparent .widget-quota:hover {
-  background: rgba(255, 255, 255, 0.1);
+.widget-shell--transparent .widget-quota {
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.13),
-    inset 0 1px rgba(255, 255, 255, 0.1);
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.08);
 }
+
+.widget-shell--transparent .widget-agent { color: rgba(255, 255, 255, 0.92); box-shadow: 0 1px rgba(255, 255, 255, 0.08); }
+.widget-shell--transparent .widget-agent:last-child { box-shadow: none; }
 
 .widget-shell--transparent .widget-quota-track {
   background: color-mix(in srgb, var(--quota-accent, #7fabef) 24%, rgba(255, 255, 255, 0.06));
 }
-.widget-shell--transparent .widget-quota-window small { color: rgba(255, 255, 255, 0.55); }
-.widget-shell--transparent .widget-quota-window em { color: rgba(255, 255, 255, 0.94); }
 .widget-shell--transparent .widget-quota-track i {
   background: var(--quota-accent, #7fabef);
   filter: brightness(1.22) saturate(0.92);
 }
+.widget-shell--transparent .widget-quota-window small { color: rgba(255, 255, 255, 0.55); }
+.widget-shell--transparent .widget-quota-window em { color: rgba(255, 255, 255, 0.94); }
 .widget-shell--transparent .widget-quota--stale .widget-quota-track i { opacity: 0.55; }
 .widget-shell--transparent .widget-quota-window--warn .widget-quota-track i { background: #e8b04a; filter: none; }
 .widget-shell--transparent .widget-quota-window--warn em { color: #e8b04a; }
 .widget-shell--transparent .widget-quota-window--critical .widget-quota-track i { background: #ec7a63; filter: none; }
 .widget-shell--transparent .widget-quota-window--critical em { color: #ec7a63; }
-
-.widget-shell--transparent .widget-agent { color: rgba(255, 255, 255, 0.92); box-shadow: 0 1px rgba(255, 255, 255, 0.08); }
-.widget-shell--transparent .widget-agent:last-child { box-shadow: none; }
-
-.widget-shell--transparent .widget-agent:hover,
-.widget-shell--transparent .widget-agent--selected { background: rgba(255, 255, 255, 0.07); }
+.widget-shell--transparent .widget-agent--warn em { color: #e8b04a; }
+.widget-shell--transparent .widget-agent--critical em { color: #ec7a63; }
+.widget-shell--transparent .widget-agent em { color: rgba(255, 255, 255, 0.94); }
 
 .widget-shell--transparent .widget-metric > span,
 .widget-shell--transparent .widget-quota > span,
@@ -736,14 +688,16 @@ button:focus-visible {
 .widget-shell--transparent .widget-comparison,
 .widget-shell--transparent .widget-quota > small,
 .widget-shell--transparent .widget-agent > span > small,
-.widget-shell--transparent .widget-agent em,
 .widget-shell--transparent .widget-source,
 .widget-shell--transparent .widget-source small {
   color: rgba(255, 255, 255, 0.58);
 }
 
-.widget-shell--transparent .widget-comparison svg { color: #7fabef; }
 .widget-shell--transparent .widget-source:hover { color: rgba(255, 255, 255, 0.9); }
+
+.widget-shell--transparent .widget-refresh { color: rgba(255, 255, 255, 0.58); }
+.widget-shell--transparent .widget-refresh:hover { color: rgba(255, 255, 255, 0.9); background: rgba(255, 255, 255, 0.1); }
+.widget-shell--transparent .widget-refresh:disabled:hover { color: rgba(255, 255, 255, 0.58); background: transparent; }
 
 .widget-shell--transparent .widget-expand {
   color: rgba(255, 255, 255, 0.95);
@@ -769,7 +723,7 @@ html:has(.strip-shell) #root {
   align-items: center;
   width: 100vw;
   height: 100dvh;
-  padding: 0 6px 0 8px;
+  padding: 0 5px 0 6px;
   gap: 4px;
   overflow: hidden;
   color: var(--ink);
@@ -784,7 +738,7 @@ html:has(.strip-shell) #root {
 .strip-shell--vertical {
   flex-direction: column;
   align-items: stretch;
-  padding: 8px 5px 6px;
+  padding: 6px 3px 4px;
   gap: 4px;
 }
 
@@ -828,7 +782,7 @@ html:has(.strip-shell) #root {
   flex: none;
   flex-direction: column;
   gap: 4px;
-  padding: 6px 4px;
+  padding: 5px 2px;
 }
 
 .strip-shell--vertical .strip-cell-icon {
@@ -946,13 +900,13 @@ html:has(.strip-shell) #root {
   padding-top: 4px;
 }
 
-/* 状态点/更新点与按钮共用 22px 槽位：所有控件恒同心，
+/* 状态点/更新点与按钮共用 26px 槽位：所有控件恒同心，
    不再靠"各自恰好居中"的巧合（内容超窗挤压时曾错位）。 */
 .strip-control-slot {
   display: grid;
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   place-items: center;
 }
 
@@ -964,12 +918,12 @@ html:has(.strip-shell) #root {
   display: grid;
   flex: none;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   color: #4f5257;
   background: rgba(31, 33, 36, 0.06);
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   cursor: pointer;
   transition-property: color, background-color;
   transition-duration: 240ms;
@@ -1027,22 +981,6 @@ html:has(.strip-shell) #root {
     background: rgba(31, 33, 36, 0.08);
   }
 
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact {
-    background: rgba(31, 33, 36, 0.07);
-  }
-
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button {
-    color: rgba(31, 33, 36, 0.58);
-  }
-
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button.is-selected {
-    color: rgba(24, 26, 30, 0.94);
-    background: rgba(255, 255, 255, 0.78);
-    box-shadow: 0 1px 3px rgba(31, 33, 36, 0.12);
-  }
-
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric,
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent-list {
     background: rgba(255, 255, 255, 0.34);
     box-shadow:
@@ -1050,14 +988,19 @@ html:has(.strip-shell) #root {
       inset 0 1px rgba(255, 255, 255, 0.52);
   }
 
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota:hover,
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent:hover,
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent--selected {
-    background: rgba(255, 255, 255, 0.5);
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota {
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow:
+      0 0 0 1px rgba(31, 33, 36, 0.08),
+      inset 0 1px rgba(255, 255, 255, 0.52);
   }
 
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent {
     box-shadow: 0 1px rgba(31, 33, 36, 0.07);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-window em {
+    color: rgba(24, 26, 30, 0.92);
   }
 
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric > span,
@@ -1067,14 +1010,9 @@ html:has(.strip-shell) #root {
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota > small,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-window small,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent > span > small,
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent em,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source small {
     color: rgba(31, 33, 36, 0.58);
-  }
-
-  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-window em {
-    color: rgba(24, 26, 30, 0.92);
   }
 
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota-track {
@@ -1083,6 +1021,20 @@ html:has(.strip-shell) #root {
 
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-source:hover {
     color: rgba(24, 26, 30, 0.9);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-refresh {
+    color: rgba(31, 33, 36, 0.58);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-refresh:hover {
+    color: rgba(24, 26, 30, 0.9);
+    background: rgba(31, 33, 36, 0.08);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-refresh:disabled:hover {
+    color: rgba(31, 33, 36, 0.58);
+    background: transparent;
   }
 
   .strip-shell--mac:not(.strip-shell--glass-css) {
@@ -1365,6 +1317,40 @@ html:has(.strip-shell) #root {
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 1px 2px rgba(28, 30, 33, 0.08), 0 5px 18px rgba(28, 30, 33, 0.06);
 }
+
+/* 完整视图的手动强制刷新：右上角悬浮，Windows 上贴着自绘按钮条左侧；
+   加载期间禁用并让图标旋转。 */
+.expanded-refresh {
+  position: absolute;
+  z-index: 9;
+  top: 10px;
+  right: 190px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  color: #77797d;
+  background: rgba(247, 246, 242, 0.72);
+  border: 0;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 1px rgba(31, 33, 36, 0.07),
+    0 4px 14px rgba(31, 33, 36, 0.05);
+  cursor: pointer;
+  transition-property: color, background-color, transform;
+  transition-duration: 240ms;
+  transition-timing-function: var(--motion);
+}
+
+/* macOS 没有自绘按钮条，直接贴右上角。 */
+.expanded-refresh--mac { right: 12px; }
+
+.expanded-refresh:hover { color: #242529; background: rgba(247, 246, 242, 0.95); }
+.expanded-refresh:active { transform: scale(0.96); }
+.expanded-refresh:disabled { cursor: default; opacity: 0.65; }
+.expanded-refresh:disabled:hover { color: #77797d; }
+.expanded-refresh:disabled svg { animation: widget-refresh-spin 0.9s linear infinite; }
 
 .app-shell--expanded {
   height: 100dvh;
@@ -2226,10 +2212,9 @@ html:has(.strip-shell) #root {
 .settings-section {
   grid-column: 2 / 4;
   height: 100dvh;
+  /* 与其他三个页面同一流体 padding 模式、铺满宽度：宽屏时卡片网格
+     由 auto-fit 自然展开成 3-4 列，不再限宽居中。 */
   padding: 88px min(9vw, 110px) 56px;
-  /* 内容限宽 1000px 由左右 padding 撑出来并居中：表头、横幅、卡片网格
-     共享同一内容列，左边缘永远对齐，不依赖子元素自己的 margin。 */
-  padding-inline: max(min(9vw, 110px), calc((100% - 1000px) / 2));
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(31, 33, 36, 0.22) transparent;
@@ -2262,8 +2247,7 @@ html:has(.strip-shell) #root {
   border-radius: 12px;
 }
 
-/* 双列等高：同一行的卡片拉到等高，所有边缘对齐；窄窗口自动回退单列。
-   整个设置区限宽居中（见下），宽屏最多两列，不追求铺满。 */
+/* 双列起、宽屏更多列：同一行的卡片拉到等高，所有边缘对齐；窄窗口自动回退单列。 */
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
@@ -2987,11 +2971,12 @@ html:has(.strip-shell) #root {
       rgba(24, 27, 33, 0.98);
   }
 
-  .widget-shell--transparent .period-control--compact { background: rgba(255, 255, 255, 0.14); }
+  .widget-shell--transparent .widget-agent-list {
+    background: rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  }
 
-  .widget-shell--transparent .widget-quota,
-  .widget-shell--transparent .widget-agent-list,
-  .widget-shell--transparent .widget-metric {
+  .widget-shell--transparent .widget-quota {
     background: rgba(255, 255, 255, 0.1);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
@@ -3000,9 +2985,8 @@ html:has(.strip-shell) #root {
 @media (forced-colors: active) {
   .widget-shell,
   .widget-shell--transparent,
-  .widget-shell .period-control--compact,
-  .widget-shell .widget-quota,
-  .widget-shell .widget-agent-list {
+  .widget-shell .widget-agent-list,
+  .widget-shell .widget-quota {
     color: CanvasText;
     background: Canvas;
     box-shadow: none;
@@ -3417,7 +3401,19 @@ html:has(.strip-shell) #root {
 :root[data-theme="dark"] .empty-section p { color: var(--d-muted); }
 :root[data-theme="dark"] .empty-section button { color: #fff; background: #3a63c9; }
 
-/* --- 展开窗口自绘按钮条（仅 Windows；macOS 完整视图用原生标题栏） --- */
+/* --- 展开窗口自绘按钮条与刷新按钮（仅 Windows；macOS 完整视图用原生标题栏） --- */
+:root[data-theme="dark"] .expanded-refresh {
+  color: var(--d-muted);
+  background: rgba(30, 32, 36, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 4px 14px rgba(0, 0, 0, 0.35);
+}
+:root[data-theme="dark"] .expanded-refresh:hover {
+  color: var(--d-strong);
+  background: rgba(30, 32, 36, 0.9);
+}
+:root[data-theme="dark"] .expanded-refresh:disabled:hover { color: var(--d-muted); }
 :root[data-theme="dark"] .window-actions--expanded {
   background: rgba(30, 32, 36, 0.72);
   box-shadow:

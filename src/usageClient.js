@@ -57,7 +57,7 @@ function demoSeries(period) {
   });
 }
 
-function demoQuotaView(remainingPercent, resetsInMinutes) {
+function demoQuotaView(remainingPercent, resetsInMinutes, overrides = {}) {
   return {
     available: true,
     remainingPercent,
@@ -67,6 +67,7 @@ function demoQuotaView(remainingPercent, resetsInMinutes) {
     resetExpired: false,
     sourceLabel: "演示配额",
     quality: "demo",
+    ...overrides,
   };
 }
 
@@ -107,18 +108,34 @@ function demoSnapshot(period = "today") {
       {
         agent: "codex",
         windows: [
-          { key: "primary", label: "Session", view: demoQuotaView(72, 198) },
-          { key: "secondary", label: "每周", view: demoQuotaView(86, 8_940) },
+          { key: "five_hour", label: "Session", view: demoQuotaView(72, 198) },
+          { key: "seven_day", label: "每周", view: demoQuotaView(86, 8_940) },
         ],
       },
       {
         agent: "claude",
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(94, 102) },
-          { key: "seven_day", label: "每周 · 全模型", view: demoQuotaView(67, 6_180) },
-          { key: "seven_day_fable", label: "每周 · Fable", view: demoQuotaView(52, 6_180) },
+          // 故意做一扇陈旧窗口，让浏览器预览能走到 stale 标注路径。
+          { key: "seven_day", label: "每周 · 全模型", view: demoQuotaView(67, 6_180, { ageMinutes: 23, stale: true }) },
         ],
       },
+      {
+        agent: "zcode",
+        windows: [
+          { key: "five_hour", label: "Session", view: demoQuotaView(58, 241) },
+          { key: "seven_day", label: "每周", view: demoQuotaView(81, 5_760) },
+        ],
+      },
+      {
+        agent: "kimi",
+        windows: [
+          { key: "five_hour", label: "Session", view: demoQuotaView(90, 130) },
+          { key: "seven_day", label: "每周", view: demoQuotaView(76, 4_320) },
+        ],
+      },
+      // OpenCode 现实中没有官方配额来源：窗口列表保持为空。
+      { agent: "opencode", windows: [] },
     ],
     agents: [
       demoAgentSummary("codex", codexTokens, totalTokens),
@@ -158,7 +175,7 @@ function demoSnapshot(period = "today") {
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
       { id: "codex-local", kind: "local", label: "ChatGPT / Codex 本地 Token", detail: "由 Codex Agent 会话日志中的累计快照计算正增量，并排除重复记录。", quality: "exact", qualityLabel: "精确解析" },
       { id: "claude-local", kind: "local", label: "Claude Code 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "zcode-local", kind: "local", label: "ZCode / GLM 本地 Token", detail: "读取 model_usage 统计表的逐请求计数；不读取消息内容。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "zcode-local", kind: "local", label: "GLM 本地 Token", detail: "读取 model_usage 统计表的逐请求计数；不读取消息内容。", quality: "exact", qualityLabel: "精确解析" },
       { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "antigravity-live", kind: "local", label: "Antigravity 用量", detail: "来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。", quality: "exact", qualityLabel: "精确解析" },
@@ -233,14 +250,14 @@ function unavailableSnapshot(period = "today") {
   };
 }
 
-async function loadUsageSnapshot(period = "today") {
+async function loadUsageSnapshot(period = "today", options = {}) {
   if (!isTauriRuntime()) {
     await new Promise((resolve) => setTimeout(resolve, 180));
     return demoSnapshot(period);
   }
 
   try {
-    return await invoke("usage_snapshot", { period });
+    return await invoke("usage_snapshot", { period, force: !!options.force });
   } catch (error) {
     console.warn("Unable to load live usage.", error);
     return unavailableSnapshot(period);

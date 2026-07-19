@@ -5,9 +5,11 @@
 //
 // provider 选择：只取官方第一方 API（openai / anthropic / moonshot / zai / gemini）。
 // 适配器解析出的模型名只有在这些官方价目里有完全同名条目时才计价；
-// 订阅制 coding plan 的专属模型 ID（kimi-for-coding、k3、coding-plan 的 GLM 等）
+// 订阅制 coding plan 的专属模型 ID（kimi-for-coding、coding-plan 的 GLM 等）
 // 没有官方按 token 价目，宁可 unpriced 也不借 Bedrock/Azure/Cloudflare 等
 // 第三方转售价冒充官方价。
+// 注意：LiteLLM 未收录的新模型官方价手动补在 pricing.rs 的 MANUAL_PRICING
+// （如 kimi-k3），本脚本只生成 pricing_table.rs，不会覆盖它。
 //
 // 用法：npm run pricing:update   （改完提交生成的 .rs 文件）
 // 也可离线：node scripts/update-pricing.mjs <本地 json 路径>
