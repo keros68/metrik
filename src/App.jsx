@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   ArrowDown,
   ArrowUp,
+  ArrowsClockwise,
   ArrowsDownUp,
   ArrowsInLineVertical,
   ArrowsInSimple,
@@ -44,6 +45,7 @@ import {
   setClaudeHook,
 } from "./usageClient";
 import {
+  UI_SCALE_RANGE,
   applyStartupUiScale,
   applyWindowMode,
   checkForUpdate,
@@ -56,6 +58,8 @@ import {
   onScaleFactorChanged,
   onTrayShowExpanded,
   openExpandedWindow,
+  readStripScale,
+  readUiScale,
   reassertCompactSize,
   resizeCompactWindow,
   resizeMacosPanel,
@@ -63,6 +67,7 @@ import {
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
+  setStripScale,
   updateMacStatusItems,
   setWindowGlass,
   setWindowPinned,
@@ -109,7 +114,7 @@ const AGENT_META = {
     iconClass: "agent-icon--claude",
   },
   zcode: {
-    label: "ZCode / GLM",
+    label: "GLM",
     accent: "#6a5ae0",
     iconSrc: zcodeAppIcon,
     iconClass: "agent-icon--zcode",
@@ -141,14 +146,14 @@ const AGENT_ORDER = Object.keys(AGENT_META);
 // 胶囊条首帧尺寸估计：横条一格约 68px 宽；竖条是横条立起来的窄长条，
 // 一格约 54px 高（图标/百分比/进度条纵向堆叠）。
 // 这些常量只用于进入 strip 的第一帧，之后的窗口尺寸由 StripBar 里的
-// 内容测量观察器按真实渲染结果收敛——不同字体/DPI/缩放档位、有无更新点
+// 内容测量观察器按真实渲染结果收敛——不同字体/DPI/缩放比例、有无更新点
 // 都不会再裁掉内容（曾因常量与 CSS 脱钩裁掉竖条最后一个按钮）。
 const STRIP_CELL_WIDTH = 68;
-const STRIP_CHROME_WIDTH = IS_MAC ? 76 : 102;
+const STRIP_CHROME_WIDTH = IS_MAC ? 76 : 158;
 const STRIP_BAR_HEIGHT = 40;
 const STRIP_VERTICAL_WIDTH = 52;
 const STRIP_VCELL_HEIGHT = 54;
-const STRIP_VCHROME_HEIGHT = IS_MAC ? 84 : 110;
+const STRIP_VCHROME_HEIGHT = IS_MAC ? 84 : 160;
 
 function stripWindowSize(orientation, count) {
   const cells = Math.max(1, count);
@@ -213,9 +218,9 @@ function scaledUnit(amount, divisor, unit) {
 }
 
 // 小组件窗口高度跟随 Agent 行数。内容自然高 = 各行 getBoundingClientRect
-// 实测之和（行高固定 52px，见 styles.css）；非列表部分（标题栏/周期/主区/
-// 页脚/间距）也是实测（shell.clientHeight - list.clientHeight）。不写布局
-// 常量——写死的常量差 4px 就会逼出一条本不该出现的滚动条。列表至少两行高。
+// 实测之和（行高固定 52px，见 styles.css 的 .widget-agent-list grid-auto-rows）；
+// 非列表部分（标题栏/双块/页脚/间距）也是实测（shell.clientHeight - list.clientHeight）。
+// 不写布局常量——写死的常量差 4px 就会逼出一条本不该出现的滚动条。列表至少两行高。
 const COMPACT_LIST_MIN_HEIGHT = 104;
 
 function compactTokens(value) {
@@ -275,17 +280,6 @@ function snapshotIsPartial(snapshot) {
   return snapshot.sources?.some((source) => source.quality === "partial") || false;
 }
 
-const UNAVAILABLE_QUOTA = {
-  available: false,
-  remainingPercent: 0,
-  resetsInMinutes: null,
-  ageMinutes: null,
-  stale: false,
-  resetExpired: false,
-  sourceLabel: "暂无可靠来源",
-  quality: "unavailable",
-};
-
 function agentQuotaFor(snapshot, agentId) {
   return (
     snapshot.agentQuotas?.find((entry) => entry.agent === agentId) || {
@@ -306,27 +300,60 @@ function shortWindowLabel(key) {
   return key.replace(/^seven_day_/, "").slice(0, 4);
 }
 
-// 小插件配额卡固定两行：优先取来源的前两个窗口，缺则补占位。
-function compactQuotaWindows(entry) {
-  const placeholders = [
-    { key: "five_hour", label: "Session", view: UNAVAILABLE_QUOTA },
-    { key: "seven_day", label: "每周", view: UNAVAILABLE_QUOTA },
-  ];
-  return [0, 1].map((index) => entry.windows?.[index] || placeholders[index]);
+// 小插件每行 Agent 最多展示两个配额窗口：按来源排序取前两个可用窗口
+// （已过期窗口也算有来源，单独走"已重置，等待刷新"样式）；一个都没有时
+// 由调用方渲染 "-- / 暂无可靠来源"，绝不编造数字。
+function compactDisplayWindows(entry) {
+  return (entry.windows || []).filter((window) => window.view.available).slice(0, 2);
 }
 
-// 胶囊条一格取"最紧张"窗口：可用窗口里已用百分比最高者。
+// Hero 块挑全组最紧的官方窗口：剩余最少的可用窗口（并列时取重置更近的）。
+// 只呈现官方数据的现状；全部不可用时返回 null，由列表里的 "--" 说明。
+function compactHeroQuota(snapshot, agents) {
+  let best = null;
+  for (const agentId of AGENT_ORDER.filter((id) => agents.includes(id))) {
+    const entry = agentQuotaFor(snapshot, agentId);
+    for (const window of entry.windows || []) {
+      const view = window.view;
+      if (!view.available || view.resetExpired || !Number.isFinite(view.remainingPercent)) continue;
+      const resets = Number.isFinite(view.resetsInMinutes) ? view.resetsInMinutes : Infinity;
+      if (
+        !best ||
+        view.remainingPercent < best.view.remainingPercent ||
+        (view.remainingPercent === best.view.remainingPercent && resets < best.resets)
+      ) {
+        best = { agentId, window, view, resets };
+      }
+    }
+  }
+  return best;
+}
+
+// 原生 title tooltip：逐窗口列出剩余与重置倒计时，并标注官方/快照/演示来源，
+// 让官方配额与本地解析用量始终可区分。
+function compactQuotaTooltip(agentId, windows) {
+  if (!windows.length) return `${AGENT_META[agentId].label}：暂无可靠来源`;
+  const lines = windows.map((window) => {
+    const view = window.view;
+    const label = window.label || shortWindowLabel(window.key);
+    if (view.resetExpired) return `${label}：已重置，等待刷新`;
+    const reset = Number.isFinite(view.resetsInMinutes)
+      ? ` · ${formatReset(view.resetsInMinutes)}后重置`
+      : "";
+    return `${label}：剩余 ${Math.round(view.remainingPercent)}%${reset} · ${quotaProvenance(view)}`;
+  });
+  return [AGENT_META[agentId].label, ...lines].join("\n");
+}
+
+// 胶囊条一格优先展示 5 小时窗口；该 Agent 没有 5h 窗口时，取后端排好序的
+// 第一个可用窗口（后端按 five_hour → seven_day → 模型/月度排序）。
 function stripCellData(entry) {
   const windows = (entry.windows || []).filter(
     (window) => window.view.available && !window.view.resetExpired,
   );
   if (!windows.length) return null;
-  const tightest = windows.reduce(
-    (worst, window) =>
-      quotaUsedPercent(window.view) > quotaUsedPercent(worst.view) ? window : worst,
-    windows[0],
-  );
-  return { tightest, windows };
+  const fiveHour = windows.find((window) => String(window.key || "").includes("five_hour"));
+  return { tightest: fiveHour || windows[0], windows };
 }
 
 // 原生 title tooltip：列出全部窗口的剩余与重置倒计时；快照数据标注更新时间。
@@ -844,7 +871,7 @@ function StripBar({
   const shellRef = useRef(null);
   // 窗口尺寸跟随真实内容（通用方案，替代手写常量）：每次渲染后与视口变化时
   // 复核目标尺寸，差 ≥1px 才调窗；量的是 CSS px，resizeStripWindow 内部统一
-  // 乘缩放档位与 DPI。任何字体/DPI/缩放/更新点组合都收敛，不再裁按钮。
+  // 乘缩放系数与 DPI。任何字体/DPI/缩放/更新点组合都收敛，不再裁按钮。
   useLayoutEffect(() => {
     if (IS_MAC || !isDesktop()) return undefined;
     const shell = shellRef.current;
@@ -983,7 +1010,7 @@ function StripBar({
             aria-pressed={pinned}
             title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
           >
-            <PushPinSimple size={13} weight={pinned ? "fill" : "light"} aria-hidden="true" />
+            <PushPinSimple size={15} weight={pinned ? "fill" : "light"} aria-hidden="true" />
           </button>
         )}
         <button
@@ -993,7 +1020,7 @@ function StripBar({
           aria-label={vertical ? "切换为横条" : "切换为竖条"}
           title={vertical ? "切换为横条" : "切换为竖条"}
         >
-          <OrientationIcon size={13} weight="light" aria-hidden="true" />
+          <OrientationIcon size={15} weight="light" aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -1002,7 +1029,7 @@ function StripBar({
           aria-label="展开为桌面小插件"
           title="展开为桌面小插件"
         >
-          <ArrowsOutSimple size={13} weight="light" aria-hidden="true" />
+          <ArrowsOutSimple size={15} weight="light" aria-hidden="true" />
         </button>
       </div>
     </main>
@@ -1011,29 +1038,20 @@ function StripBar({
 
 function CompactWidget({
   snapshot,
-  period,
-  selectedAgent,
-  visibleTokens,
   loading,
   pinned,
   transparent,
   glassMode = "css",
-  onPeriodChange,
-  onSelectAgent,
   onOpenSources,
   onTogglePinned,
   onToggleTransparent,
   onExpand,
-  quotaAgent,
-  onCycleQuotaAgent,
+  onRefresh,
   widgetAgents,
   glassAlpha = 0.82,
   availableUpdate,
   onOpenUpdate,
 }) {
-  const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
-  const comparisonIsLower = snapshot.comparisonPercent < -0.5;
-  const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
   const shellRef = useRef(null);
   // 一个观察器承担两条自愈：
   // 1) 宽度失配（zoom×物理尺寸失配，视口 < 320，右侧被裁）→ 整窗重应用（≤3 次）；
@@ -1101,16 +1119,10 @@ function CompactWidget({
       observer.disconnect();
     };
   });
-  // 标签必须描述快照本身的周期；切换周期的扫描期间不给旧数据贴新标签。
-  const comparisonLabel = snapshot.period === "today" ? "较近 7 日同时段" : "较前一周期";
-  const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
-  const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
-  const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
-  const quotaWindows = compactQuotaWindows(quotaEntry);
-  const quotaView = quotaWindows.find((window) => window.view.available)?.view || UNAVAILABLE_QUOTA;
-  const quotaIsSnapshot = quotaView.stale || quotaView.quality === "official_snapshot";
-  const dataUnavailable = snapshot.pending || snapshot.loadError;
   const partial = snapshotIsPartial(snapshot);
+  // Hero 块：全组最紧缺的官方额度（大数字 + 粗条），恢复小卡片的视觉锚点；
+  // 列表作为第二块呈现各 Agent 明细。没有可用官方额度时整块不出现。
+  const hero = compactHeroQuota(snapshot, widgetAgents);
 
   return (
     <main
@@ -1157,118 +1169,107 @@ function CompactWidget({
         />
       </header>
 
-      <div className="widget-content">
-        <PeriodControl period={period} onChange={onPeriodChange} compact />
-
-        <section className="widget-primary" aria-label="用量摘要">
-          <div className="widget-metric">
-            <span>
-              {selectedAgent === "all" ? "总用量" : AGENT_META[selectedAgent].label}
-              {switchingPeriod ? `（${PERIODS.find((item) => item.id === snapshot.period)?.label}）` : ""}
-            </span>
-            <div aria-live="polite" aria-atomic="true">
-              <strong>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(visibleTokens)}</strong>
-              <small>tokens</small>
-            </div>
-            <p className="widget-comparison">
-              {switchingPeriod ? (
-                <>正在统计{PERIODS.find((item) => item.id === period)?.label}数据…</>
-              ) : snapshot.pending ? (
-                <>正在建立本地索引</>
-              ) : snapshot.loadError ? (
-                <>本地数据读取失败</>
-              ) : selectedAgent !== "all" ? (
-                <>
-                  <FunnelSimple size={14} weight="light" aria-hidden="true" />
-                  已按 Agent 筛选
-                </>
-              ) : snapshot.comparisonAvailable ? (
-                <>
-                  {comparisonIsFlat ? (
-                    flatComparisonLabel
-                  ) : (
-                    <>
-                      <ComparisonArrow size={14} weight="bold" aria-hidden="true" />
-                      {comparisonLabel}{comparisonIsLower ? "低" : "高"} {Math.abs(snapshot.comparisonPercent).toFixed(0)}%
-                    </>
-                  )}
-                </>
-              ) : (
-                <>{period === "today" ? "同时段基线建立中" : "基线建立中"}</>
-              )}
-            </p>
-          </div>
-
-          <button
-            className={`widget-quota ${quotaIsSnapshot ? "widget-quota--stale" : ""}`}
-            style={{ "--quota-accent": AGENT_META[quotaAgent].accent }}
-            type="button"
-            onClick={onCycleQuotaAgent}
-            aria-label={`${AGENT_META[quotaAgent].label} 配额，点击切换 Agent`}
-            title="点击切换配额 Agent"
-          >
-            <span>{AGENT_META[quotaAgent].label} 已用</span>
-            {quotaWindows.map((window) => {
-              const severity = quotaSeverity(window.view);
-              const current = window.view.available && !window.view.resetExpired;
-              return (
-                <div
-                  className={`widget-quota-window ${severity ? `widget-quota-window--${severity}` : ""}`}
-                  key={window.key}
-                >
-                  <small>{shortWindowLabel(window.key)}</small>
-                  <div className="widget-quota-track" aria-hidden="true">
-                    <i style={{ transform: `scaleX(${current ? quotaUsedPercent(window.view) / 100 : 0})` }} />
-                  </div>
-                  <em>{current ? `${Math.round(quotaUsedPercent(window.view))}%` : "--"}</em>
+      <div className={`widget-content ${hero ? "widget-content--with-primary" : ""}`}>
+        {hero && (() => {
+          // 顶部双块：左侧焦点 Agent 的大剩余百分比，右侧该 Agent 的窗口明细卡。
+          // 焦点自动取全组剩余最少的窗口，不可点击、不轮播——数据是官方额度，
+          // 版式沿用原设计（原两处分别是 token 大数字与单家配额卡）。
+          const meta = AGENT_META[hero.agentId];
+          const view = hero.view;
+          const stale = view.stale || view.quality === "official_snapshot";
+          const remaining = Math.min(100, Math.max(0, view.remainingPercent));
+          const focusWindows = compactDisplayWindows(agentQuotaFor(snapshot, hero.agentId));
+          return (
+            <section className="widget-primary" aria-label="最紧缺的官方额度">
+              <div className="widget-metric">
+                <span>{meta.label} · {shortWindowLabel(hero.window.key)}</span>
+                <div aria-live="polite" aria-atomic="true">
+                  <strong>{stale ? "~" : ""}{Math.round(remaining)}%</strong>
+                  <small>剩余</small>
                 </div>
-              );
-            })}
-            <small>
-              {quotaView.quality === "demo"
-                ? quotaProvenance(quotaView)
-                : quotaView.resetExpired
-                  ? "窗口已重置，等待刷新"
-                  : quotaView.available
-                    ? `${formatReset(quotaView.resetsInMinutes)}后重置`
-                    : quotaAgent === "claude"
-                      ? "设置中开启配额钩子"
-                      : "官方配额不可用"}
-            </small>
-          </button>
-        </section>
-
-        <section className="widget-agent-list" aria-label="按 Agent 筛选">
+                <p className="widget-comparison">
+                  {Number.isFinite(view.resetsInMinutes)
+                    ? `${formatReset(view.resetsInMinutes)}后重置`
+                    : quotaProvenance(view)}
+                </p>
+              </div>
+              <div
+                className={`widget-quota ${stale ? "widget-quota--stale" : ""}`}
+                style={{ "--quota-accent": meta.accent }}
+                title={compactQuotaTooltip(hero.agentId, focusWindows)}
+              >
+                <span>{meta.label} 剩余</span>
+                {focusWindows.map((window) => {
+                  const windowView = window.view;
+                  const windowSeverity = quotaSeverity(windowView);
+                  const current = windowView.available && !windowView.resetExpired;
+                  const windowRemaining = Math.min(100, Math.max(0, windowView.remainingPercent));
+                  return (
+                    <div
+                      className={`widget-quota-window ${windowSeverity ? `widget-quota-window--${windowSeverity}` : ""}`}
+                      key={window.key}
+                    >
+                      <small>{shortWindowLabel(window.key)}</small>
+                      <div className="widget-quota-track" aria-hidden="true">
+                        {/* 窗口已过期的快照不再显示旧百分比，避免把陈旧值当现状。 */}
+                        <i style={{ transform: `scaleX(${current ? windowRemaining / 100 : 0})` }} />
+                      </div>
+                      <em>{current ? `${Math.round(windowRemaining)}%` : "--"}</em>
+                    </div>
+                  );
+                })}
+                <small>{quotaProvenance(view)}</small>
+              </div>
+            </section>
+          );
+        })()}
+        <section className="widget-agent-list" aria-label="各 Agent 官方剩余额度">
           {(() => {
             // 行集合只由用户的 Agent 选择决定（与胶囊条同一哲学：自选一律占格），
-            // 没用量/没数据的显示 0 而不是消失——否则周期一切换行数就变，
-            // 窗口高度跟着内容跳来跳去（用户称之为"乱飘"）。
-            const rows = AGENT_ORDER.filter(
-              (id) => widgetAgents.includes(id) || selectedAgent === id,
-            ).map((id) => {
-              const live = snapshot.agents.find((agent) => agent.id === id);
-              return live || { id, tokens: 0, share: 0 };
-            });
-            return rows.map((agent) => {
-              const meta = AGENT_META[agent.id];
+            // 没有可靠配额来源的 Agent 显示 "-- / 暂无可靠来源" 而不是消失——
+            // 否则来源一抖动行数就变，窗口高度跟着内容跳来跳去（用户称之为"乱飘"）。
+            return AGENT_ORDER.filter((id) => widgetAgents.includes(id)).map((agentId) => {
+              const meta = AGENT_META[agentId];
               if (!meta) return null;
-              const isSelected = selectedAgent === agent.id;
+              const entry = agentQuotaFor(snapshot, agentId);
+              const windows = compactDisplayWindows(entry);
+              // 行内头条窗口与胶囊条同规则：后端排序 five_hour 优先的第一个可用窗口；
+              // 完整窗口明细在该行的原生 tooltip 与焦点卡中。
+              const headline = windows[0] || null;
+              const headlineView = headline?.view || null;
+              const current = Boolean(headlineView && headlineView.available && !headlineView.resetExpired);
+              const stale = Boolean(
+                headlineView && (headlineView.stale || headlineView.quality === "official_snapshot"),
+              );
+              const severity = headlineView ? quotaSeverity(headlineView) : "";
+              const remaining = headlineView ? Math.min(100, Math.max(0, headlineView.remainingPercent)) : 0;
               return (
-                <button
-                  type="button"
-                  className={`widget-agent ${isSelected ? "widget-agent--selected" : ""}`}
-                  key={agent.id}
-                  aria-pressed={isSelected}
-                  onClick={() => onSelectAgent(isSelected ? "all" : agent.id)}
+                <div
+                  className={`widget-agent ${severity ? `widget-agent--${severity}` : ""} ${stale ? "widget-agent--stale" : ""}`}
+                  key={agentId}
+                  style={{ "--quota-accent": meta.accent }}
+                  title={compactQuotaTooltip(agentId, windows)}
                 >
                   <i className="widget-agent-accent" style={{ backgroundColor: meta.accent }} aria-hidden="true" />
-                  <AgentMark agentId={agent.id} />
+                  <AgentMark agentId={agentId} />
                   <span>
                     <strong>{meta.label}</strong>
-                    <small>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(agent.tokens)} tokens</small>
+                    {/* 窗口标签与名称同一行：5h/7d 剩余；无来源或已重置时明示状态。 */}
+                    <small>
+                      {current
+                        ? `· ${shortWindowLabel(headline.key)}`
+                        : headlineView
+                          ? "· 已重置，等待刷新"
+                          : snapshot.pending
+                            ? "· 正在读取…"
+                            : snapshot.loadError
+                              ? "· 读取失败"
+                              : "· 暂无可靠来源"}
+                    </small>
                   </span>
-                  <em>{dataUnavailable ? "--" : `${agent.share.toFixed(1)}%`}</em>
-                </button>
+                  {/* 展示剩余额度（用户关心的是还能用多少），陈旧快照带 ~ 前缀。 */}
+                  <em>{current ? `${stale ? "~" : ""}${Math.round(remaining)}%` : "--"}</em>
+                </div>
               );
             });
           })()}
@@ -1279,6 +1280,16 @@ function CompactWidget({
             <ShieldCheck size={15} weight="fill" aria-hidden="true" />
             <span>{snapshot.pending ? "正在读取" : snapshot.loadError ? "数据暂不可用" : partial ? "部分覆盖" : snapshot.isDemo ? "演示数据" : "数据可追溯"}</span>
             <small>{snapshot.pending ? "请稍候" : loading ? "更新中" : snapshot.loadError ? "未替换" : partial ? "查看说明" : formatClock(snapshot.generatedAt)}</small>
+          </button>
+          <button
+            type="button"
+            className="widget-refresh"
+            onClick={onRefresh}
+            disabled={loading}
+            aria-label="强制刷新官方额度与本地统计"
+            title="强制刷新官方额度与本地统计"
+          >
+            <ArrowsClockwise size={13} weight="light" aria-hidden="true" />
           </button>
           <button type="button" className="widget-expand" onClick={() => onExpand("expanded")}>
             <span>完整视图</span>
@@ -1850,33 +1861,51 @@ function GlassAlphaCard({ glassAlpha, onGlassAlpha }) {
   );
 }
 
-const UI_SCALE_OPTIONS = [
-  { value: 1, label: "100%" },
-  { value: 1.25, label: "125%" },
-  { value: 1.5, label: "150%" },
-];
-
 function UiScaleCard({ uiScale, onUiScale }) {
+  const percent = Math.round(uiScale * 100);
   return (
     <div className="settings-card">
       <h2>小组件缩放</h2>
       <p className="settings-muted">
         {IS_MAC
-          ? "整体放大菜单栏面板（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。"
-          : "整体放大桌面小插件与胶囊条（窗口和内容等比缩放，不会变形）。完整视图不受此设置影响。"}
+          ? "整体放大菜单栏面板（窗口和内容等比缩放，不会变形），下次打开面板时生效。"
+          : "整体放大桌面小插件（窗口和内容等比缩放，不会变形），下次进入时生效。胶囊条在下方单独调。"}
       </p>
-      <div className="theme-toggle" role="group" aria-label="小组件缩放档位">
-        {UI_SCALE_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            className={uiScale === option.value ? "is-selected" : ""}
-            aria-pressed={uiScale === option.value}
-            onClick={() => onUiScale(option.value)}
-          >
-            {option.label}
-          </button>
-        ))}
+      <div className="glass-slider-row">
+        <input
+          type="range"
+          min={UI_SCALE_RANGE.min * 100}
+          max={UI_SCALE_RANGE.max * 100}
+          step="5"
+          value={percent}
+          aria-label="小组件缩放百分比"
+          onChange={(event) => onUiScale(Number(event.target.value) / 100)}
+        />
+        <em>{percent}%</em>
+      </div>
+    </div>
+  );
+}
+
+function StripScaleCard({ stripScale, onStripScale }) {
+  const percent = Math.round(stripScale * 100);
+  return (
+    <div className="settings-card">
+      <h2>胶囊条缩放</h2>
+      <p className="settings-muted">
+        整体放大胶囊条（条和内容等比缩放，不会变形），与小组件互不影响，下次进入胶囊条时生效。
+      </p>
+      <div className="glass-slider-row">
+        <input
+          type="range"
+          min={UI_SCALE_RANGE.min * 100}
+          max={UI_SCALE_RANGE.max * 100}
+          step="5"
+          value={percent}
+          aria-label="胶囊条缩放百分比"
+          onChange={(event) => onStripScale(Number(event.target.value) / 100)}
+        />
+        <em>{percent}%</em>
       </div>
     </div>
   );
@@ -1963,7 +1992,7 @@ function StripAgentsCard({ stripAgents, onToggleStripAgent, onMoveStripAgent }) 
   );
 }
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, stripScale, onStripScale, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2122,6 +2151,8 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       <GlassAlphaCard glassAlpha={glassAlpha} onGlassAlpha={onGlassAlpha} />
 
       <UiScaleCard uiScale={uiScale} onUiScale={onUiScale} />
+
+      {!IS_MAC && <StripScaleCard stripScale={stripScale} onStripScale={onStripScale} />}
 
       <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
       </div>
@@ -2799,9 +2830,6 @@ export function App() {
   const [transparent, setTransparent] = useState(
     () => IS_MAC || (localStorage.getItem("metrik:transparent") ?? "true") === "true",
   );
-  const [quotaAgent, setQuotaAgent] = useState(
-    () => localStorage.getItem("metrik:quotaAgent") || "codex",
-  );
   // 胶囊条方向：横条 / 竖条，用户手动选，记住选择。
   const [stripOrientation, setStripOrientation] = useState(() =>
     localStorage.getItem("metrik:stripOrientation") === "vertical" ? "vertical" : "horizontal",
@@ -2873,17 +2901,13 @@ export function App() {
     setGlassAlpha(next);
     localStorage.setItem("metrik:glassAlpha", String(next));
   }, []);
-  // 卡片/胶囊的整体缩放档位：窗口尺寸与 WebView 原生 zoom 同乘一个系数，
-  // 等比放大不会变形；expanded 不参与。生效在 windowClient 的形态切换里，
-  // 设置页改档后下次回到卡片/胶囊时应用。
-  const [uiScale, setUiScale] = useState(() => {
-    const stored = Number(localStorage.getItem("metrik:uiScale"));
-    return UI_SCALE_OPTIONS.some((option) => option.value === stored) ? stored : 1;
-  });
+  // 卡片/胶囊的整体缩放系数（连续值）：窗口尺寸与 WebView 原生 zoom 同乘一个系数，
+  // 等比放大不会变形；expanded 有独立系数。生效在 windowClient 的形态切换里，
+  // 设置页调整后下次回到卡片/胶囊时应用。
+  const [uiScale, setUiScale] = useState(() => readUiScale());
   const handleUiScale = useCallback((next) => {
-    setUiScale(next);
-    localStorage.setItem("metrik:uiScale", String(next));
-    setWindowUiScale(next);
+    // setWindowUiScale 负责钳位与持久化，返回实际生效值回填 UI。
+    setUiScale(setWindowUiScale(next));
   }, []);
   // 自动检查更新：默认开、设置里可关。只检查和提醒（小组件上的小圆点），
   // 下载安装始终由用户在设置页点击触发。
@@ -2940,7 +2964,7 @@ export function App() {
   const rebuildInFlight = useRef(false);
   currentPeriod.current = period;
 
-  const loadSnapshot = useCallback(async (nextPeriod) => {
+  const loadSnapshot = useCallback(async (nextPeriod, options) => {
     if (loadInFlight.current) {
       queuedLoadPeriod.current = activeLoadPeriod.current === nextPeriod ? null : nextPeriod;
       return;
@@ -2948,13 +2972,16 @@ export function App() {
 
     loadInFlight.current = true;
     let periodToLoad = nextPeriod;
+    // force（手动强制刷新）只作用于本次请求；排队的周期切换仍按常规加载。
+    let forceLoad = options?.force === true;
     try {
       while (periodToLoad) {
         activeLoadPeriod.current = periodToLoad;
         queuedLoadPeriod.current = null;
         const requestId = ++requestSequence.current;
         setLoading(true);
-        const next = await getUsageSnapshot(periodToLoad);
+        const next = await getUsageSnapshot(periodToLoad, forceLoad ? { force: true } : undefined);
+        forceLoad = false;
         if (requestId === requestSequence.current && !queuedLoadPeriod.current) {
           setSnapshot(next);
         }
@@ -3095,16 +3122,6 @@ export function App() {
     return snapshot.agents.find((agent) => agent.id === selectedAgent)?.tokens || 0;
   }, [selectedAgent, snapshot]);
 
-  // Codex 与 Claude 始终可切换：即使某个官方配额来源尚未启用，也要让用户
-  // 看到明确的不可用/设置提示；其它 Agent 仍只在有可靠配额数据时加入循环。
-  const quotaAgents = useMemo(() => {
-    const withData = (snapshot.agentQuotas || [])
-      .filter(quotaHasData)
-      .map((entry) => entry.agent)
-      .filter((agent) => AGENT_META[agent]);
-    return [...new Set(["codex", "claude", ...withData])];
-  }, [snapshot]);
-  const activeQuotaAgent = quotaAgents.includes(quotaAgent) ? quotaAgent : quotaAgents[0];
   // 自动模式：胶囊条显示全部有官方配额数据的 agent（快照顺序）。
   const autoStripAgents = useMemo(
     () =>
@@ -3130,6 +3147,12 @@ export function App() {
     return null;
   });
   const stripAgents = stripAgentsSetting ?? autoStripAgents;
+
+  // 胶囊条的独立缩放系数（与小组件互不影响）：设置页滑杆调整，下次进入时生效。
+  const [stripScale, setStripScaleState] = useState(() => readStripScale());
+  const handleStripScale = useCallback((next) => {
+    setStripScaleState(setStripScale(next));
+  }, []);
 
   // macOS 菜单栏与紧凑小组件共用 widgetAgents：用户勾选哪些 Agent，状态栏就
   // 显示哪些品牌图标与官方额度。无可靠额度时传 null，原生状态项明确显示 "--"。
@@ -3201,12 +3224,6 @@ export function App() {
       await setWindowPinned(pinnedRef.current);
     });
   }, [viewMode, stripAgents.length, stripOrientation]);
-  const handleCycleQuotaAgent = useCallback(() => {
-    const index = quotaAgents.indexOf(activeQuotaAgent);
-    const next = quotaAgents[(index + 1) % quotaAgents.length];
-    setQuotaAgent(next);
-    localStorage.setItem("metrik:quotaAgent", next);
-  }, [activeQuotaAgent, quotaAgents]);
   const appBusy = loading || rebuildState.status === "busy";
   const comparisonIsFlat = Math.abs(snapshot.comparisonPercent) < 0.5;
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
@@ -3354,6 +3371,13 @@ export function App() {
     }
   }, [loadSnapshot]);
 
+  // 小插件/完整视图的手动刷新：强制后端重取官方额度与本地统计（绕过缓存）。
+  // 注意：这是 Hook，必须放在 strip/compact 的条件 return 之前，
+  // 否则切形态时 hooks 数量变化会直接把 React 树崩成白屏。
+  const handleForceRefresh = useCallback(() => {
+    loadSnapshot(currentPeriod.current, { force: true });
+  }, [loadSnapshot]);
+
   if (viewMode === "strip" && !IS_MAC) {
     return (
       <StripBar
@@ -3379,21 +3403,15 @@ export function App() {
       <>
         <CompactWidget
           snapshot={snapshot}
-          period={period}
-          selectedAgent={selectedAgent}
-          visibleTokens={visibleTokens}
           loading={appBusy}
           pinned={pinned}
           transparent={transparent}
           glassMode={glassMode}
-          onPeriodChange={setPeriod}
-          onSelectAgent={setSelectedAgent}
           onOpenSources={() => setDrawerOpen(true)}
           onTogglePinned={handleTogglePinned}
           onToggleTransparent={handleToggleTransparent}
           onExpand={handleWindowMode}
-          quotaAgent={activeQuotaAgent}
-          onCycleQuotaAgent={handleCycleQuotaAgent}
+          onRefresh={handleForceRefresh}
           widgetAgents={widgetAgents}
           glassAlpha={glassAlpha}
           availableUpdate={availableUpdate}
@@ -3426,6 +3444,17 @@ export function App() {
             />
           </>
         )}
+        {/* 手动强制刷新：强制后端重取官方额度与本地统计（绕过缓存），加载期间禁用并旋转。 */}
+        <button
+          type="button"
+          className={`expanded-refresh ${IS_MAC ? "expanded-refresh--mac" : ""}`}
+          onClick={handleForceRefresh}
+          disabled={appBusy}
+          aria-label="强制刷新官方额度与本地统计"
+          title="强制刷新官方额度与本地统计"
+        >
+          <ArrowsClockwise size={15} weight="light" aria-hidden="true" />
+        </button>
         <Sidebar activeNav={activeNav} onNavChange={handleNavChange} snapshot={snapshot} loading={appBusy} />
 
         {indexingPending > 0 ? (
@@ -3518,6 +3547,8 @@ export function App() {
             onGlassAlpha={handleGlassAlpha}
             uiScale={uiScale}
             onUiScale={handleUiScale}
+            stripScale={stripScale}
+            onStripScale={handleStripScale}
             theme={theme}
             onThemeChange={handleThemeChange}
             autoUpdateCheck={autoUpdateCheck}

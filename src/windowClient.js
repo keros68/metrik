@@ -8,15 +8,26 @@ const WINDOW_SIZES = {
   strip: { width: 240, height: 40, minWidth: 48, minHeight: 40 },
 };
 
-// 卡片/胶囊的整体缩放档位（1 / 1.25 / 1.5）。窗口尺寸与页面 zoom 同乘一个系数，
-// 比例不变所以不会变形；expanded 不参与（窗口本身可自由缩放）。
+// 卡片/胶囊的整体缩放系数（连续值）。窗口尺寸与页面 zoom 同乘一个系数，
+// 比例不变所以不会变形；完整视图窗口本身可自由拖拽，不参与缩放（zoom 恒为 1）。
 const UI_SCALE_KEY = "metrik:uiScale";
-const UI_SCALE_STEPS = [1, 1.25, 1.5];
+const UI_SCALE_RANGE = { min: 0.75, max: 2 };
+
+function normalizeScale(value, range) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(range.max, Math.max(range.min, parsed));
+}
+
+/// 连续缩放系数：parseFloat 后钳进范围，NaN/非数回退 1。
+/// 旧档位值（1 / 1.25 / 1.5）都在范围内，存量存储自然兼容。
+function normalizeUiScale(value) {
+  return normalizeScale(value, UI_SCALE_RANGE);
+}
 
 function readStoredUiScale() {
   try {
-    const stored = Number(localStorage.getItem(UI_SCALE_KEY));
-    return UI_SCALE_STEPS.includes(stored) ? stored : 1;
+    return normalizeUiScale(localStorage.getItem(UI_SCALE_KEY));
   } catch {
     return 1;
   }
@@ -24,8 +35,47 @@ function readStoredUiScale() {
 
 let uiScale = readStoredUiScale();
 
+/// 设置卡片/胶囊缩放系数（任意浮点，钳到 0.75–2.0）并持久化；
+/// 下次进入卡片/胶囊时应用，返回实际生效值（调用方用它回填 UI 状态）。
 function setWindowUiScale(scale) {
-  uiScale = UI_SCALE_STEPS.includes(scale) ? scale : 1;
+  uiScale = normalizeUiScale(scale);
+  try {
+    localStorage.setItem(UI_SCALE_KEY, String(uiScale));
+  } catch {}
+  return uiScale;
+}
+
+/// 窗口层当前实际使用的卡片/胶囊缩放系数（模块加载时已从存储归一化）。
+function readUiScale() {
+  return uiScale;
+}
+
+// 胶囊条的独立缩放系数：与小组件互不干扰（用户反馈共用一个比例不合适）。
+const STRIP_SCALE_KEY = "metrik:stripScale";
+
+function readStoredStripScale() {
+  try {
+    return normalizeUiScale(localStorage.getItem(STRIP_SCALE_KEY));
+  } catch {
+    return 1;
+  }
+}
+
+let stripScale = readStoredStripScale();
+
+/// 设置胶囊条缩放系数（钳到 0.75–2.0）并持久化；返回实际生效值。
+/// 生效在形态切换里（进入胶囊条时应用），这里只管存储。
+function setStripScale(scale) {
+  stripScale = normalizeUiScale(scale);
+  try {
+    localStorage.setItem(STRIP_SCALE_KEY, String(stripScale));
+  } catch {}
+  return stripScale;
+}
+
+/// 窗口层当前实际使用的胶囊条缩放系数。
+function readStripScale() {
+  return stripScale;
 }
 
 // 各形态最近一次由内容测量收敛出的窗口尺寸（CSS px，跨会话持久化）。
@@ -83,13 +133,14 @@ function rememberCompactHeight(height) {
   } catch {}
 }
 
-/// compact/strip 的窗口尺寸：乘缩放档位后取整到物理像素再下发，
+/// compact/strip 的窗口尺寸：乘各自缩放系数后取整到物理像素再下发，
 /// 避免分数 DPI（125%/150%）下逻辑尺寸取整产生的半像素裁切。
-async function scaledPhysicalSize(api, appWindow, width, height) {
+/// 小组件用 uiScale（默认参数），胶囊条传自己的 stripScale。
+async function scaledPhysicalSize(api, appWindow, width, height, scale = uiScale) {
   const factor = await appWindow.scaleFactor().catch(() => 1);
   return new api.PhysicalSize(
-    Math.round(width * uiScale * factor),
-    Math.round(height * uiScale * factor),
+    Math.round(width * scale * factor),
+    Math.round(height * scale * factor),
   );
 }
 
@@ -104,7 +155,7 @@ async function applyWebviewZoom(factor) {
     .catch(() => {});
 }
 
-/// 启动时就地应用缩放档位（不走 applyWindowMode 的 hide/show，避免闪烁）。
+/// 启动时就地应用缩放系数（不走 applyWindowMode 的 hide/show，避免闪烁）。
 /// strip 的启动尺寸由 strip 专属 effect 走 applyWindowMode，这里只管 compact。
 async function applyStartupUiScale(mode) {
   if (isMacPlatform()) return;
@@ -390,7 +441,8 @@ async function applyWindowMode(mode, options = {}) {
     // 无边框窗口的任务栏按钮由 WS_EX_APPWINDOW 决定，setSkipTaskbar 补不上它，
     // 所以走后端改窗口样式；样式必须在隐藏状态下改，重新显示后 shell 才重读。
     await appWindow.hide().catch(() => {});
-    // 缩放档位只作用卡片/胶囊，完整视图恢复 1:1；藏起来再改，避免闪缩放跳变。
+    // 卡片/胶囊的缩放系数不进完整视图；完整视图窗口本身可自由拖拽，
+    // 不需要内容缩放（zoom 恒为 1）。藏起来再改，避免闪缩放跳变。
     await applyWebviewZoom(1);
     await appWindow.setSkipTaskbar(false).catch(() => {});
     await invoke("set_taskbar_button", { visible: true }).catch(() => {});
@@ -415,8 +467,8 @@ async function applyWindowMode(mode, options = {}) {
     await appWindow.unmaximize();
   }
   await appWindow.hide().catch(() => {});
-  // 卡片/胶囊按用户的缩放档位显示；藏起来再改，避免闪缩放跳变。
-  await applyWebviewZoom(uiScale);
+  // 卡片与胶囊各有独立缩放系数，互不干扰；藏起来再改，避免闪缩放跳变。
+  await applyWebviewZoom(mode === "strip" ? stripScale : uiScale);
   await appWindow.setSkipTaskbar(true).catch(() => {});
   await invoke("set_taskbar_button", { visible: false }).catch(() => {});
   await appWindow.setMinSize(null);
@@ -425,7 +477,7 @@ async function applyWindowMode(mode, options = {}) {
   if (mode === "strip") {
     const width = Math.max(size.minWidth, Math.round(options.width || size.width));
     const height = Math.max(size.minHeight, Math.round(options.height || size.height));
-    await appWindow.setSize(await scaledPhysicalSize(api, appWindow, width, height));
+    await appWindow.setSize(await scaledPhysicalSize(api, appWindow, width, height, stripScale));
     await appWindow.setResizable(false);
     // 有记忆位置回记忆位置；首次进入保持当前位置（出现在卡片原地）。
     const storedStrip = readStoredPosition("strip");
@@ -456,7 +508,7 @@ async function applyWindowMode(mode, options = {}) {
     lastPositions.compact || (stored ? new api.PhysicalPosition(stored.x, stored.y) : null);
   if (target) {
     await appWindow.setPosition(target).catch(() => appWindow.center());
-    // 缩放档位调大后，记忆位置 + 新尺寸可能伸出屏幕，钳回工作区。
+    // 缩放系数调大后，记忆位置 + 新尺寸可能伸出屏幕，钳回工作区。
     await clampIntoWorkArea(api, appWindow);
   } else {
     await appWindow.center();
@@ -494,7 +546,7 @@ async function resizeStripWindow({ width, height }) {
     anchor.right = Math.abs(pos.x + outer.width - workRight) <= 8;
     anchor.bottom = Math.abs(pos.y + outer.height - workBottom) <= 8;
   }
-  const physical = await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight);
+  const physical = await scaledPhysicalSize(api, appWindow, targetWidth, targetHeight, stripScale);
   await appWindow.setSize(physical).catch(() => {});
   // 测量收敛出的尺寸记作下次变形的首帧（否则首帧永远是常量估计）。
   rememberStripSize(targetWidth, targetHeight);
@@ -542,7 +594,7 @@ async function resizeCompactWindow({ height }) {
   if (!clamped) await appWindow.center().catch(() => {});
 }
 
-/// DPI 变化（拖到另一台显示器、系统改缩放）后按当前缩放档位重算 compact
+/// DPI 变化（拖到另一台显示器、系统改缩放）后按当前缩放系数重算 compact
 /// 物理尺寸：zoom 不变、不 hide/show，只把视口校正回 320 CSS px。
 /// 否则 zoom 与物理尺寸失配时视口缩成 ~256px，320 的最小内容宽度被裁。
 async function reassertCompactSize() {
@@ -849,6 +901,7 @@ async function closeWindow() {
 }
 
 export {
+  UI_SCALE_RANGE,
   WINDOW_SIZES,
   applyStartupUiScale,
   applyWindowMode,
@@ -859,9 +912,12 @@ export {
   isDesktop,
   isMacPlatform,
   minimizeWindow,
+  normalizeUiScale,
   onScaleFactorChanged,
   onTrayShowExpanded,
   openExpandedWindow,
+  readStripScale,
+  readUiScale,
   reassertCompactSize,
   resizeCompactWindow,
   resizeMacosPanel,
@@ -870,6 +926,7 @@ export {
   setAutostart,
   setNativeTheme,
   updateMacStatusItems,
+  setStripScale,
   setWindowGlass,
   setWindowPinned,
   setWindowUiScale,
