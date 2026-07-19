@@ -1606,17 +1606,22 @@ html:has(.strip-shell) #root {
 
 .comp-legend em,
 .model-list em {
+  overflow: hidden;
   color: #74767a;
   font-size: 11px;
   font-style: normal;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .model-list li {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) 64px auto;
+  /* 数值列定宽：各行 1fr 名称列因此同宽，进度条轨道在所有行严格对齐。
+     （曾经 auto 宽随数值文本变化——"441B · 31 天" 与 "311M · 3 天" 列宽
+     不同，小数值行的轨道整体左移，肉眼可见没对齐。） */
+  grid-template-columns: 8px minmax(0, 1fr) 64px 92px;
   align-items: center;
   gap: 9px;
   font-size: 12px;
