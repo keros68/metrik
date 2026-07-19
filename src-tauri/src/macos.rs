@@ -64,7 +64,7 @@ const STATUS_ITEMS: [StatusItemSpec; 6] = [
     },
     StatusItemSpec {
         id: "zcode",
-        name: "ZCode / GLM",
+        name: "GLM",
         icon: ZCODE_MARK,
     },
     StatusItemSpec {

@@ -119,6 +119,7 @@ pub fn build_snapshot(
     quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
     claude_quota_cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
     http_quota_cache: &Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>,
+    force: bool,
 ) -> Result<UsageSnapshot> {
     let mut connection = storage::open_database(database_path)?;
     let now = Utc::now().timestamp_millis();
@@ -127,7 +128,7 @@ pub fn build_snapshot(
 
     // app-server 是 Codex 额度的权威来源：拉到就整体替换，套餐变更后消失的
     // 窗口（如 prolite 没有 5 小时窗）不得留着旧日志快照冒充当前额度。
-    if let Ok(samples) = cached_live_quota(quota_cache) {
+    if let Ok(samples) = cached_live_quota(quota_cache, force) {
         if !samples.is_empty() {
             connection.execute("DELETE FROM quota_snapshot WHERE adapter_id = 'codex'", [])?;
         }
@@ -141,7 +142,7 @@ pub fn build_snapshot(
         storage::get_app_setting(&connection, claude_oauth::SETTING_KEY)?.as_deref() == Some("1");
     let mut claude_samples = Vec::new();
     if oauth_enabled {
-        if let Ok(samples) = cached_claude_oauth_quota(claude_quota_cache) {
+        if let Ok(samples) = cached_claude_oauth_quota(claude_quota_cache, force) {
             claude_samples = samples;
         }
     }
@@ -167,7 +168,7 @@ pub fn build_snapshot(
         ),
         ("kimi", coding_quota::fetch_kimi_quota),
     ] {
-        if let Ok(samples) = cached_coding_quota(http_quota_cache, adapter_id, fetch) {
+        if let Ok(samples) = cached_coding_quota(http_quota_cache, adapter_id, fetch, force) {
             if !samples.is_empty() {
                 connection.execute(
                     "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
@@ -487,14 +488,19 @@ fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i
 
 fn cached_live_quota(
     cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
+    force: bool,
 ) -> Result<Vec<QuotaSample>> {
     let mut guard = cache
         .lock()
         .map_err(|_| anyhow::anyhow!("quota cache lock poisoned"))?;
-    if let Some((captured, value)) = guard.as_ref() {
-        let ttl = if value.is_empty() { 240 } else { 60 };
-        if captured.elapsed() < StdDuration::from_secs(ttl) {
-            return Ok(value.clone());
+    // force（手动刷新）跳过新鲜缓存的早退，立即尝试拉取；失败路径与常规一致：
+    // 依旧写入失败哨兵并保留库中旧行，绝不因强制刷新而删数据。
+    if !force {
+        if let Some((captured, value)) = guard.as_ref() {
+            let ttl = if value.is_empty() { 240 } else { 60 };
+            if captured.elapsed() < StdDuration::from_secs(ttl) {
+                return Ok(value.clone());
+            }
         }
     }
     match app_server::read_codex_quota(StdDuration::from_secs(4)) {
@@ -514,14 +520,17 @@ fn cached_live_quota(
 /// Claude OAuth 官方额度的缓存拉取：成功 120s、失败 300s（限流友好）。
 fn cached_claude_oauth_quota(
     cache: &Mutex<Option<(Instant, Vec<QuotaSample>)>>,
+    force: bool,
 ) -> Result<Vec<QuotaSample>> {
     let mut guard = cache
         .lock()
         .map_err(|_| anyhow::anyhow!("claude quota cache lock poisoned"))?;
-    if let Some((captured, value)) = guard.as_ref() {
-        let ttl = if value.is_empty() { 300 } else { 120 };
-        if captured.elapsed() < StdDuration::from_secs(ttl) {
-            return Ok(value.clone());
+    if !force {
+        if let Some((captured, value)) = guard.as_ref() {
+            let ttl = if value.is_empty() { 300 } else { 120 };
+            if captured.elapsed() < StdDuration::from_secs(ttl) {
+                return Ok(value.clone());
+            }
         }
     }
     match ClaudeOauth::detected().fetch_quota_samples(StdDuration::from_secs(6)) {
@@ -542,14 +551,17 @@ fn cached_coding_quota(
     cache: &Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>,
     adapter_id: &'static str,
     fetch: fn(StdDuration) -> Result<Vec<QuotaSample>>,
+    force: bool,
 ) -> Result<Vec<QuotaSample>> {
     let mut guard = cache
         .lock()
         .map_err(|_| anyhow::anyhow!("coding quota cache lock poisoned"))?;
-    if let Some((captured, value)) = guard.get(adapter_id) {
-        let ttl = if value.is_empty() { 300 } else { 120 };
-        if captured.elapsed() < StdDuration::from_secs(ttl) {
-            return Ok(value.clone());
+    if !force {
+        if let Some((captured, value)) = guard.get(adapter_id) {
+            let ttl = if value.is_empty() { 300 } else { 120 };
+            if captured.elapsed() < StdDuration::from_secs(ttl) {
+                return Ok(value.clone());
+            }
         }
     }
     match fetch(StdDuration::from_secs(6)) {
@@ -1183,7 +1195,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         SourceView {
             id: "zcode-local".into(),
             kind: "local".into(),
-            label: "ZCode / GLM 本地 Token".into(),
+            label: "GLM 本地 Token".into(),
             detail: format!(
                 "发现 {} 个用量库，本次更新 {} 个。{}只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
                 discovered("zcode"),
@@ -2451,6 +2463,7 @@ mod tests {
             &quota_cache,
             &claude_quota_cache,
             &http_quota_cache,
+            false,
         )
         .unwrap();
         println!(

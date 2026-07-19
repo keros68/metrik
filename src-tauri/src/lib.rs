@@ -336,6 +336,7 @@ fn resolve_database_path(legacy_database: &Path, local_database: &Path) -> Resul
 #[tauri::command]
 async fn usage_snapshot(
     period: String,
+    force: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<UsageSnapshot, String> {
     let database_path = state.database_path.clone();
@@ -354,6 +355,7 @@ async fn usage_snapshot(
             &quota_cache,
             &claude_quota_cache,
             &http_quota_cache,
+            force.unwrap_or(false),
         )
         .map_err(|error| error.to_string())
     })
@@ -442,6 +444,7 @@ async fn rebuild_local_ledger(
             &quota_cache,
             &claude_quota_cache,
             &http_quota_cache,
+            false,
         )
         .map_err(|error| error.to_string())
     })
