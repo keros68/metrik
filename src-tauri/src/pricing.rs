@@ -22,17 +22,17 @@
 //! 按裸模型名匹配）。OpenCode、Antigravity 等直连这些官方 API 的用量因此可以
 //! 计价（如 kimi-k2.5、glm-4.6、gemini-3-flash-preview）。
 //!
-//! 订阅制 coding plan 的专属模型 ID 一律 unpriced：Kimi Code 的 kimi-for-coding、
-//! ZCode coding-plan 的 GLM-5.2 等。订阅额度按周期重置、不按 token 卖；
+//! 订阅制 coding plan 的专属模型 ID 一律 unpriced：Kimi Code 的 kimi-for-coding 等。
+//! 订阅额度按周期重置、不按 token 卖；
 //! LiteLLM 里那些名字的 Bedrock/Azure/Cloudflare 条目是第三方转售价，拿来当
 //! 官方价就是猜价格。Kimi 官方文档只说 Extra Usage 按量计费且"接近开放平台
 //! 官方 API 价"，但未公布订阅模型 ID 的逐 token 价目——官方公布前不加。
 //! 同理，带 -preview 后缀的官方价不补给稳定版名字（gemini-3.1-pro 不计价）。
 //!
-//! 唯一的窄例外是「同一模型」别名：Kimi Code 订阅用量记的模型是 `kimi-code/k3`，
-//! 它就是 Kimi K3 这个模型本身——用 K3 的官方 API 价做估算，正是官方"接近开放
-//! 平台官方 API 价"的合理近似（成本页始终标注为估算，不与官方账单混淆）。
-//! 不借第三方转售价、不映射到别的模型，例外只此一类，见 SUBSCRIPTION_ALIASES。
+//! 唯一的窄例外是「同一模型」别名：Kimi Code 订阅记的 `kimi-code/k3` 就是
+//! Kimi K3 本身；ZCode coding-plan 记的 `GLM-5.2` 只是 glm-5.2 的大小写变体。
+//! 都按同一模型的官方第一方 API 价估算（成本页始终标注为估算，不与官方账单
+//! 混淆）。不借第三方转售价、不映射到别的模型，见 SUBSCRIPTION_ALIASES。
 //!
 //! 缓存口径：OpenAI 的 prompt 缓存写入不计费（LiteLLM 里无该字段 → 记 0）；
 //! Anthropic 按 TTL 分级，LiteLLM 给的是最常见的 5 分钟档，1 小时档更贵——
@@ -56,23 +56,49 @@ pub struct Pricing {
 
 /// 手动补充的官方第一方价目（生成表之外）：模型太新、LiteLLM 尚未收录时
 /// 按官方定价页临时补齐，收录后即可删。查找时先于生成表命中。
-/// 来源：Moonshot 官方定价页（2026-07-18 核对，经多方转载交叉验证）：
-/// kimi-k3 输入 $3.00/M、缓存命中 $0.30/M、输出 $15.00/M（1M 上下文旗舰）。
-const MANUAL_PRICING: &[(&str, Pricing)] = &[(
-    "kimi-k3",
-    Pricing {
-        input: 3.0,
-        cache_read: 0.3,
-        cache_write: 0.0,
-        output: 15.0,
-    },
-)];
+/// 来源：
+/// - kimi-k3：Moonshot 官方定价页（2026-07-18 核对，经多方转载交叉验证）：
+///   输入 $3.00/M、缓存命中 $0.30/M、输出 $15.00/M（1M 上下文旗舰）。
+/// - glm-5.2 / glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
+///   （2026-07-20 核对；同页 glm-5/glm-5.1 数值与 LiteLLM 生成表完全一致，
+///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
+const MANUAL_PRICING: &[(&str, Pricing)] = &[
+    (
+        "glm-5-turbo",
+        Pricing {
+            input: 1.2,
+            cache_read: 0.24,
+            cache_write: 0.0,
+            output: 4.0,
+        },
+    ),
+    (
+        "glm-5.2",
+        Pricing {
+            input: 1.4,
+            cache_read: 0.26,
+            cache_write: 0.0,
+            output: 4.4,
+        },
+    ),
+    (
+        "kimi-k3",
+        Pricing {
+            input: 3.0,
+            cache_read: 0.3,
+            cache_write: 0.0,
+            output: 15.0,
+        },
+    ),
+];
 
 /// 订阅制 coding plan 的模型 ID → 同一模型的官方第一方 API 价（估算口径）。
 /// 仅限"同一模型"：Kimi Code 订阅记的 `kimi-code/k3` 就是 kimi-k3 本身，
 /// 官方称 Extra Usage"接近开放平台官方 API 价"；成本页始终标注为估算。
-/// 没有官方价的订阅 ID（kimi-for-coding、GLM-5.2 等）继续 unpriced。
-const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[("kimi-code/k3", "kimi-k3")];
+/// 没有官方价的订阅 ID（kimi-for-coding 等）继续 unpriced。
+/// ZCode coding-plan 记的 `GLM-5.2` 只是 glm-5.2 的大小写变体，同一模型。
+const SUBSCRIPTION_ALIASES: &[(&str, &str)] =
+    &[("GLM-5.2", "glm-5.2"), ("kimi-code/k3", "kimi-k3")];
 
 /// 返回 `model` 的定价；表里没有则返回 `None`（调用方归入 unpriced，
 /// 不得臆造价格）。见模块文档：只精确匹配，日期快照后缀与订阅别名除外。
@@ -154,13 +180,28 @@ mod tests {
     #[test]
     fn subscription_only_model_ids_stay_unpriced() {
         // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
-        // 转售价或同系模型的价格蒙混（Kimi Code 订阅、ZCode coding plan）。
+        // 转售价或同系模型的价格蒙混（Kimi Code 订阅等）。
         assert!(price_for("kimi-code/kimi-for-coding").is_none());
         assert!(price_for("kimi-for-coding").is_none());
-        assert!(price_for("GLM-5.2").is_none());
-        assert!(price_for("glm-5-turbo").is_none());
         // 有 -preview 后缀的官方价也不补给稳定版名字。
         assert!(price_for("gemini-3.1-pro").is_none());
+    }
+
+    #[test]
+    fn glm_priced_from_official_rates_including_case_alias() {
+        // z.ai 官方定价页（2026-07-20 核对）：glm-5.2 输入 $1.4、缓存 $0.26、
+        // 输出 $4.4；glm-5-turbo 输入 $1.2、缓存 $0.24、输出 $4.0。
+        let direct = price_for("glm-5.2").expect("glm-5.2 priced");
+        assert_eq!(direct.input, 1.4);
+        assert_eq!(direct.cache_read, 0.26);
+        assert_eq!(direct.output, 4.4);
+        let turbo = price_for("glm-5-turbo").expect("glm-5-turbo priced");
+        assert_eq!(turbo.input, 1.2);
+        assert_eq!(turbo.output, 4.0);
+        // ZCode coding-plan 记的大写 GLM-5.2 是同一模型的大小写变体，同价。
+        let aliased = price_for("GLM-5.2").expect("alias priced");
+        assert_eq!(aliased.input, direct.input);
+        assert_eq!(aliased.output, direct.output);
     }
 
     #[test]
