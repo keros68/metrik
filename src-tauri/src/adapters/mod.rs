@@ -3,6 +3,7 @@ mod claude;
 mod codex;
 mod kimi;
 mod opencode;
+mod workbuddy;
 mod zcode;
 
 pub use antigravity::AntigravityAdapter;
@@ -10,6 +11,7 @@ pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
 pub use kimi::KimiAdapter;
 pub use opencode::OpencodeAdapter;
+pub use workbuddy::WorkbuddyAdapter;
 pub use zcode::ZcodeAdapter;
 
 use crate::domain::{stable_hash, ParsedSource};

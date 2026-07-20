@@ -511,6 +511,80 @@ async fn set_claude_oauth(
     .map_err(|error| format!("set claude oauth task failed: {error}"))?
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QoderCookieView {
+    configured: bool,
+    /// "file"（设置页保存）或 "env"（环境变量）；None = 未配置。
+    source: Option<&'static str>,
+    /// 保存/清除/验证的结果描述，给设置页直接展示。
+    message: Option<String>,
+}
+
+#[tauri::command]
+async fn qoder_cookie_status() -> Result<QoderCookieView, String> {
+    let source = coding_quota::qoder_cookie_source();
+    Ok(QoderCookieView {
+        configured: source.is_some(),
+        source,
+        message: None,
+    })
+}
+
+/// 保存（Some）或清除（None）设置页提供的 Qoder cookie；保存后立即拉一次
+/// 官方 Credits 验证，把结果原样反馈——用户不用猜有没有配对。
+#[tauri::command]
+async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // 宽容解析：整段请求标头 / cURL / 带 Cookie: 前缀 / 裸值都接受。
+        let normalized = match cookie.as_deref() {
+            Some(raw) => Some(
+                coding_quota::normalize_qoder_cookie_input(raw)
+                    .ok_or_else(|| "粘贴内容里没有找到 Cookie 行".to_owned())?,
+            ),
+            None => None,
+        };
+        let saved = coding_quota::write_qoder_cookie_file(normalized.as_deref())
+            .map_err(|error| error.to_string())?;
+        let source = coding_quota::qoder_cookie_source();
+        if !saved {
+            return Ok(QoderCookieView {
+                configured: source.is_some(),
+                source,
+                message: Some("已清除本地保存的 cookie。".to_owned()),
+            });
+        }
+        let message = match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
+            Ok(samples) => {
+                let sample = &samples[0];
+                let reset = sample
+                    .resets_at_ms
+                    .map(|at| {
+                        let minutes = (at - chrono::Utc::now().timestamp_millis()) / 60_000;
+                        if minutes > 0 {
+                            format!("，约 {} 小时后重置", (minutes + 30) / 60)
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "已保存并验证成功：Credits 剩余 {:.0}%{reset}。",
+                    sample.remaining_percent
+                )
+            }
+            Err(error) => format!("已保存，但验证失败：{error}"),
+        };
+        Ok(QoderCookieView {
+            configured: true,
+            source,
+            message: Some(message),
+        })
+    })
+    .await
+    .map_err(|error| format!("qoder cookie task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn sync_settings(state: State<'_, AppState>) -> Result<domain::SyncView, String> {
     let database_path = state.database_path.clone();
@@ -821,13 +895,23 @@ mod host_backdrop {
 /// 无边框窗口（decorations: false）在 Windows 上默认不进任务栏：任务栏按钮
 /// 由 WS_EX_APPWINDOW 决定，而 Tauri 的 setSkipTaskbar 只管 WS_EX_TOOLWINDOW，
 /// 补不上这个样式。样式必须在窗口隐藏时改，重新显示后 shell 才会重读。
+///
+/// 光改样式还不够：Tauri 的 setSkipTaskbar(true) 是用 ITaskbarList::DeleteTab
+/// 把窗口从任务栏**注销**的，样式翻转撤不掉这个注销（Win11 实测：APPWINDOW
+/// 已置位、隐藏重显后按钮依旧不出现，AddTab 一调立即出现）。所以两件事都做：
+/// 样式对齐 + ITaskbarList 登记/注销。
 #[cfg(windows)]
 mod taskbar {
     use core::ffi::c_void;
+    use windows::core::GUID;
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::ITaskbarList;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
+
+    const CLSID_TASKBAR_LIST: GUID = GUID::from_u128(0x56fdf344_fd6d_11d0_958a_006097c9a090);
 
     pub fn set_button(hwnd: isize, visible: bool) {
         let handle = HWND(hwnd as *mut c_void);
@@ -840,6 +924,18 @@ mod taskbar {
             };
             if updated != current {
                 SetWindowLongPtrW(handle, GWL_EXSTYLE, updated as isize);
+            }
+            // 主线程调用（run_on_main_thread），COM 已由 WebView2 初始化。
+            // 失败静默：任务栏登记是体验增强，不值得让整个变形流程失败。
+            if let Ok(list) =
+                CoCreateInstance::<_, ITaskbarList>(&CLSID_TASKBAR_LIST, None, CLSCTX_INPROC_SERVER)
+            {
+                let _ = list.HrInit();
+                if visible {
+                    let _ = list.AddTab(handle);
+                } else {
+                    let _ = list.DeleteTab(handle);
+                }
             }
         }
     }
@@ -1202,6 +1298,8 @@ pub fn run() {
             set_claude_hook,
             claude_oauth_status,
             set_claude_oauth,
+            qoder_cookie_status,
+            configure_qoder_cookie,
             set_taskbar_button,
             set_glass_backdrop,
             set_native_theme,

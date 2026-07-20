@@ -131,9 +131,10 @@ button:focus-visible {
   display: flex;
   width: min(320px, 100vw);
   min-width: 320px;
-  /* 高度跟随窗口（窗口高度由内容驱动：Agent 行多时窗口加高），320 是下限。 */
+  /* 高度跟随窗口（窗口高度由内容驱动：Agent 行多时加高、只剩一行时收短），
+     260 是下限（标题栏+周期签+摘要双块+底栏+单行列表）。 */
   height: 100dvh;
-  min-height: 320px;
+  min-height: 260px;
   flex-direction: column;
   overflow: hidden;
   background:
@@ -179,6 +180,13 @@ button:focus-visible {
 .widget-shell--transparent .widget-titlebar {
   background: rgba(255, 255, 255, 0.045);
   box-shadow: 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.widget-shell--transparent .widget-metric {
+  padding-inline: 7px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
 }
 
 /* ============ 玻璃拟态回落层 ============
@@ -245,7 +253,7 @@ button:focus-visible {
   flex: 1;
   /* 列表行吃掉窗口的额外高度：行数少时 104px 起步与原 320 设计一致，
      行数多时窗口加高、列表随之舒展。 */
-  grid-template-rows: minmax(104px, 1fr) 30px;
+  grid-template-rows: 34px 86px minmax(104px, 1fr) 30px;
   gap: 4px;
   padding: 2px 10px 6px;
   transition-property: opacity;
@@ -255,14 +263,32 @@ button:focus-visible {
 
 .widget-shell.is-loading .widget-content { opacity: 0.88; }
 
-/* 有顶部双块时网格多一行：双块自适应高，列表继续吃剩余空间。 */
-.widget-content--with-primary {
-  grid-template-rows: auto minmax(104px, 1fr) 30px;
-  gap: 6px;
+.widget-shell .period-control--compact {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  height: 34px;
+  margin: 0;
+  padding: 2px;
+  background: rgba(31, 33, 36, 0.045);
+  border-radius: 11px;
+  box-shadow: none;
 }
 
-/* 顶部双块：左侧焦点 Agent 的大剩余百分比，右侧该 Agent 的窗口明细卡。
-   数据是官方额度；版式沿用原设计（原为 token 大数字 + 单家配额卡），静态展示不可点击。 */
+.widget-shell .period-control--compact button.is-selected {
+  box-shadow: 0 1px 3px rgba(28, 30, 33, 0.1), 0 0 0 1px rgba(31, 33, 36, 0.04);
+}
+
+.widget-shell .period-control--compact button {
+  min-height: 30px;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
 .widget-primary {
   display: grid;
   min-width: 0;
@@ -322,7 +348,9 @@ button:focus-visible {
   font-size: 41px;
   font-weight: 400;
   font-variant-numeric: lining-nums tabular-nums;
-  line-height: 0.86;
+  /* ≥1 才装得下字形上缘：0.86 时字形出框 ~0.07em，与上方标签只剩
+     亚像素间距，75% 缩放取整后直接压盖。 */
+  line-height: 1;
   letter-spacing: -0.05em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -355,11 +383,24 @@ button:focus-visible {
   color: #25262a;
   text-align: left;
   background: rgba(251, 251, 250, 0.88);
+  border: 0;
   border-radius: 15px;
+  cursor: pointer;
   box-shadow:
     0 0 0 1px rgba(31, 33, 36, 0.07),
     0 8px 22px rgba(31, 33, 36, 0.045),
     inset 0 1px rgba(255, 255, 255, 0.92);
+  transition-property: background-color, transform, box-shadow;
+  transition-duration: 260ms;
+  transition-timing-function: var(--motion);
+}
+
+.widget-quota:hover {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(31, 33, 36, 0.08),
+    0 11px 26px rgba(31, 33, 36, 0.06),
+    inset 0 1px rgba(255, 255, 255, 0.98);
 }
 
 /* 陈旧快照：用透明度编码新鲜度，颜色语义（品牌色/警示色）保持不变。 */
@@ -475,6 +516,7 @@ button:focus-visible {
 .widget-agent--warn em { color: #8f681f; }
 .widget-agent--critical em { color: #a1402e; }
 
+.widget-quota:active,
 .widget-source:active,
 .widget-expand:active,
 .widget-refresh:active { transform: scale(0.96); }
@@ -644,6 +686,18 @@ button:focus-visible {
 
 .widget-shell--transparent .window-action--active { color: #9ec1f5; }
 
+.widget-shell--transparent .period-control--compact {
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: none;
+}
+
+.widget-shell--transparent .period-control--compact button { color: rgba(255, 255, 255, 0.6); }
+
+.widget-shell--transparent .period-control--compact button.is-selected {
+  color: rgba(18, 20, 24, 0.94);
+  background: rgba(255, 255, 255, 0.92);
+}
+
 .widget-shell--transparent .widget-agent-list {
   background: rgba(255, 255, 255, 0.06);
   box-shadow:
@@ -659,6 +713,13 @@ button:focus-visible {
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.09),
     inset 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.widget-shell--transparent .widget-quota:hover {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 1px rgba(255, 255, 255, 0.1);
 }
 
 .widget-shell--transparent .widget-agent { color: rgba(255, 255, 255, 0.92); box-shadow: 0 1px rgba(255, 255, 255, 0.08); }
@@ -981,6 +1042,20 @@ html:has(.strip-shell) #root {
     background: rgba(31, 33, 36, 0.08);
   }
 
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact {
+    background: rgba(31, 33, 36, 0.07);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button {
+    color: rgba(31, 33, 36, 0.58);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .period-control--compact button.is-selected {
+    color: rgba(24, 26, 30, 0.94);
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: 0 1px 3px rgba(31, 33, 36, 0.12);
+  }
+
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent-list {
     background: rgba(255, 255, 255, 0.34);
     box-shadow:
@@ -988,11 +1063,16 @@ html:has(.strip-shell) #root {
       inset 0 1px rgba(255, 255, 255, 0.52);
   }
 
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-metric,
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota {
     background: rgba(255, 255, 255, 0.34);
     box-shadow:
       0 0 0 1px rgba(31, 33, 36, 0.08),
       inset 0 1px rgba(255, 255, 255, 0.52);
+  }
+
+  .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-quota:hover {
+    background: rgba(255, 255, 255, 0.5);
   }
 
   .widget-shell--mac:not(.widget-shell--glass-css).widget-shell--transparent .widget-agent {
@@ -1323,8 +1403,12 @@ html:has(.strip-shell) #root {
 .expanded-refresh {
   position: absolute;
   z-index: 9;
-  top: 10px;
-  right: 190px;
+  /* 与窗口按钮组垂直居中对齐：按钮组 top 8 + 总高 44（40 按钮 + 2×2 padding），
+     中线 30；本按钮高 32 → top = 30 - 16 = 14。 */
+  top: 14px;
+  /* 贴在窗口按钮组左侧：按钮组 right 10 + padding 4 + 5 个 40px 按钮 = 右缘 214，
+     再留 16px 间距。按钮增减时这里要跟着改。 */
+  right: 230px;
   display: grid;
   width: 32px;
   height: 32px;
@@ -1695,6 +1779,7 @@ html:has(.strip-shell) #root {
 .legend-line--zcode { background: #8b80d9; }
 .legend-line--kimi { background: #c4719f; }
 .legend-line--antigravity { background: #d1a34e; }
+.legend-line--workbuddy { background: #5fa671; }
 
 .inspector-zone {
   min-width: 0;
@@ -1897,7 +1982,9 @@ html:has(.strip-shell) #root {
 .agent-icon--claude,
 .agent-icon--opencode,
 .agent-icon--kimi,
-.agent-icon--antigravity { color: inherit; }
+.agent-icon--antigravity,
+.agent-icon--workbuddy,
+.agent-icon--qoder { color: inherit; }
 
 .agent-monogram {
   display: grid;
@@ -2258,6 +2345,41 @@ html:has(.strip-shell) #root {
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
   gap: 20px;
   margin-top: 26px;
+}
+
+/* 两排栅格：大卡一排（同步/Agent/配额，同排拉伸到统一高度）、短卡一排。 */
+.settings-grid + .settings-grid { margin-top: 20px; }
+
+/* Agent 双栏：小组件与胶囊条各一列，窄卡时自动叠为单列。 */
+.settings-agent-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 4px 20px;
+}
+
+.settings-agent-column > h3 {
+  margin: 6px 0 8px;
+  font-size: 14.5px;
+  letter-spacing: -0.01em;
+}
+
+/* 折叠的操作引导（如何取 cookie）：默认收起，不占版面。 */
+.settings-guide {
+  margin: 0 0 14px;
+  color: #55575b;
+  font-size: 12.5px;
+}
+
+.settings-guide summary {
+  color: #3b6cc7;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-guide ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  line-height: 1.7;
 }
 
 .settings-card {
@@ -2889,7 +3011,10 @@ html:has(.strip-shell) #root {
 }
 
 @media (max-width: 880px) {
-  body { overflow-y: auto; }
+  /* 只允许完整视图的窄窗布局滚动。compact/strip 视口恒 ≤880 CSS px，
+     也会命中本媒体查询；不加限定会覆盖基础的 overflow: hidden，
+     在 zoom×物理尺寸失配（双屏不同 DPI）时露出原生滚动条。 */
+  html:has(.app-shell) body { overflow-y: auto; }
   .app-shell { display: block; min-height: 100dvh; }
 
   .sidebar {
@@ -2976,12 +3101,15 @@ html:has(.strip-shell) #root {
       rgba(24, 27, 33, 0.98);
   }
 
+  .widget-shell--transparent .period-control--compact { background: rgba(255, 255, 255, 0.14); }
+
   .widget-shell--transparent .widget-agent-list {
     background: rgba(255, 255, 255, 0.1);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
 
-  .widget-shell--transparent .widget-quota {
+  .widget-shell--transparent .widget-quota,
+  .widget-shell--transparent .widget-metric {
     background: rgba(255, 255, 255, 0.1);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
@@ -2990,6 +3118,7 @@ html:has(.strip-shell) #root {
 @media (forced-colors: active) {
   .widget-shell,
   .widget-shell--transparent,
+  .widget-shell .period-control--compact,
   .widget-shell .widget-agent-list,
   .widget-shell .widget-quota {
     color: CanvasText;
@@ -3306,6 +3435,8 @@ html:has(.strip-shell) #root {
 :root[data-theme="dark"] .settings-status dt { color: var(--d-faint); }
 :root[data-theme="dark"] .settings-error-text { color: #e6906f; }
 :root[data-theme="dark"] .settings-muted { color: var(--d-faint); }
+:root[data-theme="dark"] .settings-guide { color: var(--d-muted); }
+:root[data-theme="dark"] .settings-guide summary { color: #7fabef; }
 :root[data-theme="dark"] .settings-device-list li {
   background: var(--d-raised);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);

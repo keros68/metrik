@@ -357,6 +357,9 @@ fn first_i64(value: &Value, keys: &[&str]) -> Option<i64> {
                 .as_i64()
                 .or_else(|| found.as_u64().map(|v| v as i64))
                 .or_else(|| found.as_f64().map(|v| v as i64))
+                // 真机响应里 token 计数是字符串（"21861"）——protobuf 的 int64
+                // JSON 编码惯例。不解析字符串就会全部读成 0，事件被当空跳过。
+                .or_else(|| found.as_str().and_then(|text| text.trim().parse().ok()))
         })
     })
 }
@@ -438,10 +441,15 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
 }
 
 fn insecure_agent(timeout: Duration) -> ureq::Agent {
-    let config = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyServerCert))
-        .with_no_client_auth();
+    // 显式传 ring provider：不依赖进程级默认（未安装/有歧义都会 panic）。
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring 支持全部默认协议版本")
+    .dangerous()
+    .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyServerCert))
+    .with_no_client_auth();
     ureq::AgentBuilder::new()
         .timeout(timeout)
         .tls_config(std::sync::Arc::new(config))
@@ -475,21 +483,25 @@ fn heartbeat_ok(endpoint: &Endpoint) -> bool {
 
 /// 发现 language server 进程 → 取 csrf 与候选端口 → 逐端口 Heartbeat 探测。
 fn discover_endpoint() -> Option<Endpoint> {
-    let process = find_language_server_process()?;
-    let mut ports = listening_ports(process.pid);
-    // 命令行里声明的端口优先试。
-    if let Some(declared) = process.declared_port {
-        ports.insert(0, declared);
-        ports.dedup();
-    }
-    for port in ports {
-        for scheme in ["https", "http"] {
-            let endpoint = Endpoint {
-                base_url: format!("{scheme}://127.0.0.1:{port}"),
-                csrf: process.csrf.clone(),
-            };
-            if heartbeat_ok(&endpoint) {
-                return Some(endpoint);
+    // Antigravity 会 spawn 多个 language_server 进程，只有一个真正在监听 RPC
+    // 端口（本机实测：5 个带 csrf 的进程里仅 1 个 LISTENING）。逐个进程、逐个
+    // 端口试 Heartbeat，先通者胜——只认第一个进程会在它不是服务进程时漏掉数据。
+    for process in find_language_server_processes() {
+        let mut ports = listening_ports(process.pid);
+        // 命令行里声明的端口优先试。
+        if let Some(declared) = process.declared_port {
+            ports.insert(0, declared);
+            ports.dedup();
+        }
+        for port in ports {
+            for scheme in ["https", "http"] {
+                let endpoint = Endpoint {
+                    base_url: format!("{scheme}://127.0.0.1:{port}"),
+                    csrf: process.csrf.clone(),
+                };
+                if heartbeat_ok(&endpoint) {
+                    return Some(endpoint);
+                }
             }
         }
     }
@@ -527,21 +539,31 @@ fn is_antigravity_command(command: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn find_language_server_process() -> Option<ServerProcess> {
+fn find_language_server_processes() -> Vec<ServerProcess> {
     use std::os::windows::process::CommandExt;
-    let script = "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | \
+    // 必须强制 UTF-8 输出：中文 Windows 的 PowerShell 默认按控制台代码页
+    // （GBK/936）输出，命令行里只要有一个中文路径，整段 JSON 就含非 UTF-8
+    // 字节，Rust 侧 from_slice 会整体解析失败——antigravity 因此在中文系统上
+    // 一直读不到数据（本机实测定位）。
+    let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+                  $ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | \
                   Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
-    let output = std::process::Command::new("powershell.exe")
+    let Ok(output) = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .creation_flags(0x0800_0000)
         .output()
-        .ok()?;
-    let json: Value = serde_json::from_slice(&output.stdout).ok()?;
+    else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return Vec::new();
+    };
     let entries: Vec<&Value> = match &json {
         Value::Array(items) => items.iter().collect(),
         single @ Value::Object(_) => vec![single],
-        _ => return None,
+        _ => return Vec::new(),
     };
+    let mut processes = Vec::new();
     for entry in entries {
         let command = entry
             .get("CommandLine")
@@ -553,14 +575,16 @@ fn find_language_server_process() -> Option<ServerProcess> {
         let Some(csrf) = extract_csrf(command) else {
             continue;
         };
-        let pid = entry.get("ProcessId").and_then(Value::as_u64)? as u32;
-        return Some(ServerProcess {
-            pid,
+        let Some(pid) = entry.get("ProcessId").and_then(Value::as_u64) else {
+            continue;
+        };
+        processes.push(ServerProcess {
+            pid: pid as u32,
             csrf,
             declared_port: extract_declared_port(command),
         });
     }
-    None
+    processes
 }
 
 #[cfg(windows)]
@@ -592,15 +616,20 @@ fn listening_ports(pid: u32) -> Vec<u16> {
 }
 
 #[cfg(not(windows))]
-fn find_language_server_process() -> Option<ServerProcess> {
-    let output = std::process::Command::new("/bin/ps")
+fn find_language_server_processes() -> Vec<ServerProcess> {
+    let Ok(output) = std::process::Command::new("/bin/ps")
         .args(["-ax", "-o", "pid=,command="])
         .output()
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     let text = String::from_utf8_lossy(&output.stdout);
+    let mut processes = Vec::new();
     for line in text.lines() {
         let line = line.trim_start();
-        let (pid_str, command) = line.split_once(char::is_whitespace)?;
+        let Some((pid_str, command)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
         if !is_antigravity_command(command) {
             continue;
         }
@@ -610,13 +639,13 @@ fn find_language_server_process() -> Option<ServerProcess> {
         let Ok(pid) = pid_str.parse::<u32>() else {
             continue;
         };
-        return Some(ServerProcess {
+        processes.push(ServerProcess {
             pid,
             csrf,
             declared_port: extract_declared_port(command),
         });
     }
-    None
+    processes
 }
 
 #[cfg(not(windows))]
@@ -678,6 +707,36 @@ mod tests {
         assert_eq!(events[0].model.as_deref(), Some("claude-sonnet-4.6"));
         assert_eq!(events[0].session_id, "cascade-1");
         assert_eq!(events[1].event_key, "response:resp-b");
+    }
+
+    #[test]
+    fn string_encoded_token_counts_are_parsed() {
+        // 真机响应形状（本机实测）：token 计数是字符串、无 retryInfos、
+        // 直接挂 chatModel.usage，模型是占位符 + responseModel。
+        let value = json!({
+            "generatorMetadata": [{
+                "chatModel": {
+                    "model": "MODEL_PLACEHOLDER_M20",
+                    "responseModel": "gemini-3-flash-medium-a",
+                    "chatStartMetadata": { "createdAt": "2026-07-20T03:00:00Z" },
+                    "usage": {
+                        "model": "MODEL_PLACEHOLDER_M20",
+                        "inputTokens": "21861",
+                        "outputTokens": "96",
+                        "thinkingOutputTokens": "58",
+                        "responseId": "resp-str"
+                    }
+                }
+            }]
+        });
+        let events = normalize_generator_metadata(&value, "cascade-str", i64::MIN);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.tokens.input_uncached, 21861);
+        assert_eq!(event.tokens.output, 96);
+        assert_eq!(event.tokens.reasoning_output, 58);
+        assert_eq!(event.tokens.processed(), 21861 + 96);
+        assert_eq!(event.event_key, "response:resp-str");
     }
 
     #[test]

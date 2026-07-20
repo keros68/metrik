@@ -3,7 +3,9 @@ import { platform as tauriPlatform } from "@tauri-apps/plugin-os";
 import { detectRuntimePlatform } from "./platformDetection";
 
 const WINDOW_SIZES = {
-  compact: { width: 320, height: 320, minWidth: 320, minHeight: 320 },
+  // minHeight 260 = 标题栏+周期签+摘要双块+底栏（约 208）+ 单行 Agent（52）：
+  // Agent 只留一行时卡片允许收短，不再空一截（高度仍由内容自愈驱动）。
+  compact: { width: 320, height: 320, minWidth: 320, minHeight: 260 },
   expanded: { width: 1120, height: 760, minWidth: 960, minHeight: 700 },
   strip: { width: 240, height: 40, minWidth: 48, minHeight: 40 },
 };
@@ -158,6 +160,8 @@ async function applyWebviewZoom(factor) {
 /// 启动时就地应用缩放系数（不走 applyWindowMode 的 hide/show，避免闪烁）。
 /// strip 的启动尺寸由 strip 专属 effect 走 applyWindowMode，这里只管 compact。
 async function applyStartupUiScale(mode) {
+  // 启动路径不经过 applyWindowMode，形态状态在这里就位。
+  activeWindowMode = mode;
   if (isMacPlatform()) return;
   const api = await windowApi();
   if (!api) return;
@@ -407,7 +411,13 @@ async function updateMacStatusItems(items) {
   });
 }
 
+// 当前窗口形态：拖宽→缩放的 onResized 监听靠它区分"用户拖卡片"与
+// "形态切换的程序性 resize"（后者宽度必然剧变，误判会把 zoom 写崩——
+// 完整视图 1120 宽会被当成拖到 2 倍，实测踩过）。同步赋值，先于任何 await。
+let activeWindowMode = null;
+
 async function applyWindowMode(mode, options = {}) {
+  activeWindowMode = mode;
   // macOS 的完整视图是独立窗口；菜单栏 NSPanel 只保留 compact 卡片。
   if (isMacPlatform()) {
     if (!isDesktop()) return;
@@ -500,7 +510,9 @@ async function applyWindowMode(mode, options = {}) {
   await appWindow.setSize(
     await scaledPhysicalSize(api, appWindow, size.width, compactContentHeight(size.height)),
   );
-  await appWindow.setResizable(false);
+  // 卡片开放拖拽调整：拖宽度映射为缩放系数（startCompactResizeScale），
+  // 高度拖动会被内容自愈观察器收敛回去。
+  await appWindow.setResizable(true);
   await appWindow.setMinSize(new api.LogicalSize(size.minWidth * uiScale, size.minHeight * uiScale));
 
   const stored = readStoredPosition("compact");
@@ -617,6 +629,56 @@ async function reassertCompactSize() {
 async function resizeMacosPanel({ width, height }) {
   if (!isDesktop() || !isMacPlatform()) return;
   await invoke("resize_macos_panel", { width, height }).catch(() => {});
+}
+
+/// 卡片宽度拖拽 → 缩放系数：用户拖窗口边缘改宽度时，把新宽度映射为
+/// uiScale（新宽 / 320 设计宽），内容 zoom 跟随，高度仍由内容自愈观察器
+/// 收敛——与设置页滑杆共用同一持久化与归一化路径。
+/// 程序性 setSize 也会触发 onResized：宽度与当前缩放的期望值一致（±2 物理
+/// 像素）就忽略，只有用户真拖出的宽度差才生效；去抖到拖拽停止后再应用，
+/// 避免拖动过程中反复 setZoom。
+async function startCompactResizeScale(onScale) {
+  if (!isDesktop() || isMacPlatform()) return () => {};
+  const api = await windowApi();
+  if (!api) return () => {};
+  const appWindow = api.getCurrentWindow();
+  let timer = null;
+  const unlistenPromise = appWindow.onResized(({ payload }) => {
+    // 只认卡片形态下的 resize；形态切换（→expanded/strip）的程序性调整
+    // 宽度剧变，绝不能映射成缩放系数。
+    if (activeWindowMode !== "compact") return;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      // 去抖窗口期内可能已切走形态，再核对一次。
+      if (activeWindowMode !== "compact") return;
+      const factor = await appWindow.scaleFactor().catch(() => 1);
+      const size = WINDOW_SIZES.compact;
+      const expected = Math.round(size.width * uiScale * factor);
+      if (Math.abs(payload.width - expected) <= 2) return;
+      const next = normalizeUiScale(payload.width / factor / size.width);
+      if (Math.abs(next - uiScale) < 0.01) return;
+      setWindowUiScale(next);
+      await applyWebviewZoom(next);
+      // 宽度按归一化后的系数取整回标准值（钳到 0.75–2.0 的边界会体现在这里）；
+      // 高度先沿用缓存值，zoom 变化触发的内容自愈随后精修。
+      await appWindow
+        .setSize(
+          await scaledPhysicalSize(
+            api,
+            appWindow,
+            size.width,
+            compactContentHeight(size.height),
+          ),
+        )
+        .catch(() => {});
+      onScale?.(next);
+    }, 260);
+  });
+  return async () => {
+    window.clearTimeout(timer);
+    const unlisten = await unlistenPromise.catch(() => null);
+    unlisten?.();
+  };
 }
 
 /// 显示器 DPI 变化时回调；调用方据此重算悬浮形态的物理尺寸。
@@ -900,6 +962,12 @@ async function closeWindow() {
   await api.getCurrentWindow().close();
 }
 
+async function toggleMaximizeWindow() {
+  const api = await windowApi();
+  if (!api) return;
+  await api.getCurrentWindow().toggleMaximize();
+}
+
 export {
   UI_SCALE_RANGE,
   WINDOW_SIZES,
@@ -930,7 +998,9 @@ export {
   setWindowGlass,
   setWindowPinned,
   setWindowUiScale,
+  startCompactResizeScale,
   startEdgeDock,
   startPositionMemory,
   stripContentSize,
+  toggleMaximizeWindow,
 };

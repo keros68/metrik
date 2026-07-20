@@ -19,7 +19,9 @@ dirs = "6"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
-rustls = "0.23"
+# 明确只用 ring provider：默认同时启用 ring 与 aws-lc-rs 时，rustls 0.23
+# 无法自动确定 CryptoProvider 会 panic（antigravity 自签 TLS 首次真机命中）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -45,8 +47,10 @@ windows = { version = "0.61.3", features = [
   "UI_Composition",
   "UI_Composition_Desktop",
   "Win32_Foundation",
+  "Win32_System_Com",
   "Win32_System_WinRT",
   "Win32_System_WinRT_Composition",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-numerics = "0.2"

@@ -18,7 +18,7 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0, antigravity: 0 },
+    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0, antigravity: 0, workbuddy: 0 },
   }));
 }
 
@@ -36,6 +36,7 @@ function demoSeries(period) {
         opencode: Math.round(total * 0.06),
         kimi: Math.round(total * 0.03),
         antigravity: Math.round(total * 0.025),
+        workbuddy: Math.round(total * 0.02),
       },
     }));
   }
@@ -52,6 +53,7 @@ function demoSeries(period) {
         opencode: Math.round(76_400 * config.factor * (0.9 + (index % 3) / 10) * weekend / config.points),
         kimi: Math.round(38_200 * config.factor * (0.85 + (index % 4) / 14) * weekend / config.points),
         antigravity: Math.round(31_500 * config.factor * (0.82 + (index % 5) / 15) * weekend / config.points),
+        workbuddy: Math.round(24_800 * config.factor * (0.8 + (index % 3) / 13) * weekend / config.points),
       },
     };
   });
@@ -92,8 +94,9 @@ function demoSnapshot(period = "today") {
   const opencodeTokens = Math.round(76_400 * scale);
   const kimiTokens = Math.round(38_200 * scale);
   const antigravityTokens = Math.round(31_500 * scale);
+  const workbuddyTokens = Math.round(24_800 * scale);
   const totalTokens =
-    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens;
+    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -134,8 +137,16 @@ function demoSnapshot(period = "today") {
           { key: "seven_day", label: "每周", view: demoQuotaView(76, 4_320) },
         ],
       },
-      // OpenCode 现实中没有官方配额来源：窗口列表保持为空。
+      // OpenCode 与 WorkBuddy 现实中没有官方配额来源：窗口列表保持为空。
       { agent: "opencode", windows: [] },
+      {
+        agent: "workbuddy",
+        windows: [{ key: "credits", label: "Credits", view: demoQuotaView(78, 15_120) }],
+      },
+      {
+        agent: "qoder",
+        windows: [{ key: "credits", label: "Credits", view: demoQuotaView(64, 12_960) }],
+      },
     ],
     agents: [
       demoAgentSummary("codex", codexTokens, totalTokens),
@@ -144,13 +155,14 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("opencode", opencodeTokens, totalTokens),
       demoAgentSummary("kimi", kimiTokens, totalTokens),
       demoAgentSummary("antigravity", antigravityTokens, totalTokens),
+      demoAgentSummary("workbuddy", workbuddyTokens, totalTokens),
     ],
     cost: {
       available: true,
       // 演示值按 gpt-5.2 / claude 价目的量级粗算。
       totalUsd: 5.62 * scale,
-      // ZCode / OpenCode / Kimi / Antigravity 未计价：演示数据也如实反映这一点。
-      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens,
+      // ZCode / OpenCode / Kimi / Antigravity / WorkBuddy 未计价：演示数据也如实反映这一点。
+      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens,
       pricingAsOf: "2026-07-13",
       byAgent: [
         { agent: "codex", usd: 2.31 * scale, unpricedTokens: 0 },
@@ -159,6 +171,7 @@ function demoSnapshot(period = "today") {
         { agent: "opencode", usd: 0, unpricedTokens: opencodeTokens },
         { agent: "kimi", usd: 0, unpricedTokens: kimiTokens },
         { agent: "antigravity", usd: 0, unpricedTokens: antigravityTokens },
+        { agent: "workbuddy", usd: 0, unpricedTokens: workbuddyTokens },
       ],
     },
     models: [
@@ -170,6 +183,7 @@ function demoSnapshot(period = "today") {
       { model: "unknown", agent: "opencode", tokens: opencodeTokens, share: (opencodeTokens / totalTokens) * 100 },
       { model: "kimi-for-coding", agent: "kimi", tokens: kimiTokens, share: (kimiTokens / totalTokens) * 100 },
       { model: "gemini-3.1-pro", agent: "antigravity", tokens: antigravityTokens, share: (antigravityTokens / totalTokens) * 100 },
+      { model: "glm-5.2", agent: "workbuddy", tokens: workbuddyTokens, share: (workbuddyTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
@@ -179,6 +193,8 @@ function demoSnapshot(period = "today") {
       { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "antigravity-live", kind: "local", label: "Antigravity 用量", detail: "来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "workbuddy-local", kind: "local", label: "WorkBuddy 本地 Token", detail: "读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "qoder-quota", kind: "official", label: "Qoder 官方 Credits", detail: "设置 QODER_COOKIE 环境变量后读取官网额度；本地不落 token 用量，无本地统计。", quality: "official", qualityLabel: "官方" },
     ],
     indexing: { pending: 0 },
   };
@@ -431,6 +447,20 @@ async function setClaudeHook(enabled) {
   return invoke("set_claude_hook", { enabled });
 }
 
+async function getQoderCookieStatus() {
+  if (!isTauriRuntime()) {
+    return { demo: true, configured: false, source: null, message: null };
+  }
+  return invoke("qoder_cookie_status");
+}
+
+async function configureQoderCookie(cookie) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置 cookie");
+  }
+  return invoke("configure_qoder_cookie", { cookie });
+}
+
 async function getClaudeOauthStatus() {
   if (!isTauriRuntime()) {
     return { demo: true, enabled: false, credentialsPresent: false, scopeOk: false };
@@ -462,4 +492,6 @@ export {
   setClaudeHook,
   getClaudeOauthStatus,
   setClaudeOauth,
+  getQoderCookieStatus,
+  configureQoderCookie,
 };

@@ -17,6 +17,7 @@ const AGENT_LINE_COLORS = {
   opencode: { stroke: "#4aa392", fill: "rgba(74, 163, 146, 0.09)" },
   kimi: { stroke: "#c4719f", fill: "rgba(196, 113, 159, 0.09)" },
   antigravity: { stroke: "#d1a34e", fill: "rgba(209, 163, 78, 0.09)" },
+  workbuddy: { stroke: "#5fa671", fill: "rgba(95, 166, 113, 0.09)" },
   default: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
 };
 
