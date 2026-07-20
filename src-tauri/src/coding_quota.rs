@@ -619,26 +619,27 @@ fn resolve_workbuddy_credential() -> Option<WorkbuddyCredential> {
     None
 }
 
+/// auth 目录候选：
+/// - Windows：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth`（data_local_dir）
+/// - macOS：`~/Library/Application Support/CodeBuddyExtension/...`
+/// - Linux：`~/.local/share/CodeBuddyExtension/...`
+///
+/// macOS 与 Linux 上 data_local_dir 与 data_dir 是同一路径（Windows 上才分
+/// Local/Roaming），去重避免重复读同一目录。
 fn workbuddy_auth_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    // Windows：%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth
-    if let Some(local) = dirs::data_local_dir() {
-        dirs.push(
-            local
-                .join("CodeBuddyExtension")
-                .join("Data")
-                .join("Public")
-                .join("auth"),
-        );
-    }
-    // macOS：~/Library/Application Support/CodeBuddyExtension/...；Linux：~/.local/share/...
-    if let Some(data) = dirs::data_dir() {
-        dirs.push(
-            data.join("CodeBuddyExtension")
-                .join("Data")
-                .join("Public")
-                .join("auth"),
-        );
+    for base in [dirs::data_local_dir(), dirs::data_dir()]
+        .into_iter()
+        .flatten()
+    {
+        let candidate = base
+            .join("CodeBuddyExtension")
+            .join("Data")
+            .join("Public")
+            .join("auth");
+        if !dirs.contains(&candidate) {
+            dirs.push(candidate);
+        }
     }
     dirs
 }

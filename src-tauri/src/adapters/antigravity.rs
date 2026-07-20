@@ -617,8 +617,11 @@ fn listening_ports(pid: u32) -> Vec<u16> {
 
 #[cfg(not(windows))]
 fn find_language_server_processes() -> Vec<ServerProcess> {
+    // `ww` 是必须的：macOS 的 ps 默认把命令行截断到终端宽度，而 --csrf_token
+    // 在 language_server 那条长命令行的靠后位置——截断后取不到 csrf，端点发现
+    // 会静默失败。Linux 的 ps 同样接受 ww（不限宽），两平台通用。
     let Ok(output) = std::process::Command::new("/bin/ps")
-        .args(["-ax", "-o", "pid=,command="])
+        .args(["-axww", "-o", "pid=,command="])
         .output()
     else {
         return Vec::new();
