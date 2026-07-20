@@ -1,6 +1,6 @@
 use crate::adapters::{
     AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, KimiAdapter, OpencodeAdapter,
-    ScanDiagnostics, SourceCandidate, ZcodeAdapter,
+    ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter,
 };
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
@@ -167,6 +167,8 @@ pub fn build_snapshot(
             coding_quota::fetch_zcode_quota as fn(StdDuration) -> Result<Vec<QuotaSample>>,
         ),
         ("kimi", coding_quota::fetch_kimi_quota),
+        ("qoder", coding_quota::fetch_qoder_quota),
+        ("workbuddy", coding_quota::fetch_workbuddy_quota),
     ] {
         if let Ok(samples) = cached_coding_quota(http_quota_cache, adapter_id, fetch, force) {
             if !samples.is_empty() {
@@ -586,6 +588,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(OpencodeAdapter::detected()),
         Box::new(KimiAdapter::detected()),
         Box::new(AntigravityAdapter::detected()),
+        Box::new(WorkbuddyAdapter::detected()),
     ];
     let mut report = ScanReport::default();
     let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
@@ -1650,7 +1653,7 @@ mod tests {
             "sess-mixed",
             test_local_time(today, 9).timestamp_millis(),
             // 订阅 coding-plan 专属 ID，没有官方按 token 价目（见 pricing.rs）。
-            Some("GLM-5.2"),
+            Some("kimi-for-coding"),
             10,
             0,
             0,
@@ -1676,8 +1679,8 @@ mod tests {
             "claude",
             "sess-none",
             test_local_time(today, 8).timestamp_millis(),
-            // 同上：GLM-5.2 是订阅专属 ID，必须保持未计价。
-            Some("GLM-5.2"),
+            // 同上：kimi-for-coding 是订阅专属 ID，必须保持未计价。
+            Some("kimi-for-coding"),
             10,
             0,
             0,
@@ -2191,14 +2194,14 @@ mod tests {
             1_000_000,
             1_000_000,
         );
-        // claude: GLM-5.2 是订阅 coding-plan 专属 ID，没有官方按 token 价目，
-        // 必须保持未计价（见 pricing.rs 的覆盖范围说明）。
+        // claude: kimi-for-coding 是订阅 coding-plan 专属 ID，没有官方按 token
+        // 价目，必须保持未计价（见 pricing.rs 的覆盖范围说明）。
         insert_test_usage_full(
             &connection,
             "claude-glm",
             "claude",
             at,
-            Some("GLM-5.2"),
+            Some("kimi-for-coding"),
             100,
             0,
             0,

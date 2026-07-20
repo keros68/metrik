@@ -6,18 +6,20 @@ use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-/// OpenCode 将每条消息保存为独立 JSON 文件：
-/// `<data>/storage/message/<sessionID>/<messageID>.json`（新版）或
-/// `<data>/storage/session/message/<sessionID>/<messageID>.json`（旧版）。
-/// assistant 消息带 `tokens` 字段；正文保存在单独的 part 文件中，本 adapter 不读取。
+/// OpenCode 的两代存储都支持：
 ///
-/// OpenCode 1.2+ 改存 SQLite（`<data>/opencode.db`，其它发布渠道叫
-/// `opencode-<channel>.db`），本 adapter 尚不支持读取。检测到库文件时通过
-/// `coverage_gaps` 上报，让 UI 标"部分覆盖"——否则新版用户会看到静默的 0，
-/// 读起来像"没用过"而不是"读不到"。
+/// - 旧版 JSON 文件：`<data>/storage/message/<sessionID>/<messageID>.json`
+///   （或更旧的 `storage/session/message/...`）。assistant 消息带 `tokens`；
+///   正文在单独的 part 文件里，本 adapter 不读取。
+/// - 1.2+ SQLite：`<data>/opencode.db`（其它发布渠道叫 `opencode-<channel>.db`），
+///   `message` 表每行 `(id, session_id, data)`，`data` 是与旧 JSON 同形状的
+///   消息体（tokens/modelID/time；id 与 sessionID 只在表列里）。库常驻 WAL，
+///   变更检测要把 `-wal` 的 mtime/size 一并计入，否则 checkpoint 前扫不到新行。
+///
+/// 两代的事件身份同为 `message:<id>`，历史从 JSON 迁到库也不会重复计数。
 pub struct OpencodeAdapter {
     roots: Vec<PathBuf>,
-    /// `<data>/opencode` 数据根，用于探测 SQLite 库；测试可为 None。
+    /// `<data>/opencode` 数据根，用于发现 SQLite 库；测试可为 None。
     data_dir: Option<PathBuf>,
 }
 
@@ -98,16 +100,15 @@ impl OpencodeAdapter {
     }
 
     /// `<data>` 下的 SQLite 库：`opencode.db`（latest/beta 渠道）或
-    /// `opencode-<channel>.db`。只探测文件名，不打开——我们读不了它，
-    /// 探测的意义就是如实上报读不了。
-    fn sqlite_stores(&self) -> Vec<String> {
+    /// `opencode-<channel>.db`。
+    fn sqlite_stores(&self) -> Vec<PathBuf> {
         let Some(data_dir) = &self.data_dir else {
             return Vec::new();
         };
         let Ok(entries) = std::fs::read_dir(data_dir) else {
             return Vec::new();
         };
-        let mut names: Vec<String> = entries
+        let mut paths: Vec<PathBuf> = entries
             .filter_map(Result::ok)
             .filter(|entry| {
                 entry
@@ -115,12 +116,28 @@ impl OpencodeAdapter {
                     .map(|kind| kind.is_file())
                     .unwrap_or(false)
             })
-            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-            .filter(|name| name.starts_with("opencode") && name.ends_with(".db"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.starts_with("opencode") && name.ends_with(".db"))
+                    .unwrap_or(false)
+            })
+            .map(|entry| entry.path())
             .collect();
-        names.sort();
-        names
+        paths.sort();
+        paths
     }
+}
+
+/// 文件 mtime（纳秒）；拿不到记 0，让候选仍然成立（宁可多扫一次）。
+fn mtime_ns(path: &std::path::Path) -> i64 {
+    path.metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|since| since.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 impl AgentAdapter for OpencodeAdapter {
@@ -128,19 +145,27 @@ impl AgentAdapter for OpencodeAdapter {
         "opencode"
     }
 
-    fn coverage_gaps(&self) -> Vec<String> {
-        let stores = self.sqlite_stores();
-        if stores.is_empty() {
-            return Vec::new();
-        }
-        vec![format!(
-            "检测到 OpenCode 1.2+ 的 SQLite 存储（{}），当前版本尚不支持读取，其中的会话未计入统计",
-            stores.join("、")
-        )]
-    }
-
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
         let mut found = Vec::new();
+        // SQLite 库整体是一个源：WAL 未 checkpoint 时主文件不变，size/mtime
+        // 要把 -wal 计入，否则新会话在 checkpoint 前扫不到。库不按 cutoff
+        // 过滤（历史行仍在其中，行级时间在 parse 里过滤）。
+        for db_path in self.sqlite_stores() {
+            let Ok(metadata) = db_path.metadata() else {
+                continue;
+            };
+            let mut wal_path = db_path.as_os_str().to_os_string();
+            wal_path.push("-wal");
+            let wal_path = PathBuf::from(wal_path);
+            let wal_size = wal_path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let normalized = normalize_locator(&db_path);
+            found.push(SourceCandidate {
+                source_id: stable_hash(&format!("opencode|{normalized}")),
+                size: metadata.len() + wal_size,
+                mtime_ns: mtime_ns(&db_path).max(mtime_ns(&wal_path)),
+                path: db_path,
+            });
+        }
         for root in self.roots.iter().filter(|root| root.exists()) {
             for entry in WalkDir::new(root)
                 .follow_links(false)
@@ -179,6 +204,9 @@ impl AgentAdapter for OpencodeAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
+        if candidate.path.extension().and_then(|value| value.to_str()) == Some("db") {
+            return self.parse_sqlite(candidate, cutoff_ms);
+        }
         let raw = std::fs::read_to_string(&candidate.path)
             .with_context(|| format!("failed to read {}", candidate.path.display()))?;
         let mut diagnostics = ScanDiagnostics::default();
@@ -201,6 +229,67 @@ impl AgentAdapter for OpencodeAdapter {
                 adapter_id: self.id(),
                 locator: candidate.path.clone(),
                 logical_key: candidate.source_id.clone(),
+                size: candidate.size,
+                mtime_ns: candidate.mtime_ns,
+                events,
+                quotas: Vec::new(),
+            },
+            diagnostics,
+        })
+    }
+}
+
+impl OpencodeAdapter {
+    /// 1.2+ SQLite：`message` 表逐行读 `data` JSON；id 与 session 在表列里
+    /// （data 里没有）。行内消息体与旧 JSON 文件同构，走同一套语义。
+    fn parse_sqlite(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
+        let connection = rusqlite::Connection::open_with_flags(
+            &candidate.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .with_context(|| format!("failed to open {}", candidate.path.display()))?;
+        let mut statement = connection
+            .prepare("SELECT id, session_id, data FROM message")
+            .context("opencode.db 缺少预期的 message 表")?;
+        let mut rows = statement
+            .query([])
+            .context("读取 opencode.db message 表失败")?;
+
+        let mut diagnostics = ScanDiagnostics::default();
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().context("遍历 opencode.db 行失败")? {
+            let (message_id, session_id, raw): (String, Option<String>, String) =
+                match (row.get(0), row.get(1), row.get(2)) {
+                    (Ok(id), Ok(session), Ok(data)) => (id, session, data),
+                    _ => {
+                        diagnostics.unreadable_lines += 1;
+                        continue;
+                    }
+                };
+            let Ok(mut message) = serde_json::from_str::<OpencodeMessage>(&raw) else {
+                diagnostics.malformed_lines += 1;
+                continue;
+            };
+            message.id = Some(message_id);
+            message.session_id = message.session_id.take().or(session_id);
+            if let Some(event) = usage_event(&candidate.path, message, cutoff_ms) {
+                events.push(event);
+            }
+        }
+        events.sort_by_key(|event| event.occurred_at_ms);
+
+        let logical_key = candidate
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("opencode.db")
+            .to_owned();
+        Ok(ParsedScan {
+            source: ParsedSource {
+                source_id: candidate.source_id.clone(),
+                adapter_id: self.id(),
+                locator: candidate.path.clone(),
+                logical_key,
                 size: candidate.size,
                 mtime_ns: candidate.mtime_ns,
                 events,
@@ -301,27 +390,63 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_store_is_reported_as_a_coverage_gap_not_silently_zero() {
-        let test = TestDirectory::new("sqlite-gap");
-        // 没有库文件：无 gap（未安装或旧版 JSON 用户不受影响）。
+    fn sqlite_message_rows_become_events_via_discover_and_parse() {
+        let test = TestDirectory::new("sqlite-read");
+        let db_path = test.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);",
+            )
+            .unwrap();
+        // assistant 行：id/session 在列里，data 里没有（对齐真实库形状）。
+        connection
+            .execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "msg_db_1",
+                    "ses_db",
+                    1_784_000_000_000_i64,
+                    r#"{"role":"assistant","modelID":"big-pickle","providerID":"opencode",
+                        "time":{"created":1784000000000,"completed":1784000009000},
+                        "tokens":{"input":2014,"output":103,"reasoning":235,"cache":{"read":14784,"write":0}}}"#,
+                ],
+            )
+            .unwrap();
+        // user 行不计。
+        connection
+            .execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "msg_db_user",
+                    "ses_db",
+                    1_784_000_000_000_i64,
+                    r#"{"role":"user","time":{"created":1784000000000}}"#,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
         let adapter = OpencodeAdapter::with_data_dir(test.path().to_path_buf());
-        assert!(adapter.coverage_gaps().is_empty());
+        let scans = scan(&adapter, 0);
+        assert_eq!(scans.len(), 1, "库应作为单一源被发现");
+        let events = &scans[0].source.events;
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_key, "message:msg_db_1");
+        assert_eq!(event.session_id, "ses_db");
+        assert_eq!(event.model.as_deref(), Some("big-pickle"));
+        assert_eq!(event.occurred_at_ms, 1_784_000_009_000);
+        assert_eq!(event.tokens.processed(), 2014 + 103 + 14784);
+        assert_eq!(event.tokens.reasoning_output, 235);
+        assert!(!scans[0].diagnostics.is_partial());
+    }
 
-        // latest 渠道与其它渠道的库都要认出来；伴生的 -wal/-shm 不算独立存储。
-        fs::write(test.path().join("opencode.db"), b"sqlite").unwrap();
-        fs::write(test.path().join("opencode-nightly.db"), b"sqlite").unwrap();
-        fs::write(test.path().join("opencode.db-wal"), b"wal").unwrap();
-        let gaps = adapter.coverage_gaps();
-        assert_eq!(gaps.len(), 1);
-        assert!(gaps[0].contains("opencode.db"));
-        assert!(gaps[0].contains("opencode-nightly.db"));
-        assert!(!gaps[0].contains("db-wal"));
-        assert!(gaps[0].contains("尚不支持读取"));
-
-        // 纯 JSON 测试构造器不探测（data_dir 为 None）。
-        assert!(OpencodeAdapter::with_roots(Vec::new())
-            .coverage_gaps()
-            .is_empty());
+    #[test]
+    fn no_sqlite_store_means_no_db_candidate() {
+        let test = TestDirectory::new("no-db");
+        let adapter = OpencodeAdapter::with_data_dir(test.path().to_path_buf());
+        assert!(adapter.discover(0).is_empty());
     }
 
     fn scan(adapter: &OpencodeAdapter, cutoff_ms: i64) -> Vec<ParsedScan> {

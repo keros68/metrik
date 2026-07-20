@@ -4,13 +4,18 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// 所有已启用 adapter 的 ID，前端 series 与汇总按此顺序输出。
-pub const AGENT_IDS: [&str; 6] = [
+/// 所有已启用 adapter 的 ID，前端 series 与汇总按此顺序输出。
+/// qoder 是配额-only：本地不落可解析的 token 用量（QoderWork agents.db
+/// 字段恒 0），只有官网 Credits 配额来源，没有对应的日志 adapter。
+pub const AGENT_IDS: [&str; 8] = [
     "codex",
     "claude",
     "zcode",
     "opencode",
     "kimi",
     "antigravity",
+    "workbuddy",
+    "qoder",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]

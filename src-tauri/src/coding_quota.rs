@@ -27,9 +27,19 @@
 //! body 里（`code` 非 200，认证失败是 1000），必须识别，否则错 key 会被
 //! 误报成"缺少可用窗口"。凭据是候选列表逐把尝试：环境变量里的开放平台 key
 //! 与 coding-plan key 同形（32hex.16位）但互不通用，离线分不出。
+//!
+//! Qoder：**未经真机核验**（2026-07 接入）。Qoder/QoderWork 本地不落 token
+//! 用量（QoderWork 的 agents.db 里 inputTokens 恒 0，新版已删字段；桌面端凭据
+//! 是 Electron safeStorage 加密的 auth.dat，同 zcode 原则不去解密），只有官网
+//! dashboard 的 Credits 接口可用，cookie 鉴权。形状与请求头（含 `Bx-V` 风控头）
+//! 取自两个开源参考实现（token-monitor `qoderLimits.js`、CodexBar
+//! `QoderUsageFetcher.swift`）的一致行为。cookie 只认环境变量
+//! `QODER_COOKIE`/`METRIK_QODER_COOKIE`（浏览器 dashboard 抓取后由用户主动
+//! 提供），`QODER_SITE=cn|global` 指定站点，缺省时国内站优先逐个尝试。
 
 use crate::domain::QuotaSample;
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::TimeZone;
 use serde::Deserialize;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -107,6 +117,262 @@ fn glm_business_error(json: &Value) -> Option<String> {
     Some(format!("GLM 配额接口返回业务错误 code {code}: {msg}"))
 }
 
+// Qoder 官网 Credits 接口（cookie 鉴权的 dashboard 内部接口，非公开 API）。
+const QODER_ORIGIN_GLOBAL: &str = "https://qoder.com";
+const QODER_ORIGIN_CN: &str = "https://qoder.com.cn";
+
+pub fn fetch_qoder_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let cookie = resolve_qoder_cookie()
+        .context("未找到 Qoder 的 cookie（设置 QODER_COOKIE 环境变量后可用）")?;
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let mut last_error = None;
+    for origin in qoder_origin_candidates() {
+        match fetch_qoder_once(&agent, origin, &cookie) {
+            Ok(samples) => return Ok(samples),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("origin 候选非空则必有错误"))
+}
+
+fn fetch_qoder_once(agent: &ureq::Agent, origin: &str, cookie: &str) -> Result<Vec<QuotaSample>> {
+    let response = agent
+        .get(&format!("{origin}/api/v2/me/usages/big_model_credits"))
+        // dashboard 内部接口按浏览器请求放行：UA/Origin/Referer/Bx-V 缺一不可
+        // （参考实现一致携带；Bx-V 是阿里风控头）。
+        .set("Cookie", cookie)
+        .set("Accept", "application/json, text/plain, */*")
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        )
+        .set("Origin", origin)
+        .set("Referer", &format!("{origin}/account/usage"))
+        .set("X-Requested-With", "XMLHttpRequest")
+        .set("Bx-V", "2.5.35")
+        .call()
+        .map_err(|error| map_ureq_error("Qoder", error))?;
+    let body = response.into_string().context("读取 Qoder 配额响应失败")?;
+    let json: Value = serde_json::from_str(&body).context("Qoder 配额响应不是预期的 JSON")?;
+    let samples = parse_qoder_quota(&json);
+    if samples.is_empty() {
+        bail!("Qoder 配额响应缺少 totalQuota.quotaSummary");
+    }
+    Ok(samples)
+}
+
+/// cookie 来源：设置页保存的本地文件优先，其次环境变量。由用户从浏览器
+/// dashboard 主动复制提供——Metrik 不碰浏览器 cookie 库，也不解密 QoderWork
+/// 的 auth.dat。本地文件明文、仅本机（不入账本、不进同步导出），随时可清除。
+fn resolve_qoder_cookie() -> Option<String> {
+    if let Some(cookie) = read_qoder_cookie_file() {
+        return Some(cookie);
+    }
+    for name in ["QODER_COOKIE", "METRIK_QODER_COOKIE"] {
+        if let Ok(raw) = std::env::var(name) {
+            let trimmed = raw.trim().trim_matches('"').trim_matches('\'').trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// cookie 文件与应用数据库同目录（identifier 与 tauri.conf.json 一致）。
+/// 写与读走同一个 helper，路径自洽。
+fn qoder_cookie_file() -> Option<PathBuf> {
+    Some(
+        dirs::data_local_dir()?
+            .join("app.metrik.desktop")
+            .join("qoder-cookie.txt"),
+    )
+}
+
+pub fn read_qoder_cookie_file() -> Option<String> {
+    let raw = std::fs::read_to_string(qoder_cookie_file()?).ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// 宽容解析用户粘贴的内容：接受裸 cookie 值、带 `Cookie:` 前缀的单行、
+/// DevTools「复制请求标头」的整段（从中挑出 cookie 行）、以及 cURL 命令
+/// （`-H 'cookie: …'` 或 `-b '…'`）。都不匹配时原样返回（当作裸值）。
+pub fn normalize_qoder_cookie_input(raw: &str) -> Option<String> {
+    // Windows Chrome 的「以 cURL 格式复制(cmd)」是带 ^ 转义的单行：
+    // curl ^"https://…^" -H ^"cookie: …^"。先剥掉 ^ 再统一解析。
+    let unescaped;
+    let mut trimmed = raw.trim();
+    if trimmed.to_ascii_lowercase().starts_with("curl") && trimmed.contains('^') {
+        unescaped = trimmed.replace('^', "");
+        trimmed = unescaped.trim();
+    }
+    if trimmed.is_empty() {
+        return None;
+    }
+    // cURL 命令（含单行 cmd 格式）：只认显式的 cookie 参数，找不到就拒绝
+    // ——绝不把整条命令当 cookie 存起来。
+    let looks_like_curl =
+        trimmed.to_ascii_lowercase().starts_with("curl") || trimmed.contains(" -H ");
+    let strip_quotes = |value: &str| {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_owned()
+    };
+    // 多行粘贴（整段请求标头 / cURL）：找 cookie 行或 -b 参数。
+    for line in trimmed.lines() {
+        let line = line.trim().trim_end_matches('\\').trim();
+        let lower = line.to_ascii_lowercase();
+        if let Some(index) = lower.find("cookie:") {
+            // 排除 set-cookie（响应标头，不是我们要的）。
+            if !lower[..index].contains("set-") {
+                let mut rest = line[index + "cookie:".len()..].trim_start();
+                // 单行 cURL：值到本 -H 参数的闭合引号为止，后面还跟着其它参数。
+                if looks_like_curl {
+                    if let Some(end) = rest.find(['"', '\'']) {
+                        rest = &rest[..end];
+                    }
+                }
+                let value = strip_quotes(rest);
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+        if let Some(rest) = lower
+            .find("--cookie ")
+            .map(|i| &line[i + "--cookie ".len()..])
+            .or_else(|| lower.find("-b ").map(|i| &line[i + "-b ".len()..]))
+        {
+            // 参数值到引号闭合为止；无引号则到下一个空白（后面可能跟 URL）。
+            let rest = rest.trim_start();
+            let value = match rest.chars().next() {
+                Some(quote @ ('\'' | '"')) => {
+                    rest[1..].split(quote).next().unwrap_or("").to_owned()
+                }
+                _ => rest.split_whitespace().next().unwrap_or("").to_owned(),
+            };
+            if !value.trim().is_empty() {
+                return Some(value.trim().to_owned());
+            }
+        }
+    }
+    // 单行裸值（可能带引号）。cURL/多行标头没挑出 cookie 的一律拒绝，
+    // 不把命令或一坨标头当 cookie 存起来。
+    if !looks_like_curl && trimmed.lines().count() == 1 {
+        let value = strip_quotes(trimmed);
+        return (!value.is_empty()).then_some(value);
+    }
+    None
+}
+
+/// 保存（Some 且非空）或清除（None/空）本地 cookie 文件；返回保存后是否存在。
+pub fn write_qoder_cookie_file(cookie: Option<&str>) -> Result<bool> {
+    let path = qoder_cookie_file().context("无法定位本地数据目录")?;
+    match cookie.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).context("创建数据目录失败")?;
+            }
+            std::fs::write(&path, value).context("写入 cookie 文件失败")?;
+            Ok(true)
+        }
+        None => {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("删除 cookie 文件失败"),
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// 当前生效的 cookie 来源（设置页展示用）；None = 未配置。
+pub fn qoder_cookie_source() -> Option<&'static str> {
+    if read_qoder_cookie_file().is_some() {
+        return Some("file");
+    }
+    ["QODER_COOKIE", "METRIK_QODER_COOKIE"]
+        .iter()
+        .any(|name| {
+            std::env::var(name)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+        .then_some("env")
+}
+
+fn qoder_origin_candidates() -> Vec<&'static str> {
+    match std::env::var("QODER_SITE").ok().as_deref().map(str::trim) {
+        Some("cn") | Some("china") => vec![QODER_ORIGIN_CN],
+        Some("global") | Some("com") => vec![QODER_ORIGIN_GLOBAL],
+        // 未指定则两站逐个尝试（cookie 只对其中一站有效，另一站报 401 无害）；
+        // 国内站在前：本项目当前用户群以 CN 版为主。
+        _ => vec![QODER_ORIGIN_CN, QODER_ORIGIN_GLOBAL],
+    }
+}
+
+/// Credits 是计费口径的单一窗口：totalQuota + sharedQuota 合并后算剩余百分比。
+/// 字段蛇形/驼峰并存（`used_value`/`usedValue`），`next_reset_at` 秒/毫秒都见过，
+/// 与参考实现同样按数值大小判别。
+fn parse_qoder_quota(value: &Value) -> Vec<QuotaSample> {
+    let payload = value
+        .get("data")
+        .filter(|data| data.is_object())
+        .unwrap_or(value);
+    let Some(total) = qoder_summary(payload, "totalQuota", "total_quota") else {
+        return Vec::new();
+    };
+    let shared = qoder_summary(payload, "sharedQuota", "shared_quota");
+    let used = total.0 + shared.map(|(used, _)| used).unwrap_or(0.0);
+    let limit = total.1 + shared.map(|(_, limit)| limit).unwrap_or(0.0);
+    let used_percent = if limit > 0.0 {
+        used / limit * 100.0
+    } else {
+        100.0
+    };
+    let resets_at_ms = ["nextResetAt", "next_reset_at"]
+        .iter()
+        .find_map(|key| payload.get(*key))
+        .and_then(|value| value.as_i64().or_else(|| value.as_f64().map(|v| v as i64)))
+        .map(|raw| {
+            if raw < 20_000_000_000 {
+                raw * 1000
+            } else {
+                raw
+            }
+        });
+    vec![QuotaSample {
+        adapter_id: "qoder",
+        window_key: "credits".into(),
+        remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
+        resets_at_ms,
+        collected_at_ms: chrono::Utc::now().timestamp_millis(),
+        source_label: "Qoder 官方 Credits".into(),
+        quality: "official_live",
+    }]
+}
+
+/// 取 `<container>.quotaSummary` 的 (used, limit)；缺 used/limit 或为负视为无效。
+fn qoder_summary(payload: &Value, camel: &str, snake: &str) -> Option<(f64, f64)> {
+    let container = payload.get(camel).or_else(|| payload.get(snake))?;
+    let summary = container
+        .get("quotaSummary")
+        .or_else(|| container.get("quota_summary"))?;
+    let number = |camel: &str, snake: &str| -> Option<f64> {
+        let raw = summary.get(camel).or_else(|| summary.get(snake))?;
+        raw.as_f64()
+            .or_else(|| raw.as_str().and_then(|text| text.trim().parse().ok()))
+    };
+    let used = number("usedValue", "used_value")?;
+    let limit = number("limitValue", "limit_value")?;
+    (used >= 0.0 && limit >= 0.0).then_some((used, limit))
+}
+
 pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     let token = resolve_kimi_credential().context(
         "未找到 Kimi 的凭据（~/.kimi-code 的 config.toml/credentials 或 OpenCode auth.json）",
@@ -125,6 +391,256 @@ pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
         bail!("Kimi 配额响应缺少可用窗口");
     }
     Ok(samples)
+}
+
+// 腾讯 CodeBuddy / WorkBuddy 官方配额（Credits）。桌面客户端把 access token
+// 明文存在 auth `.info` 文件里（同 zcode/kimi 的明文凭据原则：自动读、仅内存
+// 用于一次请求、不入库、错误里不带 token）。接口是逆向自多个开源实现、并已在
+// 真机（国内账号）核对：POST /v2/billing/meter/get-user-resource，返回 Accounts[]，
+// 每个套餐有 CycleCapacitySize/Remain，跨套餐求和得总额度/剩余。
+pub fn fetch_workbuddy_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let cred = resolve_workbuddy_credential()
+        .context("未找到 WorkBuddy/CodeBuddy 的登录凭据（请在客户端登录）")?;
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let now = chrono::Utc::now();
+    let body = serde_json::json!({
+        "PageNumber": 1,
+        "PageSize": 100,
+        "ProductCode": "p_tcaca",
+        "Status": [0, 3],
+        "PackageEndTimeRangeBegin": now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        // 时间窗上界给个远期（含长期/永久套餐）。
+        "PackageEndTimeRangeEnd": now
+            .checked_add_signed(chrono::Duration::days(365 * 50))
+            .unwrap_or(now)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string(),
+    });
+    let mut last_error = None;
+    for host in cred.hosts() {
+        match fetch_workbuddy_once(&agent, &host, &cred, &body) {
+            Ok(samples) => return Ok(samples),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("host 候选非空则必有错误"))
+}
+
+fn fetch_workbuddy_once(
+    agent: &ureq::Agent,
+    host: &str,
+    cred: &WorkbuddyCredential,
+    body: &Value,
+) -> Result<Vec<QuotaSample>> {
+    let mut request = agent
+        .post(&format!(
+            "https://{host}/v2/billing/meter/get-user-resource"
+        ))
+        .set("Authorization", &format!("Bearer {}", cred.access_token))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json");
+    // 企业/iOA 账号需要这些头；个人账号字段为空时不发。
+    if !cred.uid.is_empty() {
+        request = request.set("X-User-Id", &cred.uid);
+    }
+    if !cred.domain.is_empty() {
+        request = request.set("X-Domain", &cred.domain);
+    }
+    let response = request
+        .send_string(&body.to_string())
+        .map_err(|error| map_ureq_error("WorkBuddy", error))?;
+    let text = response
+        .into_string()
+        .context("读取 WorkBuddy 配额响应失败")?;
+    let json: Value = serde_json::from_str(&text).context("WorkBuddy 配额响应不是预期的 JSON")?;
+    // 业务错误放在 HTTP 200 的 body：code 非 0 即失败。
+    if let Some(code) = json.get("code").and_then(Value::as_i64) {
+        if code != 0 {
+            let msg = json
+                .get("msg")
+                .and_then(Value::as_str)
+                .unwrap_or("未知错误");
+            bail!("WorkBuddy 配额接口返回业务错误 code {code}: {msg}");
+        }
+    }
+    let samples = parse_workbuddy_quota(&json);
+    if samples.is_empty() {
+        bail!("WorkBuddy 配额响应缺少可用套餐");
+    }
+    Ok(samples)
+}
+
+/// 跨套餐（Accounts）求和当前周期的总量/剩余，得单一 Credits 窗口。
+/// 重置时间取最近的一个 CycleEndTime（本地时间字符串）。
+fn parse_workbuddy_quota(json: &Value) -> Vec<QuotaSample> {
+    let accounts = json
+        .pointer("/data/Response/Data/Accounts")
+        .and_then(Value::as_array);
+    let Some(accounts) = accounts else {
+        return Vec::new();
+    };
+    let mut total_size = 0.0_f64;
+    let mut total_remain = 0.0_f64;
+    let mut earliest_reset: Option<i64> = None;
+    for account in accounts {
+        let size = account
+            .get("CycleCapacitySize")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let remain = account
+            .get("CycleCapacityRemain")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if size <= 0.0 {
+            continue;
+        }
+        total_size += size;
+        total_remain += remain.max(0.0);
+        if let Some(reset) = account
+            .get("CycleEndTime")
+            .and_then(Value::as_str)
+            .and_then(parse_cn_datetime_ms)
+        {
+            earliest_reset = Some(earliest_reset.map_or(reset, |current| current.min(reset)));
+        }
+    }
+    if total_size <= 0.0 {
+        return Vec::new();
+    }
+    let remaining_percent = (total_remain / total_size * 100.0).clamp(0.0, 100.0);
+    vec![QuotaSample {
+        adapter_id: "workbuddy",
+        window_key: "credits".into(),
+        remaining_percent,
+        resets_at_ms: earliest_reset,
+        collected_at_ms: chrono::Utc::now().timestamp_millis(),
+        source_label: "CodeBuddy 官方 Credits".into(),
+        quality: "official_live",
+    }]
+}
+
+/// CodeBuddy 的 `CycleEndTime` 是本地时区的 `YYYY-MM-DD HH:MM:SS`。
+fn parse_cn_datetime_ms(value: &str) -> Option<i64> {
+    let naive = chrono::NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%d %H:%M:%S").ok()?;
+    chrono::Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|value| value.timestamp_millis())
+}
+
+struct WorkbuddyCredential {
+    access_token: String,
+    uid: String,
+    domain: String,
+}
+
+impl WorkbuddyCredential {
+    /// host 候选：优先凭据里的 domain（形如 www.codebuddy.cn），再退到已知网关。
+    /// 国际站 codebuddy.ai 与国内站分流，逐个尝试（错站会 401，无害）。
+    fn hosts(&self) -> Vec<String> {
+        let mut hosts = Vec::new();
+        let domain = self.domain.trim();
+        if domain.contains("codebuddy") || domain.contains("tencent") {
+            hosts.push(domain.to_owned());
+        }
+        for fallback in [
+            "www.codebuddy.cn",
+            "copilot.tencent.com",
+            "www.codebuddy.ai",
+        ] {
+            if !hosts.iter().any(|host| host == fallback) {
+                hosts.push(fallback.to_owned());
+            }
+        }
+        hosts
+    }
+}
+
+#[derive(Deserialize)]
+struct BuddyAuthFile {
+    account: Option<BuddyAccount>,
+    auth: Option<BuddyAuth>,
+}
+
+#[derive(Deserialize)]
+struct BuddyAccount {
+    uid: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BuddyAuth {
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
+    domain: Option<String>,
+}
+
+/// 明文凭据文件：CodeBuddyExtension 的 auth 目录下 `*.info`（WorkBuddy 桌面版是
+/// `workbuddy-desktop.info`，CodeBuddy 是 `Tencent-Cloud.coding-copilot.info`）。
+/// 取第一个含 accessToken 的文件。
+fn resolve_workbuddy_credential() -> Option<WorkbuddyCredential> {
+    for dir in workbuddy_auth_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("info"))
+            .collect();
+        // workbuddy-desktop.info 优先于 CodeBuddy 的文件（本项目 Agent 名为 workbuddy）。
+        files.sort_by_key(|path| {
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            !name.contains("workbuddy")
+        });
+        for path in files {
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(parsed) =
+                serde_json::from_str::<BuddyAuthFile>(raw.trim_start_matches('\u{feff}'))
+            else {
+                continue;
+            };
+            let auth = parsed.auth?;
+            let token = auth.access_token.filter(|value| !value.trim().is_empty())?;
+            return Some(WorkbuddyCredential {
+                access_token: token,
+                uid: parsed
+                    .account
+                    .and_then(|account| account.uid)
+                    .unwrap_or_default(),
+                domain: auth.domain.unwrap_or_default(),
+            });
+        }
+    }
+    None
+}
+
+fn workbuddy_auth_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    // Windows：%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth
+    if let Some(local) = dirs::data_local_dir() {
+        dirs.push(
+            local
+                .join("CodeBuddyExtension")
+                .join("Data")
+                .join("Public")
+                .join("auth"),
+        );
+    }
+    // macOS：~/Library/Application Support/CodeBuddyExtension/...；Linux：~/.local/share/...
+    if let Some(data) = dirs::data_dir() {
+        dirs.push(
+            data.join("CodeBuddyExtension")
+                .join("Data")
+                .join("Public")
+                .join("auth"),
+        );
+    }
+    dirs
 }
 
 /// ureq 错误 → 面向用户的消息。绝不能把请求头（token）带进错误里。
@@ -791,6 +1307,120 @@ mod tests {
         let json = "{ \"api_key\": \"sk-from-json\" }";
         assert_eq!(extract_scalar(json, "api_key").unwrap(), "sk-from-json");
         assert_eq!(extract_scalar("# api_key = \"x\"", "api_key"), None);
+    }
+
+    #[test]
+    fn qoder_quota_merges_total_and_shared_credits() {
+        let json = serde_json::json!({
+            "data": {
+                "totalQuota": { "quotaSummary": { "used_value": 30, "limit_value": 100, "unit": "credits" } },
+                "sharedQuota": { "quotaSummary": { "usedValue": "10", "limitValue": "100" } },
+                "next_reset_at": 1_800_000_000_i64
+            }
+        });
+        let samples = parse_qoder_quota(&json);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "credits");
+        // (30+10)/(100+100) 已用 20% → 剩余 80%。
+        assert!((samples[0].remaining_percent - 80.0).abs() < 1e-9);
+        // 秒级时间戳升到毫秒。
+        assert_eq!(samples[0].resets_at_ms, Some(1_800_000_000_000));
+    }
+
+    #[test]
+    fn qoder_cookie_input_accepts_headers_curl_and_bare_values() {
+        // 裸值与带前缀的单行。
+        assert_eq!(
+            normalize_qoder_cookie_input("  a=1; b=2  ").as_deref(),
+            Some("a=1; b=2")
+        );
+        assert_eq!(
+            normalize_qoder_cookie_input("Cookie: a=1; b=2").as_deref(),
+            Some("a=1; b=2")
+        );
+        // DevTools「复制请求标头」的整段：挑出 cookie 行，跳过 set-cookie。
+        let headers =
+            "GET /api HTTP/1.1\nHost: qoder.com.cn\nset-cookie: x=9\ncookie: a=1; b=2\nAccept: */*";
+        assert_eq!(
+            normalize_qoder_cookie_input(headers).as_deref(),
+            Some("a=1; b=2")
+        );
+        // cURL 两种写法。
+        assert_eq!(
+            normalize_qoder_cookie_input("curl 'https://qoder.com.cn/api' \\\n  -H 'cookie: a=1; b=2' \\\n  -H 'accept: */*'").as_deref(),
+            Some("a=1; b=2")
+        );
+        assert_eq!(
+            normalize_qoder_cookie_input("curl -b 'a=1; b=2' https://qoder.com.cn").as_deref(),
+            Some("a=1; b=2")
+        );
+        // Windows cmd 格式的 cURL（^ 转义、单行）。
+        assert_eq!(
+            normalize_qoder_cookie_input(
+                r#"curl ^"https://qoder.com.cn/api^" -H ^"accept: */*^" -H ^"cookie: a=1; b=2^" -H ^"user-agent: UA^""#
+            )
+            .as_deref(),
+            Some("a=1; b=2")
+        );
+        // 没有 cookie 头的 cURL：拒绝，不把整条命令当 cookie（实机踩过：
+        // 用户右键复制到了不带 cookie 的缓存请求）。
+        assert!(normalize_qoder_cookie_input(
+            r#"curl ^"https://qoder.com.cn/x^" -H ^"user-agent: Mozilla/5.0 (Win64; x64) AppleWebKit/537.36^""#
+        )
+        .is_none());
+        // 多行但没有 cookie 行：拒绝，不把一坨标头当 cookie。
+        assert!(normalize_qoder_cookie_input("Host: x\nAccept: */*").is_none());
+        assert!(normalize_qoder_cookie_input("   ").is_none());
+    }
+
+    #[test]
+    fn workbuddy_quota_sums_cycle_capacity_across_accounts() {
+        // 形状取自真机响应（www.codebuddy.cn，2026-07 核对）。
+        let json: Value = serde_json::from_str(
+            r#"{"code":0,"msg":"OK","data":{"Response":{"Data":{"TotalCount":2,"Accounts":[
+                {"PackageName":"个人体验版","Status":0,"CapacityUnit":"credits",
+                 "CycleCapacitySize":500,"CycleCapacityRemain":500,"CycleEndTime":"2026-07-31 23:59:59"},
+                {"PackageName":"加油包","Status":0,"CapacityUnit":"credits",
+                 "CycleCapacitySize":4900,"CycleCapacityRemain":4884,"CycleEndTime":"2026-08-15 23:59:59"}
+            ]}}}}"#,
+        )
+        .unwrap();
+        let samples = parse_workbuddy_quota(&json);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].adapter_id, "workbuddy");
+        assert_eq!(samples[0].window_key, "credits");
+        // (500+4884)/(500+4900) = 5384/5400 ≈ 99.7%。
+        assert!((samples[0].remaining_percent - 5384.0 / 5400.0 * 100.0).abs() < 1e-6);
+        // 重置取更近的 CycleEndTime（7-31）。
+        assert_eq!(
+            samples[0].resets_at_ms,
+            parse_cn_datetime_ms("2026-07-31 23:59:59")
+        );
+    }
+
+    #[test]
+    fn workbuddy_quota_without_accounts_yields_nothing() {
+        let empty: Value =
+            serde_json::from_str(r#"{"code":0,"data":{"Response":{"Data":{"Accounts":[]}}}}"#)
+                .unwrap();
+        assert!(parse_workbuddy_quota(&empty).is_empty());
+        // size 全为 0 的套餐不产出窗口，不伪造 100%。
+        let zero: Value = serde_json::from_str(
+            r#"{"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":0,"CycleCapacityRemain":0}]}}}}"#,
+        )
+        .unwrap();
+        assert!(parse_workbuddy_quota(&zero).is_empty());
+    }
+
+    #[test]
+    fn qoder_quota_without_total_summary_yields_nothing() {
+        let json = serde_json::json!({ "data": { "sharedQuota": {} } });
+        assert!(parse_qoder_quota(&json).is_empty());
+        // 负值视为无效，不编造窗口。
+        let bad = serde_json::json!({
+            "totalQuota": { "quotaSummary": { "used_value": -1, "limit_value": 100 } }
+        });
+        assert!(parse_qoder_quota(&bad).is_empty());
     }
 
     #[test]
