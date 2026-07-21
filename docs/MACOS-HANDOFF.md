@@ -67,6 +67,29 @@ aws-lc-rs，`cargo check` 会立刻报出来。
 明文落在那个 `.info` 里，我们自动读、仅在内存中用于一次请求，不入库、不写日志、
 错误信息里不带 token。
 
+#### WorkBuddy 的 token 用量：只有 CLI 有，桌面版没有
+
+adapter 扫的是 **CLI** 的转录 `~/.codebuddy/projects`、`~/.workbuddy/projects`
+下的 JSONL。**桌面版（Electron）不写这些 JSONL**，Windows 真机确认：装了桌面版
+并跑过会话后，两个目录都不存在，用量只落在 `~/.workbuddy/workbuddy.db` 的
+`session_usage` 表里，形如
+
+```
+session_id | used=82275 | size=168000 | credit_json={"<req-id>":3.47, ...}
+```
+
+`size` 恰好是上下文窗口大小，所以 `used` **很可能是当前上下文占用量而非累计
+处理量**——若当累计量记进账本，会漏掉输出 token 与跨轮缓存读，且上下文压缩后
+还会倒退。这就是这张表至今没有接入的原因（见 `workbuddy.rs` 的 `coverage_gaps`，
+它会如实上报"旧版数据库暂不支持读取"）。判定实验：在同一会话里持续追加对话，
+看 `used` 是否突破 `size`——突破则为累计量可接，回落则为上下文占用不可接。
+
+`credit_json` 是本地记录的待结算 Credits（实测与官方配额接口有延迟，接口那边
+可能还显示已用 0），属于计费口径不是 token 口径，不要混进 token 统计。
+
+结论：**mac 上若只装桌面版，WorkBuddy 显示 0 token 是正确行为**，不是 bug；
+配额卡仍应正常显示。要有 token 统计需装 CodeBuddy Code CLI。
+
 ### 2. Antigravity 进程发现
 
 Antigravity 在 Windows 上一共踩了三个坑，其中**两个是 shared、mac 直接受益**，
