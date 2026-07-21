@@ -2286,6 +2286,29 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
   );
 }
 
+// 设置分三类子页：每页 2 张卡，高度相近。Agent 列表会随支持的 Agent 变多而
+// 变高，与短卡混排时会把整排撑出大片空白——分页正是为了让它只影响自己那一页。
+const SETTINGS_TABS = [
+  {
+    id: "display",
+    label: "显示",
+    title: "显示与外观",
+    blurb: "选择小组件与胶囊条展示哪些 Agent、以什么顺序，以及完整视图的明暗与各形态的缩放。",
+  },
+  {
+    id: "sources",
+    label: "数据来源",
+    title: "官方额度来源",
+    blurb: "配置各 Agent 的官方配额读取方式。官方额度、本地解析用量与估算成本是三类不同事实，界面上始终分开呈现。",
+  },
+  {
+    id: "sync",
+    label: "同步与更新",
+    title: "多设备同步与更新",
+    blurb: "多台电脑指向同一个共享文件夹即可互相合并统计；导出只含事件标识、Agent、时间与 token 数，不含对话内容或凭据。",
+  },
+];
+
 function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, glassAlpha, onGlassAlpha, uiScale, onUiScale, stripScale, onStripScale, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
@@ -2327,134 +2350,155 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
     }
   };
 
+  const [tab, setTab] = useState("display");
+  const activeTab = SETTINGS_TABS.find((item) => item.id === tab) || SETTINGS_TABS[0];
+
   return (
     <main className="settings-section" aria-labelledby="settings-title">
       <header className="settings-header">
         <span className="section-kicker">设置</span>
-        <h1 id="settings-title">多设备同步</h1>
-        <p>
-          多台电脑指向同一个共享文件夹（坚果云、OneDrive、Syncthing 均可）即可互相合并统计。
-          导出只含事件标识、Agent、时间与 token 数，不含对话内容或凭据。
-        </p>
+        <h1 id="settings-title">{activeTab.title}</h1>
+        <p>{activeTab.blurb}</p>
       </header>
 
-      {settings?.demo && (
+      <div className="settings-tabs" role="tablist" aria-label="设置分类">
+        {SETTINGS_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={item.id === activeTab.id}
+            className={item.id === activeTab.id ? "is-selected" : ""}
+            onClick={() => setTab(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {settings?.demo && activeTab.id === "sync" && (
         <p className="settings-demo-note">浏览器演示模式：同步配置仅在桌面应用中可用。</p>
       )}
 
       <div className="settings-grid">
-      <div className="settings-card">
-        <label htmlFor="sync-directory">同步文件夹（绝对路径）</label>
-        <div className="settings-directory-row">
-          <input
-            id="sync-directory"
-            type="text"
-            value={directoryInput}
-            placeholder="例如 D:\Nutstore\metrik-sync"
-            spellCheck={false}
-            disabled={busy || settings?.demo}
-            onChange={(event) => setDirectoryInput(event.target.value)}
-          />
-          <button
-            type="button"
-            className="ledger-button ledger-button--primary"
-            disabled={busy || settings?.demo || !directoryInput.trim()}
-            onClick={() => applySync(directoryInput.trim())}
-          >
-            {settings?.enabled ? "更新目录" : "开启同步"}
-          </button>
-          {settings?.enabled && (
-            <button
-              type="button"
-              className="ledger-button ledger-button--secondary"
-              disabled={busy || settings?.demo}
-              onClick={() => applySync(null)}
-            >
-              关闭同步
-            </button>
-          )}
-        </div>
-
-        {feedback && (
-          <p
-            className={`settings-feedback settings-feedback--${feedback.tone}`}
-            role={feedback.tone === "error" ? "alert" : "status"}
-          >
-            {feedback.message}
-          </p>
+        {activeTab.id === "display" && (
+          <>
+            <AgentsDisplayCard
+              widgetAgents={widgetAgents}
+              onToggleWidgetAgent={onToggleWidgetAgent}
+              onMoveWidgetAgent={onMoveWidgetAgent}
+              stripAgents={stripAgents}
+              onToggleStripAgent={onToggleStripAgent}
+              onMoveStripAgent={onMoveStripAgent}
+            />
+            <AppearanceCard
+              theme={theme}
+              onThemeChange={onThemeChange}
+              glassAlpha={glassAlpha}
+              onGlassAlpha={onGlassAlpha}
+              uiScale={uiScale}
+              onUiScale={onUiScale}
+              stripScale={stripScale}
+              onStripScale={onStripScale}
+            />
+          </>
         )}
 
-        {settings && !settings.demo && (
-          <dl className="settings-status">
-            <div>
-              <dt>本机设备</dt>
-              <dd>{settings.deviceLabel} · {settings.deviceId}</dd>
-            </div>
-            <div>
-              <dt>上次同步</dt>
-              <dd>{settings.enabled ? formatSyncTime(settings.lastExportMs) : "同步未开启"}</dd>
-            </div>
-            {settings.lastError && (
-              <div>
-                <dt>同步告警</dt>
-                <dd className="settings-error-text">{settings.lastError}</dd>
+        {activeTab.id === "sources" && (
+          <>
+            <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
+            <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
+          </>
+        )}
+
+        {activeTab.id === "sync" && (
+          <>
+            <div className="settings-card">
+              <label htmlFor="sync-directory">同步文件夹（绝对路径）</label>
+              <div className="settings-directory-row">
+                <input
+                  id="sync-directory"
+                  type="text"
+                  value={directoryInput}
+                  placeholder="例如 D:\Nutstore\metrik-sync"
+                  spellCheck={false}
+                  disabled={busy || settings?.demo}
+                  onChange={(event) => setDirectoryInput(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="ledger-button ledger-button--primary"
+                  disabled={busy || settings?.demo || !directoryInput.trim()}
+                  onClick={() => applySync(directoryInput.trim())}
+                >
+                  {settings?.enabled ? "更新目录" : "开启同步"}
+                </button>
+                {settings?.enabled && (
+                  <button
+                    type="button"
+                    className="ledger-button ledger-button--secondary"
+                    disabled={busy || settings?.demo}
+                    onClick={() => applySync(null)}
+                  >
+                    关闭同步
+                  </button>
+                )}
               </div>
-            )}
-          </dl>
+
+              {feedback && (
+                <p
+                  className={`settings-feedback settings-feedback--${feedback.tone}`}
+                  role={feedback.tone === "error" ? "alert" : "status"}
+                >
+                  {feedback.message}
+                </p>
+              )}
+
+              {settings && !settings.demo && (
+                <dl className="settings-status">
+                  <div>
+                    <dt>本机设备</dt>
+                    <dd>{settings.deviceLabel} · {settings.deviceId}</dd>
+                  </div>
+                  <div>
+                    <dt>上次同步</dt>
+                    <dd>{settings.enabled ? formatSyncTime(settings.lastExportMs) : "同步未开启"}</dd>
+                  </div>
+                  {settings.lastError && (
+                    <div>
+                      <dt>同步告警</dt>
+                      <dd className="settings-error-text">{settings.lastError}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+
+              {settings?.enabled && (
+                <div className="settings-subsection">
+                  <h3>已发现的设备</h3>
+                  {settings.devices.length === 0 ? (
+                    <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
+                  ) : (
+                    <ul className="settings-device-list">
+                      {settings.devices.map((device) => (
+                        <li key={device.id}>
+                          <strong>{device.label}</strong>
+                          <span>{device.id}</span>
+                          <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+            <StartupCard
+              autoUpdateCheck={autoUpdateCheck}
+              onAutoUpdateCheck={onAutoUpdateCheck}
+              availableUpdate={availableUpdate}
+            />
+          </>
         )}
-
-        {settings?.enabled && (
-          <div className="settings-subsection">
-            <h3>已发现的设备</h3>
-            {settings.devices.length === 0 ? (
-              <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
-            ) : (
-              <ul className="settings-device-list">
-                {settings.devices.map((device) => (
-                  <li key={device.id}>
-                    <strong>{device.label}</strong>
-                    <span>{device.id}</span>
-                    <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </div>
-
-      <AgentsDisplayCard
-        widgetAgents={widgetAgents}
-        onToggleWidgetAgent={onToggleWidgetAgent}
-        onMoveWidgetAgent={onMoveWidgetAgent}
-        stripAgents={stripAgents}
-        onToggleStripAgent={onToggleStripAgent}
-        onMoveStripAgent={onMoveStripAgent}
-      />
-
-      <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
-      </div>
-
-      {/* 第二排：外观/启动等短卡自成一排，不与上面的大卡混排拉高。 */}
-      <div className="settings-grid">
-      <AppearanceCard
-        theme={theme}
-        onThemeChange={onThemeChange}
-        glassAlpha={glassAlpha}
-        onGlassAlpha={onGlassAlpha}
-        uiScale={uiScale}
-        onUiScale={onUiScale}
-        stripScale={stripScale}
-        onStripScale={onStripScale}
-      />
-
-      <StartupCard
-        autoUpdateCheck={autoUpdateCheck}
-        onAutoUpdateCheck={onAutoUpdateCheck}
-        availableUpdate={availableUpdate}
-      />
-
-      <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
       </div>
     </main>
   );
