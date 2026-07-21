@@ -67,6 +67,45 @@ aws-lc-rs，`cargo check` 会立刻报出来。
 明文落在那个 `.info` 里，我们自动读、仅在内存中用于一次请求，不入库、不写日志、
 错误信息里不带 token。
 
+#### WorkBuddy 的转录目录被桌面版改到了 `~/.workbuddy`
+
+桌面版（Electron）内置 CLI，启动时把 CLI 的 home 重定向：
+
+```js
+process.env.CODEBUDDY_CONFIG_DIR = getWorkbuddyConfigDir();  // → ~/.workbuddy
+// CLI 侧：读 CODEBUDDY_CONFIG_DIR，为空才回退 ~/.codebuddy
+```
+
+所以转录落在 **`~/.workbuddy/projects/<项目>/<sessionId>.jsonl`**，官方 CLI 文档
+（`cli/dist/web-ui/docs/cn/cli/daemon.md`）也确认 transcript 是"始终"写的。
+adapter 两个根都扫，mac 上应当同样成立——**除非 mac 版把 configDir 指到了
+`~/Library/...`**，这是 mac 上唯一需要复核的点：跑一次会话后确认
+`~/.workbuddy/projects/` 下出现 JSONL 即可。
+
+`workbuddy.db` 的 `session_usage` 表**不是用量来源**，别去接：其 `size` 是模型
+上下文窗口、`used` 是当前上下文占用（桌面版源码里该组件叫 `ContextUsageDisplay`，
+设计文档 `acp-session-usage-context-ring.md`）。`credit_json` 是本地待结算
+Credits，与官方配额接口有延迟，属计费口径不是 token 口径。两者都不能混进统计。
+
+#### token 口径：`input_tokens` 含缓存（与 Anthropic 相反）
+
+真机转录实测（16/16 行成立）：
+
+```
+total_tokens == input_tokens + output_tokens
+cache_read_input_tokens ⊂ input_tokens
+```
+
+即**所有** input 别名（蛇形 `input_tokens`、驼峰 `inputTokens`、`prompt_tokens`）
+都是含缓存的 prompt 总量，未缓存部分 = input − cache_read。这与 Anthropic 同名
+字段的语义相反，早先按 Anthropic 风格处理会把缓存读重复计一遍。
+
+另一条：`function_call` 行带 usage 但 **status 恒为 null**（16 条带 usage 的行里
+13 条是 function_call），只认 `status == "completed"` 会漏掉 81% 的用量。status
+只对 `message` 有约束（生成中先落一行、完成后重写）。
+
+两条都有真机形状的测试锁住，改动前先看测试。
+
 ### 2. Antigravity 进程发现
 
 Antigravity 在 Windows 上一共踩了三个坑，其中**两个是 shared、mac 直接受益**，

@@ -118,18 +118,25 @@ impl BuddyUsage {
             self.prompt_cache_hit_tokens,
             self.cached_tokens,
         ]);
-        // 未缓存输入按别名语义分别处理（真实夹具核实 64700+76032=140732，
-        // 驼峰 inputTokens 确为含缓存总量）：
-        // - cachedMissTokens：本就是未缓存量，直接用；
-        // - 蛇形 input_tokens：Anthropic 风格，不含缓存，原样用；
-        // - 驼峰 inputTokens / OpenAI 风格 prompt_tokens：含缓存总量，扣缓存读。
+        // 未缓存输入：
+        // - `cachedMissTokens` 本就是未缓存量，存在时直接用；
+        // - 其余别名（蛇形 input_tokens、驼峰 inputTokens、prompt_tokens）**都是
+        //   含缓存的 prompt 总量**，要扣掉 cache_read 才是未缓存部分。
+        //
+        // 蛇形这条与 Anthropic 的同名字段语义相反，是真机实测定的：CodeBuddy CLI
+        // 转录里 `total_tokens == input_tokens + output_tokens` 恒成立（16/16 行），
+        // 而 cache_read_input_tokens 不进这个等式——它是 input_tokens 的子集。
+        // 早先按 Anthropic 风格当作"不含缓存"会把缓存读重复计一遍。
         let input_uncached = if let Some(miss) = self.cached_miss_tokens.or(self.cache_miss_tokens)
         {
             miss.max(0)
-        } else if let Some(exclusive) = self.input_tokens {
-            exclusive.max(0)
         } else {
-            (first_positive(&[self.input_tokens_camel, self.prompt_tokens]) - cache_read).max(0)
+            (first_positive(&[
+                self.input_tokens,
+                self.input_tokens_camel,
+                self.prompt_tokens,
+            ]) - cache_read)
+                .max(0)
         };
         let output = first_positive(&[
             self.output_tokens,
@@ -231,13 +238,21 @@ impl AgentAdapter for WorkbuddyAdapter {
                 }
                 continue;
             };
-            // 只计已完成的 assistant 回复与工具调用；进行中的行会在完成后重写。
+            // assistant 回复与工具调用都带 usage，都要计。
+            //
+            // status 只对 `message` 有约束：它在生成中会先落一行、完成后重写，
+            // 未完成的不计。`function_call` 的 status 恒为 null（真机实测：16 条
+            // 带 usage 的行里 13 条是 function_call、status 全空），对它要求
+            // "completed" 会漏掉 81% 的用量。
             let countable = match record.record_type.as_deref() {
-                Some("message") => record.role.as_deref() == Some("assistant"),
+                Some("message") => {
+                    record.role.as_deref() == Some("assistant")
+                        && record.status.as_deref() == Some("completed")
+                }
                 Some("function_call") => true,
                 _ => false,
             };
-            if !countable || record.status.as_deref() != Some("completed") {
+            if !countable {
                 continue;
             }
             let Some(timestamp) = record.timestamp.filter(|value| *value > 0) else {
@@ -372,11 +387,38 @@ mod tests {
         let event = &parsed.source.events[0];
         assert_eq!(event.event_key, "message:msg-1");
         assert_eq!(event.model.as_deref(), Some("glm-5.2"));
-        // 蛇形 input_tokens 是 Anthropic 风格：不含缓存，原样计入。
-        assert_eq!(event.tokens.input_uncached, 24486);
+        // 蛇形 input_tokens 同样含缓存：未缓存部分 = input - cache_read。
+        assert_eq!(event.tokens.input_uncached, 24486 - 14720);
         assert_eq!(event.tokens.cache_read, 14720);
         assert_eq!(event.tokens.output, 3);
-        assert_eq!(event.tokens.processed(), 24486 + 14720 + 3);
+        // processed 与来源的 total_tokens 口径一致（input 已含 cache_read）。
+        assert_eq!(event.tokens.processed(), 24486 + 3);
+    }
+
+    /// 真机转录行（本机 WorkBuddy 桌面版实测，2026-07-21）：
+    /// `total_tokens == input_tokens + output_tokens` 恒成立，cache_read 是
+    /// input_tokens 的子集；function_call 带 usage 但 status 为空。
+    #[test]
+    fn real_desktop_transcript_rows_are_counted_with_total_matching() {
+        let lines = vec![
+            r#"{"id":"a-1","timestamp":1784603600000,"type":"message","role":"assistant","status":"completed","sessionId":"d180683e","providerData":{"messageId":"65a92f2e6275"},"message":{"usage":{"input_tokens":32514,"output_tokens":855,"total_tokens":33369,"cache_read_input_tokens":19008}}}"#.to_string(),
+            // function_call 的 status 是 null——必须照计，否则漏掉大部分用量。
+            r#"{"id":"f-1","timestamp":1784603601000,"type":"function_call","sessionId":"d180683e","providerData":{"messageId":"4a0fe9346f49"},"message":{"usage":{"input_tokens":33785,"output_tokens":372,"total_tokens":34157,"cache_read_input_tokens":32512}}}"#.to_string(),
+        ];
+        let parsed = parse_lines("real-desktop", &lines);
+        assert_eq!(parsed.source.events.len(), 2, "function_call 也要计入");
+        for (event, (input, output, cache)) in parsed
+            .source
+            .events
+            .iter()
+            .zip([(32514, 855, 19008), (33785, 372, 32512)])
+        {
+            assert_eq!(event.tokens.cache_read, cache);
+            assert_eq!(event.tokens.input_uncached, input - cache);
+            assert_eq!(event.tokens.output, output);
+            // 与来源自报的 total_tokens 对齐，不重复计缓存读。
+            assert_eq!(event.tokens.processed(), input + output);
+        }
     }
 
     /// 驼峰 inputTokens 含缓存但缺 cachedMissTokens 时：扣缓存读，不重复计入。
