@@ -4,6 +4,7 @@ version = "0.10.0"
 description = "Local-first AI agent usage monitor"
 authors = ["Metrik contributors"]
 edition = "2021"
+license = "AGPL-3.0-or-later"
 
 [lib]
 name = "metrik_lib"
