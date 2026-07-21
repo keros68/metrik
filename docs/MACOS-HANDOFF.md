@@ -67,28 +67,44 @@ aws-lc-rs，`cargo check` 会立刻报出来。
 明文落在那个 `.info` 里，我们自动读、仅在内存中用于一次请求，不入库、不写日志、
 错误信息里不带 token。
 
-#### WorkBuddy 的 token 用量：只有 CLI 有，桌面版没有
+#### WorkBuddy 的转录目录被桌面版改到了 `~/.workbuddy`
 
-adapter 扫的是 **CLI** 的转录 `~/.codebuddy/projects`、`~/.workbuddy/projects`
-下的 JSONL。**桌面版（Electron）不写这些 JSONL**，Windows 真机确认：装了桌面版
-并跑过会话后，两个目录都不存在，用量只落在 `~/.workbuddy/workbuddy.db` 的
-`session_usage` 表里，形如
+桌面版（Electron）内置 CLI，启动时把 CLI 的 home 重定向：
 
-```
-session_id | used=82275 | size=168000 | credit_json={"<req-id>":3.47, ...}
+```js
+process.env.CODEBUDDY_CONFIG_DIR = getWorkbuddyConfigDir();  // → ~/.workbuddy
+// CLI 侧：读 CODEBUDDY_CONFIG_DIR，为空才回退 ~/.codebuddy
 ```
 
-`size` 恰好是上下文窗口大小，所以 `used` **很可能是当前上下文占用量而非累计
-处理量**——若当累计量记进账本，会漏掉输出 token 与跨轮缓存读，且上下文压缩后
-还会倒退。这就是这张表至今没有接入的原因（见 `workbuddy.rs` 的 `coverage_gaps`，
-它会如实上报"旧版数据库暂不支持读取"）。判定实验：在同一会话里持续追加对话，
-看 `used` 是否突破 `size`——突破则为累计量可接，回落则为上下文占用不可接。
+所以转录落在 **`~/.workbuddy/projects/<项目>/<sessionId>.jsonl`**，官方 CLI 文档
+（`cli/dist/web-ui/docs/cn/cli/daemon.md`）也确认 transcript 是"始终"写的。
+adapter 两个根都扫，mac 上应当同样成立——**除非 mac 版把 configDir 指到了
+`~/Library/...`**，这是 mac 上唯一需要复核的点：跑一次会话后确认
+`~/.workbuddy/projects/` 下出现 JSONL 即可。
 
-`credit_json` 是本地记录的待结算 Credits（实测与官方配额接口有延迟，接口那边
-可能还显示已用 0），属于计费口径不是 token 口径，不要混进 token 统计。
+`workbuddy.db` 的 `session_usage` 表**不是用量来源**，别去接：其 `size` 是模型
+上下文窗口、`used` 是当前上下文占用（桌面版源码里该组件叫 `ContextUsageDisplay`，
+设计文档 `acp-session-usage-context-ring.md`）。`credit_json` 是本地待结算
+Credits，与官方配额接口有延迟，属计费口径不是 token 口径。两者都不能混进统计。
 
-结论：**mac 上若只装桌面版，WorkBuddy 显示 0 token 是正确行为**，不是 bug；
-配额卡仍应正常显示。要有 token 统计需装 CodeBuddy Code CLI。
+#### token 口径：`input_tokens` 含缓存（与 Anthropic 相反）
+
+真机转录实测（16/16 行成立）：
+
+```
+total_tokens == input_tokens + output_tokens
+cache_read_input_tokens ⊂ input_tokens
+```
+
+即**所有** input 别名（蛇形 `input_tokens`、驼峰 `inputTokens`、`prompt_tokens`）
+都是含缓存的 prompt 总量，未缓存部分 = input − cache_read。这与 Anthropic 同名
+字段的语义相反，早先按 Anthropic 风格处理会把缓存读重复计一遍。
+
+另一条：`function_call` 行带 usage 但 **status 恒为 null**（16 条带 usage 的行里
+13 条是 function_call），只认 `status == "completed"` 会漏掉 81% 的用量。status
+只对 `message` 有约束（生成中先落一行、完成后重写）。
+
+两条都有真机形状的测试锁住，改动前先看测试。
 
 ### 2. Antigravity 进程发现
 
