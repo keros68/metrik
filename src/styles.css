@@ -1786,7 +1786,8 @@ html:has(.strip-shell) #root {
   font-weight: 400;
   font-variant-numeric: lining-nums tabular-nums;
   letter-spacing: -0.03em;
-  line-height: 1;
+  /* 1.0 会把 $ 上下探出的竖线裁掉（Newsreader 的 $ 高于数字）。 */
+  line-height: 1.15;
 }
 
 .cost-total span { color: #74767a; font-size: 11px; }
