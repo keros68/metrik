@@ -46,7 +46,7 @@ Windows 上是 320 × 320 的桌面小组件，可再折叠成一根横向或竖
 | Kimi | `~/.kimi-code` 与 `~/.kimi` 的 `wire.jsonl` | — |
 | Antigravity | 本机 language server 实时 RPC（IDE 需运行） | ✅ RPC 官方配额 |
 
-Gemini CLI 明确不在支持范围。Cursor 见[路线](#路线)。
+Gemini CLI 明确不在支持范围。Cursor 依赖云端 API 和本地凭据提取，要先设计出显式的凭据授权机制才会考虑。
 
 ## 功能
 
@@ -97,21 +97,13 @@ cd src-tauri && cargo test && cargo clippy -- -D warnings && cargo fmt --check
 cargo test live_snapshot_smoke_test -- --ignored --nocapture  # 读真实本机日志的烟测
 ```
 
-## 验收边界
+## 已知限制
 
-- **Windows 10/11 x64** 与 **macOS**（Apple Silicon 实机）均已验收。macOS 上是菜单栏应用：面板贴着菜单栏图标弹出、不抢当前窗口焦点、点击别处收起，完整视图是带原生红绿灯的独立窗口——这四项已在真机确认；macOS 的开机启动尚未逐项核过。Linux 共用代码但无产物。
-- **Kimi 与 Antigravity 尚未实机验收**：格式经官方协议与既有工具交叉核实、有测试夹具覆盖，但作者本机未安装。装了的用户请核对数字，发现偏差欢迎提 issue。Antigravity 需要 IDE 正在运行才能读到用量（它没有本地日志）。
-- 安装包**没有代码签名证书**，首次运行会被系统拦一次。Release 页面附有 SHA256 可核对文件完整性。（应用内更新用的 minisign 签名是另一回事，它只保证更新包没被掉包。）
-- Windows 上目标机未装 WebView2 时，默认安装器需要联网获取运行时。
-- **v0.1.0 无法自动更新**：更新器是 v0.2.0 才加的，装了 v0.1.0 需手动下载一次新版。
-- 持续增长的大型日志仍需整文件重扫，首次索引会占用一段 CPU 与磁盘。索引不阻塞界面，进度会显式显示，未覆盖完整历史时数字会标注为不完整。
-
-## 路线
-
-1. 真正的追加游标（避免大日志整文件重扫）
-2. Linux 构建
-3. 端到端加密的中继同步（当前为共享文件夹方案）
-4. **Cursor**：依赖云端 API + 本地凭据提取，需要先设计显式的凭据授权机制。
+- 安装包未做代码签名，首次运行需要在系统提示里手动放行。Release 页附 SHA256 可校验文件完整性。
+- Windows 上没装 WebView2 的话，安装器需要联网获取运行时。
+- 只提供 Windows 和 macOS 安装包，Linux 需自行构建。
+- Kimi 与 Antigravity 的解析未经作者实机核对（本机没装这两个），数字有偏差欢迎提 issue。Antigravity 另外要求 IDE 正在运行才有数据。
+- 首次索引大日志会占一段 CPU 和磁盘。期间界面照常可用、进度可见，未覆盖完整历史的数字会标注出来。
 
 架构与去重逻辑见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，视觉对照见 [design-qa.md](design-qa.md)，验收证据见 [ACCEPTANCE.md](ACCEPTANCE.md)。
 
