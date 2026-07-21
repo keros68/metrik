@@ -83,6 +83,45 @@ button:focus-visible {
     inset 0 1px rgba(255, 255, 255, 0.88);
 }
 
+/* 主题快捷键：按钮本身混在按钮组里，弹出菜单挂在它下方。 */
+.theme-quick {
+  position: relative;
+  display: flex;
+}
+
+.theme-quick-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 128px;
+  padding: 4px;
+  background: rgba(252, 252, 251, 0.98);
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(31, 33, 36, 0.08),
+    0 12px 30px rgba(31, 33, 36, 0.14);
+}
+
+.theme-quick-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  color: #2b2d31;
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.theme-quick-menu button:hover { background: rgba(31, 33, 36, 0.06); }
+.theme-quick-menu button.is-selected { color: var(--blue); font-weight: 560; }
+
 .window-action {
   display: grid;
   width: 40px;
@@ -1406,9 +1445,9 @@ html:has(.strip-shell) #root {
   /* 与窗口按钮组垂直居中对齐：按钮组 top 8 + 总高 44（40 按钮 + 2×2 padding），
      中线 30；本按钮高 32 → top = 30 - 16 = 14。 */
   top: 14px;
-  /* 贴在窗口按钮组左侧：按钮组 right 10 + padding 4 + 5 个 40px 按钮 = 右缘 214，
+  /* 贴在窗口按钮组左侧：按钮组 right 10 + padding 4 + 6 个 40px 按钮 = 右缘 254，
      再留 16px 间距。按钮增减时这里要跟着改。 */
-  right: 230px;
+  right: 270px;
   display: grid;
   width: 32px;
   height: 32px;
@@ -3550,6 +3589,16 @@ html:has(.strip-shell) #root {
   background: rgba(30, 32, 36, 0.9);
 }
 :root[data-theme="dark"] .expanded-refresh:disabled:hover { color: var(--d-muted); }
+:root[data-theme="dark"] .theme-quick-menu {
+  background: rgba(32, 34, 39, 0.98);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 12px 30px rgba(0, 0, 0, 0.5);
+}
+:root[data-theme="dark"] .theme-quick-menu button { color: var(--d-ink-2); }
+:root[data-theme="dark"] .theme-quick-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .theme-quick-menu button.is-selected { color: var(--d-accent, #7fabef); }
+
 :root[data-theme="dark"] .window-actions--expanded {
   background: rgba(30, 32, 36, 0.72);
   box-shadow:
