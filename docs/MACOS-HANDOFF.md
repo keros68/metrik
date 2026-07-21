@@ -191,8 +191,15 @@ Antigravity 在 Windows 上一共踩了三个坑，其中**两个是 shared、ma
 
 ## 六、版本号
 
-v0.9.0 已发布（draft 里双平台产物齐全、`latest.json` 七个平台键签名齐全）。
-版本号是双机共享的全局资源，发版串行——mac 侧做完验收如果需要发 v0.9.1，
-按 `AGENTS.md` 里 zcode 新补的那两条来：main 是分支保护的，必须走
-`release/vX.Y.Z` PR + 同会话推 tag；发布前确认**同一 tag 只有一个 draft**
-（Release workflow 的两个平台 job 会竞态创建出两个各带一半产物的 draft）。
+**v0.10.0 已构建完成**（draft 待发布，双平台产物齐全、`latest.json` 七个平台键
+签名齐全）。它包含本文档描述的全部改动，外加 macOS 的 `ps -axww` 修复。
+
+版本号是双机共享的全局资源，发版串行。mac 侧要发下一个号时，按 `AGENTS.md`
+的发版协议走，三条最容易踩的：
+
+1. main 是分支保护的，必须走 `release/vX.Y.Z` PR + **同会话推 tag**（tag 才是占号的锁）；
+2. **合并 release PR 用 merge commit，不要 squash**——squash 会让 tag 脱离 main 历史，
+   之后每个 PR 的 `version-guard` 都会失败（v0.10.0 上踩过，靠移动 tag 修复：
+   squash 后的树完全相同，所以移 tag 是对的，不必烧掉版本号）；
+3. 发布前确认**同一 tag 只有一个 draft**（Release workflow 的两个平台 job 会竞态
+   创建出两个各带一半产物的 draft），并核对 `latest.json` 七个平台键齐全。
