@@ -18,7 +18,16 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0, antigravity: 0, workbuddy: 0 },
+    tokens: {
+      codex: 0,
+      claude: 0,
+      zcode: 0,
+      opencode: 0,
+      kimi: 0,
+      antigravity: 0,
+      workbuddy: 0,
+      grok: 0,
+    },
   }));
 }
 
@@ -37,6 +46,7 @@ function demoSeries(period) {
         kimi: Math.round(total * 0.03),
         antigravity: Math.round(total * 0.025),
         workbuddy: Math.round(total * 0.02),
+        grok: Math.round(total * 0.035),
       },
     }));
   }
@@ -54,6 +64,7 @@ function demoSeries(period) {
         kimi: Math.round(38_200 * config.factor * (0.85 + (index % 4) / 14) * weekend / config.points),
         antigravity: Math.round(31_500 * config.factor * (0.82 + (index % 5) / 15) * weekend / config.points),
         workbuddy: Math.round(24_800 * config.factor * (0.8 + (index % 3) / 13) * weekend / config.points),
+        grok: Math.round(44_200 * config.factor * (0.88 + (index % 4) / 12) * weekend / config.points),
       },
     };
   });
@@ -95,8 +106,16 @@ function demoSnapshot(period = "today") {
   const kimiTokens = Math.round(38_200 * scale);
   const antigravityTokens = Math.round(31_500 * scale);
   const workbuddyTokens = Math.round(24_800 * scale);
+  const grokTokens = Math.round(44_200 * scale);
   const totalTokens =
-    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens;
+    codexTokens +
+    claudeTokens +
+    zcodeTokens +
+    opencodeTokens +
+    kimiTokens +
+    antigravityTokens +
+    workbuddyTokens +
+    grokTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -148,6 +167,10 @@ function demoSnapshot(period = "today") {
         agent: "qoder",
         windows: [{ key: "credits", label: "Credits", view: demoQuotaView(64, 12_960) }],
       },
+      {
+        agent: "grok",
+        windows: [{ key: "seven_day", label: "每周", view: demoQuotaView(85, 1_440) }],
+      },
     ],
     agents: [
       demoAgentSummary("codex", codexTokens, totalTokens),
@@ -157,13 +180,20 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("kimi", kimiTokens, totalTokens),
       demoAgentSummary("antigravity", antigravityTokens, totalTokens),
       demoAgentSummary("workbuddy", workbuddyTokens, totalTokens),
+      demoAgentSummary("grok", grokTokens, totalTokens),
     ],
     cost: {
       available: true,
       // 演示值按 gpt-5.2 / claude 价目的量级粗算。
       totalUsd: 5.62 * scale,
-      // ZCode / OpenCode / Kimi / Antigravity / WorkBuddy 未计价：演示数据也如实反映这一点。
-      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens,
+      // ZCode / OpenCode / Kimi / Antigravity / WorkBuddy / Grok 未计价：演示数据也如实反映这一点。
+      unpricedTokens:
+        zcodeTokens +
+        opencodeTokens +
+        kimiTokens +
+        antigravityTokens +
+        workbuddyTokens +
+        grokTokens,
       pricingAsOf: "2026-07-13",
       byAgent: [
         { agent: "codex", usd: 2.31 * scale, unpricedTokens: 0 },
@@ -173,6 +203,7 @@ function demoSnapshot(period = "today") {
         { agent: "kimi", usd: 0, unpricedTokens: kimiTokens },
         { agent: "antigravity", usd: 0, unpricedTokens: antigravityTokens },
         { agent: "workbuddy", usd: 0, unpricedTokens: workbuddyTokens },
+        { agent: "grok", usd: 0, unpricedTokens: grokTokens },
       ],
     },
     models: [
@@ -185,6 +216,7 @@ function demoSnapshot(period = "today") {
       { model: "kimi-for-coding", agent: "kimi", tokens: kimiTokens, share: (kimiTokens / totalTokens) * 100 },
       { model: "gemini-3.1-pro", agent: "antigravity", tokens: antigravityTokens, share: (antigravityTokens / totalTokens) * 100 },
       { model: "glm-5.2", agent: "workbuddy", tokens: workbuddyTokens, share: (workbuddyTokens / totalTokens) * 100 },
+      { model: "grok-4.5-build", agent: "grok", tokens: grokTokens, share: (grokTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
@@ -197,6 +229,8 @@ function demoSnapshot(period = "today") {
       { id: "workbuddy-local", kind: "local", label: "WorkBuddy 本地 Token", detail: "读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "qoder-quota", kind: "official", label: "Qoder 官方 Credits", detail: "覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。", quality: "official", qualityLabel: "官方" },
       { id: "kimi-quota", kind: "official", label: "Kimi 官方配额", detail: "合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。", quality: "official", qualityLabel: "官方" },
+      { id: "grok-local", kind: "local", label: "Grok Build 本地 Token", detail: "读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。", quality: "exact", qualityLabel: "精确解析" },
+      { id: "grok-quota", kind: "official", label: "Grok Build 官方配额", detail: "读取 CLI 统一日志中的 credits 快照。", quality: "official", qualityLabel: "官方" },
     ],
     indexing: { pending: 0 },
   };

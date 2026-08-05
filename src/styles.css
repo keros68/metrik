@@ -2667,6 +2667,7 @@ html:has(.strip-shell--glass-ink-light) #root {
 .agent-icon--antigravity,
 .agent-icon--workbuddy,
 .agent-icon--qoder,
+.agent-icon--grok,
 .agent-icon--custom { color: inherit; }
 
 .agent-monogram {

@@ -45,6 +45,7 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 | Antigravity | IDE 语言服务 RPC | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | ✅ 官方 Credits |
 | Qoder | — | ✅ 官方 Credits |
+| Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 周 Credits（CLI 日志快照） |
 
 暂不支持 Gemini CLI；Cursor 待设计独立的凭据授权机制后再评估。
 
