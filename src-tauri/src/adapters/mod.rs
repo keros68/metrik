@@ -1,6 +1,7 @@
 mod antigravity;
 mod claude;
 mod codex;
+mod grok;
 mod kimi;
 mod opencode;
 mod workbuddy;
@@ -9,10 +10,14 @@ mod zcode;
 pub use antigravity::AntigravityAdapter;
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use grok::GrokAdapter;
 pub use kimi::KimiAdapter;
 pub use opencode::OpencodeAdapter;
 pub use workbuddy::WorkbuddyAdapter;
 pub use zcode::ZcodeAdapter;
+
+// 配额快照从日志读取，供 quota 注册表调用。
+pub use grok::{fetch_grok_quota_snapshot, grok_home_exists};
 
 use crate::domain::{stable_hash, ParsedSource};
 use anyhow::Result;

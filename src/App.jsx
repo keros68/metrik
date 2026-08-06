@@ -35,6 +35,7 @@ import {
 import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import grokAppIcon from "./assets/grok-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
 import opencodeAppIcon from "./assets/opencode-app-icon.png";
 import qoderAppIcon from "./assets/qoder-app-icon.png";
@@ -179,6 +180,14 @@ const AGENT_META = {
     accent: "#3a7ca5",
     iconSrc: qoderAppIcon,
     iconClass: "agent-icon--qoder",
+  },
+  grok: {
+    // Grok Build CLI（xAI）；本地 updates.jsonl + 日志 credits 快照。
+    label: "Grok",
+    // 近黑灰：与其它品牌色拉开，贴近 Grok 深色标识。
+    accent: "#1f2937",
+    iconSrc: grokAppIcon,
+    iconClass: "agent-icon--grok",
   },
   custom: {
     // 用户自己声明的 Claude 兼容 JSONL 目录，合并成一条。没有品牌图标，
@@ -3871,6 +3880,7 @@ const CHART_LINE_COLORS = {
   opencode: "#4aa392",
   kimi: "#c4719f",
   antigravity: "#d1a34e",
+  grok: "#4b5563",
 };
 
 function chartColor(id) {

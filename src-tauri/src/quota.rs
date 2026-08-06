@@ -13,6 +13,7 @@
 //! ——来源里消失的窗口（如套餐变更后没有 5 小时窗）不得滞留冒充当前额度；
 //! 拿不到就保留旧行（会随时效在展示层变陈旧），绝不写零值或估算。
 
+use crate::adapters;
 use crate::app_server;
 use crate::claude_hook::ClaudeHook;
 use crate::claude_oauth::{self, ClaudeOauth};
@@ -118,7 +119,7 @@ pub type QuotaCache = Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>;
 
 pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
     let mut providers: Vec<Box<dyn QuotaProvider>> =
-        vec![Box::new(CodexQuota), Box::new(ClaudeQuota)];
+        vec![Box::new(CodexQuota), Box::new(ClaudeQuota), Box::new(GrokQuota)];
     for (adapter_id, fetch) in [
         (
             "zcode",
@@ -132,6 +133,29 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         providers.push(Box::new(HttpQuota { adapter_id, fetch }));
     }
     providers
+}
+
+/// Grok Build：本地统一日志里的 credits 快照（非网络 live）。
+/// 日志由 Grok CLI 在会话中自行写入；Metrik 只读尾部，不碰 OAuth。
+struct GrokQuota;
+
+impl QuotaProvider for GrokQuota {
+    fn adapter_id(&self) -> &'static str {
+        "grok"
+    }
+
+    fn policy(&self) -> QuotaPolicy {
+        // 本地文件读取便宜；日志可能数分钟才刷新一次，fresh 不必太短。
+        QuotaPolicy::new(120, 300, 2)
+    }
+
+    fn is_available(&self, _env: &ProviderEnv) -> bool {
+        adapters::grok_home_exists()
+    }
+
+    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
+        adapters::fetch_grok_quota_snapshot(timeout)
+    }
 }
 
 /// 取数并落库。engine 只调这一个。
