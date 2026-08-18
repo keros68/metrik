@@ -1357,6 +1357,32 @@ html:has(.strip-shell) #root {
   border-radius: 6px;
 }
 
+/* Linux 置顶后整个悬浮形态是纯展示层。inert 负责键盘/辅助技术语义，这条再明确
+   禁掉全部控件命中；窗口自身仍保留边界指针事件，以便立即隐藏或淡出。 */
+.widget-shell[data-pinned="true"] *,
+.strip-shell[data-pinned="true"] * {
+  pointer-events: none !important;
+}
+
+.widget-shell[data-pinned="true"],
+.strip-shell[data-pinned="true"] {
+  pointer-events: auto;
+}
+
+/* Wayland/网页回落改变整个 renderer 的 opacity，而不是某个 shell 的 :hover。
+   X11 主路径由 QueryPointer 直接控制 GTK 顶层 opacity，不会命中本规则；
+   回落同样不设 transition，命中后的下一帧就完成切换。 */
+html[data-pinned-hover-active="true"] body {
+  opacity: var(--pinned-hover-target-opacity, 0) !important;
+  transition: none !important;
+}
+
+/* Wayland 不允许客户端读取全局指针位置。本地回落不能把输入面完全抹掉，
+   0.1% 肉眼等同隐藏，但仍让 WebKitGTK 有机会收到 pointerout 并恢复。 */
+html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinned-hover-active="true"] body {
+  opacity: 0.001 !important;
+}
+
 /* macOS：条带同样使用跟随系统的 menu vibrancy；原生材质拿不到时走
    上面的近实心配方，不套这条。 */
 .strip-shell--mac:not(.strip-shell--glass-css) {

@@ -75,12 +75,14 @@ import {
   getAutostart,
   installUpdate,
   isDesktop,
+  isLinuxPlatform,
   isMacPlatform,
   isWindowsPlatform,
   minimizeWindow,
   onMacAgentSelection,
   onMacAppearance,
   onScaleFactorChanged,
+  onTrayPinnedChange,
   onTrayShowExpanded,
   openExpandedWindow,
   readStripScale,
@@ -96,10 +98,12 @@ import {
   setStripScale,
   updateMacStatusItems,
   setWindowGlass,
+  setPinnedHoverTargetOpacity,
   setWindowPinned,
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,
 } from "./windowClient";
@@ -108,6 +112,7 @@ import {
 // 材质由系统 vibrancy 承担），完整视图是独立的标准窗口（原生红绿灯）。
 // Windows 仍是"单窗口变形 + 自绘按钮"，两条路径不互相影响。
 const IS_MAC = isMacPlatform();
+const IS_LINUX = isLinuxPlatform();
 
 const UsagePlot = lazy(() =>
   import("./UsagePlot").then((module) => ({ default: module.UsagePlot })),
@@ -1182,6 +1187,10 @@ function StripBar({
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
   const [controlsOpen, setControlsOpen] = useState(false);
   const toggleControls = useCallback(() => setControlsOpen((open) => !open), []);
+  // 一旦进入置顶只读态，立即丢弃胶囊的临时操作面板状态，只保留数据展示。
+  useEffect(() => {
+    if (pinned && IS_LINUX) setControlsOpen(false);
+  }, [pinned]);
   const shellAppearance = glassShellAppearance("strip", {
     transparent,
     glassMode,
@@ -1276,6 +1285,8 @@ function StripBar({
       ref={shellRef}
       className={shellAppearance.className}
       data-glass-surface={shellAppearance.trueAlpha ? "true-alpha" : undefined}
+      data-pinned={pinned && IS_LINUX ? "true" : undefined}
+      inert={pinned && IS_LINUX ? true : undefined}
       {...dragProps}
       {...glassProps}
       onPointerLeave={handlePointerLeave}
@@ -1334,7 +1345,7 @@ function StripBar({
           配额不可用
         </span>
       )}
-      <div className={`strip-controls ${controlsOpen ? "strip-controls--open" : ""}`}>
+      <div className={`strip-controls ${controlsOpen && !(pinned && IS_LINUX) ? "strip-controls--open" : ""}`}>
         {availableUpdate && (
           <span className="strip-control-slot">
             <button
@@ -1356,18 +1367,20 @@ function StripBar({
             className={`status-dot ${loading ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""}`}
             aria-hidden="true"
           />
-          <button
-            type="button"
-            className={`strip-button strip-button--menu ${controlsOpen ? "strip-button--active" : ""}`}
-            onClick={toggleControls}
-            aria-label={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
-            aria-expanded={controlsOpen}
-            title={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
-          >
-            <DotsThree size={16} weight={buttonWeight} aria-hidden="true" />
-          </button>
+          {!(pinned && IS_LINUX) && (
+            <button
+              type="button"
+              className={`strip-button strip-button--menu ${controlsOpen ? "strip-button--active" : ""}`}
+              onClick={toggleControls}
+              aria-label={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
+              aria-expanded={controlsOpen}
+              title={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
+            >
+              <DotsThree size={16} weight={buttonWeight} aria-hidden="true" />
+            </button>
+          )}
         </span>
-        {controlsOpen && (
+        {controlsOpen && !(pinned && IS_LINUX) && (
           <>
             {!IS_MAC && (
               <button
@@ -1557,6 +1570,8 @@ function CompactWidget({
       ref={shellRef}
       className={shellAppearance.className}
       data-glass-surface={shellAppearance.trueAlpha ? "true-alpha" : undefined}
+      data-pinned={pinned && IS_LINUX ? "true" : undefined}
+      inert={pinned && IS_LINUX ? true : undefined}
       {...glassPointerProps(shellAppearance.edgeInteractive)}
       style={shellAppearance.style}
     >
@@ -1588,16 +1603,18 @@ function CompactWidget({
             />
           )}
         </div>
-        <WindowActions
-          mode="compact"
-          pinned={pinned}
-          transparent={transparent}
-          glassTint={glassTint}
-          macMinimal={IS_MAC}
-          onToggleMode={onExpand}
-          onTogglePinned={onTogglePinned}
-          onToggleTransparent={onToggleTransparent}
-        />
+        {!(pinned && IS_LINUX) && (
+          <WindowActions
+            mode="compact"
+            pinned={pinned}
+            transparent={transparent}
+            glassTint={glassTint}
+            macMinimal={IS_MAC}
+            onToggleMode={onExpand}
+            onTogglePinned={onTogglePinned}
+            onToggleTransparent={onToggleTransparent}
+          />
+        )}
       </header>
 
       <div className="widget-content">
@@ -2359,8 +2376,20 @@ const GLASS_INK_OPTIONS = [
   { id: "light", label: "白色字" },
 ];
 
+const PINNED_HOVER_OPTIONS = [
+  { id: "fade", label: "降低透明度" },
+  { id: "hide", label: "完全隐藏" },
+];
+// X11 主通道不依赖透明窗口继续接收 DOM 事件，因此隐藏可以真正降到 0；
+// 无全局坐标的本地回落会在 CSS 中保留 0.1% alpha 以维持命中区域。
+const PINNED_HIDDEN_OPACITY = 0;
+
 function normalizeGlassInk(value) {
   return GLASS_INK_OPTIONS.some((option) => option.id === value) ? value : "dark";
+}
+
+function normalizePinnedHoverMode(value) {
+  return PINNED_HOVER_OPTIONS.some((option) => option.id === value) ? value : "fade";
 }
 
 function SliderRow({ label, hint, min, max, step, percent, ariaLabel, onChange }) {
@@ -2384,7 +2413,7 @@ function SliderRow({ label, hint, min, max, step, percent, ariaLabel, onChange }
   );
 }
 
-function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale }) {
+function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
   return (
     <div className="settings-card">
       <h2>外观与缩放</h2>
@@ -2405,7 +2434,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         ))}
       </div>
       {/* macOS 面板材质跟随系统 vibrancy，不提供组件外观选项；
-          深/浅配色只针对 Windows 的卡片与胶囊。 */}
+          深/浅配色用于 Windows 与 Linux 的卡片和胶囊。 */}
       {!IS_MAC && (
         <div className="settings-subsection">
           <h3>组件外观</h3>
@@ -2482,6 +2511,65 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
           percent={Math.round(stripScale * 100)}
           ariaLabel="胶囊缩放百分比"
           onChange={onStripScale}
+        />
+      )}
+      {IS_LINUX && (
+        <div className="settings-subsection">
+          <h3>置顶展示</h3>
+          <p className="settings-muted">
+            置顶后卡片和胶囊的全部控件、拖动与点击都会失活；只能回到此设置取消。
+          </p>
+          <div className="theme-toggle" role="group" aria-label="置顶展示模式">
+            <button
+              type="button"
+              className={!pinned ? "is-selected" : ""}
+              aria-pressed={!pinned}
+              onClick={() => onPinnedChange(false)}
+            >
+              正常交互
+            </button>
+            <button
+              type="button"
+              className={pinned ? "is-selected" : ""}
+              aria-pressed={pinned}
+              onClick={() => onPinnedChange(true)}
+            >
+              置顶只读
+            </button>
+          </div>
+        </div>
+      )}
+      {IS_LINUX && (
+        <div className="settings-subsection">
+          <h3>置顶悬停行为</h3>
+          <p className="settings-muted">
+            鼠标进入置顶卡片或胶囊时立即生效，移开后立即恢复。
+          </p>
+          <div className="theme-toggle" role="group" aria-label="置顶悬停行为">
+            {PINNED_HOVER_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={pinnedHoverMode === option.id ? "is-selected" : ""}
+                aria-pressed={pinnedHoverMode === option.id}
+                onClick={() => onPinnedHoverMode(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {IS_LINUX && pinnedHoverMode === "fade" && (
+        <SliderRow
+          label="悬停不透明度"
+          hint="数值越低，鼠标经过时越接近完全透明。"
+          min={5}
+          max={90}
+          step={5}
+          percent={Math.round(pinnedHoverOpacity * 100)}
+          ariaLabel="置顶悬停不透明度百分比"
+          onChange={onPinnedHoverOpacity}
         />
       )}
     </div>
@@ -2734,7 +2822,7 @@ const SETTINGS_TABS = [
   },
 ];
 
-function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
+function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2837,6 +2925,12 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
               onUiScale={onUiScale}
               stripScale={stripScale}
               onStripScale={onStripScale}
+              pinned={pinned}
+              onPinnedChange={onPinnedChange}
+              pinnedHoverMode={pinnedHoverMode}
+              onPinnedHoverMode={onPinnedHoverMode}
+              pinnedHoverOpacity={pinnedHoverOpacity}
+              onPinnedHoverOpacity={onPinnedHoverOpacity}
             />
             <NativeMacWidgetCard />
           </>
@@ -4270,6 +4364,23 @@ export function App() {
   const [activeNav, setActiveNav] = useState(initialNav);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pinned, setPinned] = useState(() => localStorage.getItem("metrik:pinned") === "true");
+  const [pinnedHoverMode, setPinnedHoverMode] = useState(() =>
+    normalizePinnedHoverMode(localStorage.getItem("metrik:pinnedHoverMode")),
+  );
+  const [pinnedHoverOpacity, setPinnedHoverOpacity] = useState(() => {
+    const stored = Number(localStorage.getItem("metrik:pinnedHoverOpacity"));
+    return Number.isFinite(stored) && stored >= 0.05 && stored <= 0.9 ? stored : 0.14;
+  });
+  const handlePinnedHoverMode = useCallback((next) => {
+    const value = normalizePinnedHoverMode(next);
+    setPinnedHoverMode(value);
+    localStorage.setItem("metrik:pinnedHoverMode", value);
+  }, []);
+  const handlePinnedHoverOpacity = useCallback((next) => {
+    const value = Math.min(0.9, Math.max(0.05, next));
+    setPinnedHoverOpacity(value);
+    localStorage.setItem("metrik:pinnedHoverOpacity", String(value));
+  }, []);
   // 卡片与胶囊固定使用玻璃材质，用户只在深色、浅色和透明三种外观间选择。
   // expanded 仍通过 viewMode 单独关闭玻璃绘制。
   const transparent = true;
@@ -4346,7 +4457,7 @@ export function App() {
     if (IS_MAC) runWindowAction(() => broadcastMacAppearance({ glassAlpha: next }));
   }, []);
   // 组件外观：深色 HUD / 透亮白（苹果式白 tint + 深色文字）/ 透明（不铺材质，
-  // 直接透出桌面）。用户可选，记住选择。只作用于 Windows 的卡片与胶囊；
+  // 直接透出桌面）。用户可选，记住选择。作用于 Windows 与 Linux 的卡片和胶囊；
   // macOS 面板材质跟随系统 vibrancy，不提供此项。
   const [glassTint, setGlassTint] = useState(() => {
     const legacyDisabled = localStorage.getItem("metrik:transparent") === "false";
@@ -4534,6 +4645,7 @@ export function App() {
     // macOS 面板由系统管层级和位置：不置顶、不恢复坐标。
     if (IS_MAC) return;
     if (pinned) runWindowAction(() => setWindowPinned(true));
+    runWindowAction(() => syncLinuxTrayPinned(pinned));
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
     // strip 形态的启动定位在 strip 专属 effect 里做。
     if (viewMode === "compact") {
@@ -4554,6 +4666,22 @@ export function App() {
   stripOrientationRef.current = stripOrientation;
   // 变形前的形态：applyWindowMode 的 fromMode 用它按形态分别记位，互不污染。
   const previousViewModeRef = useRef(viewMode);
+
+  useLayoutEffect(() => {
+    if (!IS_LINUX) return undefined;
+    const opacity = pinnedHoverMode === "hide"
+      ? PINNED_HIDDEN_OPACITY
+      : pinnedHoverOpacity;
+    setPinnedHoverTargetOpacity(opacity);
+    document.documentElement.style.setProperty("--pinned-hover-target-opacity", String(opacity));
+    document.documentElement.dataset.pinnedHoverMode = pinnedHoverMode;
+  }, [pinnedHoverMode, pinnedHoverOpacity]);
+
+  useEffect(() => () => {
+    if (!IS_LINUX) return;
+    document.documentElement.style.removeProperty("--pinned-hover-target-opacity");
+    delete document.documentElement.dataset.pinnedHoverMode;
+  }, []);
 
   // 拖动后记住小组件位置，供下次启动恢复。
   useEffect(() => {
@@ -4993,7 +5121,9 @@ export function App() {
   useEffect(() => {
     if (IS_MAC) return undefined;
     const stopPromise = onTrayShowExpanded(() => {
-      setActiveNav("overview");
+      // 置顶悬浮层已经完全只读；托盘打开完整视图时直达设置，让用户有一条
+      // 明确且唯一的解除路径。未置顶仍按原行为进入概览。
+      setActiveNav(IS_LINUX && pinnedRef.current ? "settings" : "overview");
       handleWindowMode("expanded");
     });
     return () => {
@@ -5001,14 +5131,30 @@ export function App() {
     };
   }, [handleWindowMode]);
 
-  const handleTogglePinned = useCallback(() => {
-    setPinned((current) => {
-      const next = !current;
-      localStorage.setItem("metrik:pinned", String(next));
-      runWindowAction(() => setWindowPinned(next));
-      return next;
+  const handlePinnedChange = useCallback((next) => {
+    const value = Boolean(next);
+    setPinned(value);
+    localStorage.setItem("metrik:pinned", String(value));
+    // 完整视图始终是普通窗口；在设置中选择“置顶只读”只为下次回到悬浮形态
+    // 预设状态，不能让 1120×760 的设置窗口本身盖住其它应用。
+    runWindowAction(async () => {
+      await setWindowPinned(value && viewModeRef.current !== "expanded");
+      await syncLinuxTrayPinned(value);
     });
   }, []);
+
+  const handleTogglePinned = useCallback(() => {
+    handlePinnedChange(!pinnedRef.current);
+  }, [handlePinnedChange]);
+
+  // Linux 托盘菜单已在原生层先更新了菜单文案；这里把其目标值写入 UI、
+  // localStorage 与窗口层级。Windows/macOS 不订阅该 Linux 专用事件。
+  useEffect(() => {
+    const stopPromise = onTrayPinnedChange((next) => handlePinnedChange(next));
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
+  }, [handlePinnedChange]);
 
   // 标题栏的 ◐ 按钮与设置页保持同一模型，只循环深色、浅色、透明三种组件外观。
   // 技术层的 off 只属于 expanded/回落状态，不作为第四种配色暴露。
@@ -5060,24 +5206,26 @@ export function App() {
 
   if (viewMode === "strip" && !IS_MAC) {
     return (
-      <StripBar
-        snapshot={snapshot}
-        agents={stripAgents}
-        pinned={pinned}
-        loading={appBusy}
-        transparent={transparent}
-        glassAlpha={shellGlassAlpha}
-        glassMode={glassMode}
-        glassTint={glassTint}
-        glassInk={glassInk}
-        orientation={stripOrientation}
-        onToggleOrientation={handleToggleStripOrientation}
-        onTogglePinned={handleTogglePinned}
-        onRestore={() => handleWindowMode("compact")}
-        onExpand={() => handleWindowMode("expanded")}
-        availableUpdate={availableUpdate}
-        onOpenUpdate={handleOpenUpdate}
-      />
+      <>
+        <StripBar
+          snapshot={snapshot}
+          agents={stripAgents}
+          pinned={pinned}
+          loading={appBusy}
+          transparent={transparent}
+          glassAlpha={shellGlassAlpha}
+          glassMode={glassMode}
+          glassTint={glassTint}
+          glassInk={glassInk}
+          orientation={stripOrientation}
+          onToggleOrientation={handleToggleStripOrientation}
+          onTogglePinned={handleTogglePinned}
+          onRestore={() => handleWindowMode("compact")}
+          onExpand={() => handleWindowMode("expanded")}
+          availableUpdate={availableUpdate}
+          onOpenUpdate={handleOpenUpdate}
+        />
+      </>
     );
   }
 
@@ -5243,6 +5391,12 @@ export function App() {
             onUiScale={handleUiScale}
             stripScale={stripScale}
             onStripScale={handleStripScale}
+            pinned={pinned}
+            onPinnedChange={handlePinnedChange}
+            pinnedHoverMode={pinnedHoverMode}
+            onPinnedHoverMode={handlePinnedHoverMode}
+            pinnedHoverOpacity={pinnedHoverOpacity}
+            onPinnedHoverOpacity={handlePinnedHoverOpacity}
             theme={theme}
             onThemeChange={handleThemeChange}
             autoUpdateCheck={autoUpdateCheck}

@@ -8,6 +8,8 @@ mod domain;
 mod engine;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod pinned_hover;
 mod pricing;
 mod projects;
 mod quota;
@@ -23,6 +25,8 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +45,104 @@ struct AppState {
     database_path: PathBuf,
     scan_gate: Arc<Mutex<()>>,
     quota_cache: SharedQuotaCache,
+    #[cfg(target_os = "linux")]
+    pinned_hover_monitor: Arc<pinned_hover::Monitor>,
+}
+
+/// Linux 首窗必须在 WebView 初始化前决定位置，否则 GTK 会先映射默认居中的
+/// 窗口，再由前端 localStorage 移动，造成肉眼可见的闪烁。
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct LinuxStartupPosition {
+    x: i32,
+    y: i32,
+    #[serde(default)]
+    offset_x: i32,
+    #[serde(default)]
+    offset_y: i32,
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_STARTUP_POSITION_FILE: &str = "linux-startup-position.json";
+
+#[cfg(target_os = "linux")]
+fn linux_startup_position_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|directory| directory.join(LINUX_STARTUP_POSITION_FILE))
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_startup_position(app: &tauri::AppHandle) -> Option<LinuxStartupPosition> {
+    let path = linux_startup_position_path(app)?;
+    let contents = fs::read(path).ok()?;
+    serde_json::from_slice(&contents).ok()
+}
+
+/// One-time compatibility import for positions saved by older Linux builds in
+/// WebKit localStorage. Its UTF-16 value is safe, app-owned coordinate data;
+/// no arbitrary WebView data is read or copied.
+#[cfg(target_os = "linux")]
+fn read_legacy_linux_startup_position(app: &tauri::AppHandle) -> Option<LinuxStartupPosition> {
+    let path = app
+        .path()
+        .app_local_data_dir()
+        .ok()?
+        .join("localstorage/tauri_localhost_0.localstorage");
+    let connection =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    let bytes: Vec<u8> = connection
+        .query_row(
+            "SELECT value FROM ItemTable WHERE key = 'metrik:widgetPosition'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let words: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    let value = String::from_utf16(&words).ok()?;
+    let position: serde_json::Value = serde_json::from_str(&value).ok()?;
+    Some(LinuxStartupPosition {
+        x: position.get("x")?.as_i64()?.try_into().ok()?,
+        y: position.get("y")?.as_i64()?.try_into().ok()?,
+        // Older Linux versions saved the GTK outer origin but set_position
+        // expects the content origin. Mutter's normal frame offset is learned
+        // and persisted precisely after the first move in the new format.
+        offset_x: 0,
+        offset_y: 37,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn restore_linux_startup_position(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Some(position) =
+        read_linux_startup_position(app).or_else(|| read_legacy_linux_startup_position(app))
+    {
+        let _ = window.set_position(tauri::PhysicalPosition::new(
+            position.x.saturating_add(position.offset_x),
+            position.y.saturating_add(position.offset_y),
+        ));
+    } else {
+        // 首次安装没有位置可恢复时才居中；后续启动永远使用持久化坐标。
+        let _ = window.center();
+    }
+    let _ = window.show();
+}
+
+/// Linux 托盘菜单和前端的置顶状态保持同一份权威值，以便菜单项准确显示
+/// “置顶”或“取消置顶”。该状态只属于 Linux shell，Windows/macOS 不会编译它。
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxTrayPinMenu {
+    pinned: AtomicBool,
+    item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
 }
 
 fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
@@ -918,6 +1020,93 @@ async fn set_taskbar_button(window: tauri::WebviewWindow, visible: bool) -> Resu
     Ok(())
 }
 
+/// X11 允许客户端读取和恢复全局窗口坐标；Wayland 刻意不暴露这套能力。
+/// 前端据此决定是否启用位置记忆、钳位与边缘挂靠，而不是把所有 Linux
+/// 会话一律降级。
+#[cfg(target_os = "linux")]
+fn linux_session_supports_global_window_coordinates(
+    session: &str,
+    has_wayland_display: bool,
+    has_x11_display: bool,
+) -> bool {
+    let session = session.to_ascii_lowercase();
+    if session == "wayland" || has_wayland_display {
+        return false;
+    }
+    session == "x11" || has_x11_display
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn linux_supports_global_window_coordinates() -> bool {
+    linux_session_supports_global_window_coordinates(
+        &std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("DISPLAY").is_some(),
+    )
+}
+
+/// Configure the pinned widget's native hover watcher. On X11 one long-lived
+/// worker queries window-relative pointer coordinates and changes the GTK
+/// toplevel opacity directly.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn configure_pinned_hover(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    enabled: bool,
+    target_opacity: f64,
+) -> bool {
+    pinned_hover::configure(
+        window,
+        Arc::clone(&state.pinned_hover_monitor),
+        enabled,
+        target_opacity,
+    )
+}
+
+/// Synchronize the Linux tray item's label after a settings-page change.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn sync_linux_tray_pinned(state: State<'_, LinuxTrayPinMenu>, pinned: bool) {
+    state.pinned.store(pinned, Ordering::Release);
+    if let Ok(item) = state.item.lock() {
+        if let Some(item) = item.as_ref() {
+            let _ = item.set_text(if pinned { "取消置顶" } else { "置顶" });
+        }
+    }
+}
+
+/// Persist the exact GTK outer position and its inner/outer offset whenever a
+/// Linux floating form is moved. This small native file is intentionally
+/// separate from WebKit localStorage so setup can restore it before the first
+/// WebView frame is ever mapped.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn persist_linux_startup_position(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    offset_x: i32,
+    offset_y: i32,
+) -> Result<(), String> {
+    let Some(path) = linux_startup_position_path(&app) else {
+        return Err("Linux application data directory is unavailable".into());
+    };
+    let position = LinuxStartupPosition {
+        x,
+        y,
+        offset_x,
+        offset_y,
+    };
+    let encoded = serde_json::to_vec(&position).map_err(|error| error.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Linux startup position has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(path, encoded).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn claude_hook_status() -> Result<claude_hook::ClaudeHookStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -1108,6 +1297,9 @@ fn update_macos_status_items(
 #[cfg(all(desktop, not(target_os = "macos")))]
 const TRAY_SHOW_EXPANDED: &str = "tray://show-expanded";
 
+#[cfg(target_os = "linux")]
+const TRAY_SET_PINNED: &str = "tray://set-pinned";
+
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -1132,9 +1324,19 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
     let expanded = MenuItem::with_id(app, "expanded", "显示完整视图", true, None::<&str>)?;
+    #[cfg(target_os = "linux")]
+    let pinned = MenuItem::with_id(app, "pinned", "置顶", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
+    #[cfg(target_os = "linux")]
+    let menu = Menu::with_items(app, &[&toggle, &expanded, &pinned, &separator, &quit])?;
+    #[cfg(not(target_os = "linux"))]
     let menu = Menu::with_items(app, &[&toggle, &expanded, &separator, &quit])?;
+
+    #[cfg(target_os = "linux")]
+    if let Ok(mut item) = app.state::<LinuxTrayPinMenu>().item.lock() {
+        *item = Some(pinned.clone());
+    }
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Metrik")
@@ -1147,6 +1349,17 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             // expanded 时自己会 show + focus，托盘再动窗口只会抢出闪帧。
             "expanded" => {
                 let _ = app.emit(TRAY_SHOW_EXPANDED, ());
+            }
+            #[cfg(target_os = "linux")]
+            "pinned" => {
+                let state = app.state::<LinuxTrayPinMenu>();
+                let next = !state.pinned.fetch_xor(true, Ordering::AcqRel);
+                if let Ok(item) = state.item.lock() {
+                    if let Some(item) = item.as_ref() {
+                        let _ = item.set_text(if next { "取消置顶" } else { "置顶" });
+                    }
+                }
+                let _ = app.emit(TRAY_SET_PINNED, next);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -1214,6 +1427,12 @@ pub fn run() {
             // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
             #[cfg(target_os = "macos")]
             macos::setup(app)?;
+
+            #[cfg(target_os = "linux")]
+            app.manage(LinuxTrayPinMenu::default());
+
+            #[cfg(target_os = "linux")]
+            restore_linux_startup_position(app.app_handle());
 
             #[cfg(all(desktop, not(target_os = "macos")))]
             setup_tray(app)?;
@@ -1298,6 +1517,8 @@ pub fn run() {
                 database_path,
                 scan_gate: Arc::new(Mutex::new(())),
                 quota_cache: Arc::new(Mutex::new(HashMap::new())),
+                #[cfg(target_os = "linux")]
+                pinned_hover_monitor: Arc::new(pinned_hover::Monitor::default()),
             });
             Ok(())
         })
@@ -1331,6 +1552,14 @@ pub fn run() {
             qoder_cookie_status,
             configure_qoder_cookie,
             set_taskbar_button,
+            #[cfg(target_os = "linux")]
+            linux_supports_global_window_coordinates,
+            #[cfg(target_os = "linux")]
+            configure_pinned_hover,
+            #[cfg(target_os = "linux")]
+            sync_linux_tray_pinned,
+            #[cfg(target_os = "linux")]
+            persist_linux_startup_position,
             set_native_theme,
             open_expanded_window,
             set_macos_desktop_widget_visible,
@@ -1377,6 +1606,23 @@ pub fn publish_widget_snapshot_from_database(_database_path: &Path) -> Result<Pa
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_global_coordinates_are_enabled_only_for_x11_sessions() {
+        assert!(linux_session_supports_global_window_coordinates(
+            "x11", false, true
+        ));
+        assert!(linux_session_supports_global_window_coordinates(
+            "", false, true
+        ));
+        assert!(!linux_session_supports_global_window_coordinates(
+            "wayland", true, true
+        ));
+        assert!(!linux_session_supports_global_window_coordinates(
+            "", true, true
+        ));
+    }
 
     struct TestDirectory(PathBuf);
 

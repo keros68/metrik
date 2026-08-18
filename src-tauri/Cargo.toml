@@ -42,6 +42,12 @@ tauri-plugin-single-instance = "2"
 # 原生 statusLine：委托超时后按进程组终止（killpg），和 Windows 的进程树终止对齐。
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# 取得 GTK 顶层窗口的 XID 后直接用 XQueryPointer(window)。窗口内相对坐标与
+# X11 几何天然同尺度，避开 HiDPI/多显示器下 GTK 逻辑坐标和根物理坐标混用。
+gtk = "0.18"
+gdkx11 = "0.18"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # 菜单栏面板：把 main 窗口换成不抢焦点的 NSPanel。crates.io 上没有 Tauri 2 版本，
 # 只能走 git 分支；上游停更时需要自行维护。

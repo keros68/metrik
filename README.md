@@ -5,9 +5,9 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 [![Download](https://img.shields.io/github/v/release/keros68/metrik?label=下载&color=success)](https://github.com/keros68/metrik/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app/)
-[![Platform](https://img.shields.io/badge/Windows%20%7C%20macOS-0078D6.svg)](#已知限制)
+[![Platform](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Ubuntu-0078D6.svg)](#平台支持)
 
-[下载最新版](https://github.com/keros68/metrik/releases/latest)：Windows `.exe`、macOS 通用 `.dmg`。安装包未签名，首次运行需手动放行系统安全校验；Release 页附 SHA256 校验值。
+[下载最新版](https://github.com/keros68/metrik/releases/latest)：Windows `.exe`、macOS 通用 `.dmg`、Ubuntu 24.04 x86_64 `.deb` / `.AppImage`。安装包未签名，首次运行需手动放行系统安全校验；Release 页附 SHA256 校验值。
 
 <p align="center">
   <img src="design/shot-glass.jpg" alt="Metrik 桌面小组件与配额胶囊条 · 透明档">
@@ -38,6 +38,7 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 
 - Windows：320 × 320 桌面小组件，可收缩为横向或纵向配额胶囊条；支持深色 / 浅色 / 透明三档玻璃材质、0.75–2.0 缩放、边缘自动隐藏与置顶常驻。
 - macOS：菜单栏状态项与面板、原生 WidgetKit 桌面小组件，点击菜单栏项目可展开完整统计页面。
+- Ubuntu 24.04 x86_64：紧凑卡片、贴合内容的横向 / 纵向配额胶囊条、完整统计视图与系统托盘；组件使用 CSS 玻璃回退。X11 会话支持按形态记忆位置与边缘自动隐藏；Wayland 下由桌面合成器管理窗口位置。置顶后控件全部失活，鼠标进入时可按设置立即降低透明度或完全隐藏；从托盘打开设置后才能取消置顶。
 
 ## 支持的 Agent
 
@@ -57,7 +58,7 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 ## 核心功能
 
 1. **配额卡片**：各 Agent 剩余额度、进度、重置倒计时与消耗节奏预估。主数值取余量最低的窗口，日常是 5 小时，更长周期的窗口告急时改取该窗口。
-2. **配额胶囊条（Windows）**：收缩成一根横条或竖条，每格只有图标与剩余占比，固定、横竖切换、还原这些按钮平时收起，点「…」就地展开；展示哪些 Agent、按什么排序可配置，卡片与胶囊条各自独立。
+2. **配额胶囊条（Windows / Ubuntu）**：收缩成一根横条或竖条，每格只有图标与剩余占比，固定、横竖切换、还原这些按钮平时收起，点「…」就地展开；展示哪些 Agent、按什么排序可配置，卡片与胶囊条各自独立。
 3. **统计与报表**：26 周热力图、周趋势折线、Agent 占比环形图、项目走势；用量页以项目为主视图（占比环形 + 排名列表），点击项目进入该项目的会话明细，项目总表与会话明细都可导出 CSV。项目按各 Agent 记录的工作目录归集，默认向上合并到 git 仓库根，也可手动登记项目根或隐藏目录；读不到目录的用量单独列出。完整面板分概览、用量、报告、设置四页，主题可跟随系统或手动指定。
 4. **多设备同步**：指定共享文件夹（坚果云 / OneDrive / Syncthing 均可），各设备导出近 30 天统计事件并自动合并，无云端服务。
 5. **系统能力**：托盘常驻、可选开机自启、单实例运行。更新检查由设置页手动触发，是本应用唯一主动发起的网络请求；更新包经 minisign 校验，签名不符拒绝安装。
@@ -81,7 +82,14 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 
 ## 开发
 
-依赖 Node.js 22+、Rust 1.88+。
+依赖 Node.js 22+、Rust 1.88+。Ubuntu 24.04 还需安装 Tauri 的 WebKitGTK 与 AppIndicator 构建依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends \
+  build-essential curl wget file libssl-dev libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+```
 
 ```bash
 npm install
@@ -97,7 +105,7 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture  # 读本机真实�
 ## 已知限制
 
 1. 安装包未做数字签名，首次运行需手动放行；Windows 未预装 WebView2 时安装程序需联网获取运行时。
-2. 仅提供 Windows 与 macOS 预编译包，Linux 需自行构建。
+2. Linux 预编译包当前仅支持 Ubuntu 24.04 x86_64；其它发行版与架构需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
 3. Antigravity 需对应 IDE 处于运行状态才有数据。
 4. 首次索引大体量日志会占用一段 CPU 与磁盘，界面可正常操作，未覆盖完整历史的数值会标注说明。
 

@@ -21,5 +21,16 @@ fn main() {
         return;
     }
 
+    // Ubuntu 24.04's WebKitGTK can select its DMA-BUF renderer before Tauri
+    // creates the first window.  With NVIDIA's proprietary driver that path
+    // may fail every GBM allocation, leaving the tray alive while the WebView
+    // never paints.  Set the documented WebKitGTK compatibility switch here,
+    // before any GTK/WebKit initialization.  An explicit caller-provided value
+    // still wins so developers can retest the renderer as drivers evolve.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     metrik_lib::run();
 }

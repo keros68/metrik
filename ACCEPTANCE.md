@@ -52,4 +52,4 @@ This is a small binary and low idle CPU result, but it is not a native-toolkit m
 ## Acceptance boundary
 
 - Verified: Windows 10/11 x64 release executable and both installer formats.
-- Not yet delivered: macOS/Linux artifacts, Windows ARM64, cross-device sync, code signing, and a formal provider-mark permission review before mass commercial distribution.
+- Not yet delivered: Windows ARM64, cross-device sync, code signing, and a formal provider-mark permission review before mass commercial distribution.

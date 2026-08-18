@@ -74,6 +74,10 @@ jobs:
           # 没有实机验收之前不声称可用。
           - platform: macos-latest
             target: aarch64-apple-darwin
+          # Linux 发布基线固定为 Ubuntu 24.04 x86_64；ubuntu-latest 的滚动
+          # 升级不能替代目标系统本身的编译与打包验证。
+          - platform: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -94,6 +98,18 @@ jobs:
         with:
           workspaces: src-tauri
           key: ${{ matrix.platform }}
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
 
       - name: Install frontend dependencies
         run: npm ci
@@ -116,3 +132,15 @@ jobs:
       - name: Test
         run: cargo test
         working-directory: src-tauri
+
+      # cargo test 不能覆盖 WebKitGTK 链接与 bundle 元数据；Linux job 同时
+      # 产出两个正式分发格式作为烟测。PR 不需要更新器私钥。
+      - name: Linux bundle smoke check
+        if: runner.os == 'Linux'
+        run: >-
+          npm run desktop:build --
+          --target x86_64-unknown-linux-gnu
+          --bundles deb,appimage
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"

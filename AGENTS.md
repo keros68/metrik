@@ -16,21 +16,23 @@ Before changing code:
 
 ## Scope and platform boundaries
 
-Classify each change as `shared`, `macOS shell`, `Windows shell`, or a declared
-combination.
+Classify each change as `shared`, `macOS shell`, `Windows shell`, `Linux shell`,
+or a declared combination.
 
 - Shared work includes adapters, quota parsing, storage, sync, settings
   contracts, and statistics. Implement it behind platform-neutral interfaces
-  and verify it on both operating systems.
+  and verify it on all supported operating systems.
 - Develop and visually approve macOS shell behavior on macOS and Windows shell
-  behavior on Windows. Do not copy platform-specific window forms, materials,
-  positioning, or menu-bar/taskbar behavior between shells.
+  behavior on Windows. Develop Linux shell behavior on Ubuntu 24.04 x86_64,
+  with the default Wayland session as the portability baseline. Do not copy
+  platform-specific window forms, materials, positioning, or menu-bar/taskbar
+  behavior between shells.
 - Platform selection must use native `cfg(target_os)` code and Tauri's
   compile-time platform signal. WebView user-agent detection is not an
   authoritative platform switch.
-- Pull requests should state their affected scope. CI must build and test both
-  Windows and macOS, and every affected shell needs a native smoke check before
-  release.
+- Pull requests should state their affected scope. CI must build and test
+  Windows, macOS, and Ubuntu 24.04 x86_64, and every affected shell needs a
+  native smoke check before release.
 - Do not bump application versions during feature work. Release preparation is
   a separate, serialized maintainer operation.
 

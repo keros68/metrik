@@ -178,6 +178,40 @@ change.
 - Provider names are not repeated as menu-bar text, and the menu structure must
   not copy another product's layout or multi-account detail.
 
+### Linux
+
+- The supported Linux release baseline is Ubuntu 24.04 on x86_64. Releases
+  provide both a Debian package and an AppImage built on that exact runner.
+- Linux uses the floating compact card, horizontal/vertical quota strip, and
+  expanded view. It uses the shared content hierarchy, not Windows DWM APIs or
+  macOS panel/WidgetKit behavior.
+- The default Ubuntu Wayland session remains the safe window-management
+  baseline: the compositor owns placement because Wayland deliberately
+  withholds global window and pointer coordinates. Under X11, compact,
+  horizontal-strip, and vertical-strip positions are persisted independently;
+  invalid off-screen positions are rejected, and edge auto-hide is enabled.
+  Always-on-top remains a best-effort compositor request.
+- A pinned compact or strip surface responds immediately to pointer hover. The
+  user can choose either a configurable opacity or complete visual hiding; it
+  restores immediately on pointer exit so an always-on-top monitor does not
+  visually obscure the desktop beneath it. On X11, hover appearance is driven
+  by a dedicated native `XQueryPointer` connection and physical window bounds,
+  independent of WebKit's input delivery after the surface becomes transparent.
+  Wayland deliberately withholds global pointer coordinates, so it uses local
+  window-boundary events and retains a visually imperceptible input surface for
+  complete hiding.
+- Linux pinning is a read-only presentation surface: its controls and drag
+  regions are inactive, and only Linux Settings or the Linux tray menu can
+  cancel pinning. The native window retains pointer input solely to drive
+  immediate hover appearance; content controls must never receive those events.
+- Compact and strip surfaces use the CSS glass fallback. Linux desktop stacks
+  do not expose one blur protocol with consistent WebKitGTK behavior, so a
+  successful-looking platform effect must not be treated as proof of native
+  blur.
+- Closing the main window keeps the application in the system tray when the
+  desktop exposes StatusNotifier/AppIndicator items. The tray menu remains the
+  explicit way to restore the window or quit.
+
 ## Window state and statistics
 
 - Pinning belongs only to floating forms. Expanded mode is always a normal

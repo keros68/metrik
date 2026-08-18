@@ -200,7 +200,10 @@ async function applyStartupUiScale(mode) {
   // tauri.conf 的 320×320 只负责首帧；内容可能因 75% 缩放或单行 Agent
   // 收到更小，启动路径也必须像形态切换一样解除配置最小尺寸。
   await appWindow.setMinSize(null);
-  await appWindow.setResizable(false);
+  // GTK 会把初始不可缩放的尺寸当成硬约束；这只在 Linux 启动路径解除。
+  // Windows 保留原有的启动时锁定行为。
+  if (isLinuxPlatform()) await appWindow.setResizable(true).catch(() => {});
+  else await appWindow.setResizable(false);
   const physical = await scaledPhysicalSize(
     api,
     appWindow,
@@ -209,15 +212,28 @@ async function applyStartupUiScale(mode) {
     uiScale,
     placement.monitor?.scaleFactor,
   );
-  await appWindow.setSize(physical);
-  await reconcileFloatingSizeAfterShow(
-    api,
-    appWindow,
-    size.width,
-    height,
-    uiScale,
-    physical,
-  );
+  try {
+    await appWindow.setSize(physical);
+    await reconcileFloatingSizeAfterShow(
+      api,
+      appWindow,
+      size.width,
+      height,
+      uiScale,
+      physical,
+    );
+  } catch (error) {
+    // 隐藏状态下某些 GTK 合成器会暂时拒绝 resize；位置已经在前一步恢复，
+    // 不能因为首帧尺寸校正失败把应用永久留在托盘。
+    console.warn("Unable to apply the hidden Linux startup size.", error);
+  } finally {
+    // Linux 首窗在 tauri.linux.conf.json 中以 hidden 创建。位置和首帧尺寸已
+    // 全部恢复后才首次映射，避免 GTK 先按默认居中位置闪现再移动。
+    if (isLinuxPlatform()) {
+      await appWindow.show().catch(() => {});
+      await appWindow.setFocus().catch(() => {});
+    }
+  }
 }
 
 /// 窗口重设尺寸后可能伸出屏幕（固定状态下竖条切横条最典型：位置不动、
@@ -227,6 +243,7 @@ async function applyStartupUiScale(mode) {
 /// knownOuter：调用方刚算出的物理尺寸。setSize 异步生效，紧接着读 outerSize
 /// 会拿到旧值（实测拿到过 ~0），把变高的窗口钳错——传入时跳过 outerSize 读取。
 async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
+  if (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates())) return false;
   const [pos, readOuter, monitors] = await Promise.all([
     appWindow.outerPosition().catch(() => null),
     knownOuter ? null : appWindow.outerSize().catch(() => null),
@@ -263,6 +280,7 @@ async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
 /// Windows 偶尔丢弃隐藏窗口的 setPosition：显示后校验一次坐标，
 /// 与钳位/居中后的预期不符就补发并重新钳位（否则窗口"复位"到变形前位置）。
 async function ensurePositionAfterShow(api, appWindow, target) {
+  if (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates())) return;
   if (!target) return;
   const current = await appWindow.outerPosition().catch(() => null);
   if (!current) return;
@@ -275,7 +293,41 @@ async function ensurePositionAfterShow(api, appWindow, target) {
 
 /// 形态记忆位置可能在另一台 DPI 不同的屏幕上。先用目标坐标选显示器，再用该
 /// 显示器的 scaleFactor 算物理尺寸；不能先按当前屏幕算完再搬过去。
+/// 记忆坐标来自 outerPosition()，但 Linux/GTK（GNOME X11 实测）下 setPosition
+/// 把目标解释成内容区（inner）原点：直接回填 outer 坐标会让窗口再上移一截
+/// （本机 _NET_FRAME_EXTENTS 顶部恒为 37px），每次重启累计一次。恢复时把
+/// inner−outer 偏移补回目标，让内容区落在用户上次摆放的位置。Windows 无边框
+/// 窗口内外坐标一致，Wayland 不走这条路径，偏移自然为 0。
+async function positionRestoreOffset(api, appWindow) {
+  if (!isLinuxPlatform() || !(await supportsGlobalWindowCoordinates())) {
+    return { x: 0, y: 0 };
+  }
+  const read = async () => {
+    const [outer, inner] = await Promise.all([
+      appWindow.outerPosition().catch(() => null),
+      appWindow.innerPosition().catch(() => null),
+    ]);
+    if (!outer || !inner) return null;
+    const offset = {
+      x: Math.round(inner.x - outer.x),
+      y: Math.round(inner.y - outer.y),
+    };
+    return offset;
+  };
+  const first = await read();
+  if (first && (first.x !== 0 || first.y !== 0)) return first;
+  for (let i = 0; i < 10; i += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    const offset = await read();
+    if (offset && (offset.x !== 0 || offset.y !== 0)) return offset;
+  }
+  return first || { x: 0, y: 0 };
+}
+
 async function floatingPlacement(api, mode, logicalSize, contentScale) {
+  if (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates())) {
+    return { position: null, monitor: null };
+  }
   const stored = readStoredPosition(mode);
   const requested = lastPositions[mode] || stored;
   if (!requested) return { position: null, monitor: null };
@@ -287,10 +339,13 @@ async function floatingPlacement(api, mode, logicalSize, contentScale) {
     contentScale,
   );
   if (!monitor) return { position: null, monitor: null };
+  const offset = isLinuxPlatform()
+    ? await positionRestoreOffset(api, api.getCurrentWindow())
+    : { x: 0, y: 0 };
   return {
     position: new api.PhysicalPosition(
-      Math.round(requested.x),
-      Math.round(requested.y),
+      Math.round(requested.x + offset.x),
+      Math.round(requested.y + offset.y),
     ),
     monitor,
   };
@@ -472,6 +527,7 @@ function readStoredPosition(mode) {
 /// 记住窗口的物理坐标（按形态分开记）；边缘挂靠把窗口滑出屏幕时不记，
 /// 避免下次开机在屏外。
 async function rememberWindowPosition(api, appWindow, mode) {
+  if (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates())) return;
   const key = POSITION_KEYS[mode];
   if (!key) return;
   const [pos, monitor, monitors] = await Promise.all([
@@ -512,12 +568,26 @@ async function rememberWindowPosition(api, appWindow, mode) {
   }
   lastPositions[mode] = pos;
   localStorage.setItem(key, JSON.stringify({ x: pos.x, y: pos.y }));
+  if (isLinuxPlatform()) {
+    const inner = await appWindow.innerPosition().catch(() => null);
+    const offsetX = inner ? Math.round(inner.x - pos.x) : 0;
+    const offsetY = inner ? Math.round(inner.y - pos.y) : 0;
+    await invoke("persist_linux_startup_position", {
+      x: Math.round(pos.x),
+      y: Math.round(pos.y),
+      offsetX,
+      offsetY,
+    }).catch((error) => {
+      console.warn("Unable to persist the Linux startup position.", error);
+    });
+  }
 }
 
 /// 启动时把窗口放回该形态上次的位置；坐标已不在任何显示器上（拔了扩展屏等）时居中。
 async function restoreWindowPosition(mode = "compact") {
-  // macOS 面板永远贴着菜单栏图标，没有"上次的位置"这回事。
-  if (isMacPlatform()) return;
+  // macOS 面板永远贴着菜单栏图标，没有"上次的位置"这回事。Linux 在 X11
+  // 会话恢复坐标；Wayland 协议不暴露全局坐标，由能力探测自动跳过。
+  if (isMacPlatform() || (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates()))) return;
   const api = await windowApi();
   if (!api) return;
   const stored = readStoredPosition(mode);
@@ -545,7 +615,15 @@ async function restoreWindowPosition(mode = "compact") {
   if (!onScreen) return;
 
   lastPositions[mode] = new api.PhysicalPosition(stored.x, stored.y);
-  await appWindow.setPosition(lastPositions[mode]).catch(() => {});
+  const offset = isLinuxPlatform()
+    ? await positionRestoreOffset(api, appWindow)
+    : { x: 0, y: 0 };
+  await appWindow
+    .setPosition(new api.PhysicalPosition(
+      Math.round(stored.x + offset.x),
+      Math.round(stored.y + offset.y),
+    ))
+    .catch(() => {});
 }
 
 /// 托盘右键"显示完整视图"：让用户从胶囊/卡片直达完整视图，不必先弹出卡片
@@ -599,7 +677,9 @@ async function onMacAgentSelection(handler) {
 
 /// 拖动结束后持久化窗口位置（compact 与 strip 各记各的；expanded 不记）。
 async function startPositionMemory(getMode) {
-  if (isMacPlatform()) return () => {};
+  if (isMacPlatform() || (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates()))) {
+    return () => {};
+  }
   const api = await windowApi();
   if (!api) return () => {};
   const appWindow = api.getCurrentWindow();
@@ -621,6 +701,28 @@ async function startPositionMemory(getMode) {
 
 function isWindowsPlatform() {
   return runtimePlatform() === "windows";
+}
+
+/// Ubuntu 24.04 的受支持 Linux 壳层以 Wayland 为基线。不能把 Linux 当成
+/// Windows 来承诺全局坐标、DWM 材质或任务栏原生样式。
+function isLinuxPlatform() {
+  return runtimePlatform() === "linux";
+}
+
+let globalWindowCoordinatesPromise = null;
+
+/// Windows 始终支持全局窗口坐标；Linux 只在 X11 启用。结果按 WebView 生命周期
+/// 缓存，避免拖动与内容尺寸观察器反复跨 IPC 查询环境。
+async function supportsGlobalWindowCoordinates() {
+  if (isMacPlatform()) return false;
+  if (!isLinuxPlatform()) return true;
+  if (!isDesktop()) return false;
+  if (!globalWindowCoordinatesPromise) {
+    globalWindowCoordinatesPromise = invoke("linux_supports_global_window_coordinates")
+      .then(Boolean)
+      .catch(() => false);
+  }
+  return globalWindowCoordinatesPromise;
 }
 
 /// macOS 上小插件是菜单栏面板（NSPanel）：位置由托盘图标决定；零占地摘要直接
@@ -693,7 +795,10 @@ async function applyWindowMode(mode, options = {}) {
   // （以前无条件写 lastPositions.compact，从胶囊条进大视图会把小插件的
   // 记忆污染成胶囊条坐标，回来时就"复位"了）。同形态重入（启动恢复、
   // 自检重断言）不是变形，不记。
-  if (POSITION_KEYS[options.fromPositionMode] && options.fromPositionMode !== options.positionMode) {
+  if (
+    POSITION_KEYS[options.fromPositionMode]
+    && options.fromPositionMode !== options.positionMode
+  ) {
     await rememberWindowPosition(api, appWindow, options.fromPositionMode);
   }
 
@@ -701,6 +806,7 @@ async function applyWindowMode(mode, options = {}) {
     // 完整视图是常规窗口：一律解除置顶。固定（置顶 + 锁位置）只属于
     // compact/strip 悬浮形态，否则 1120x760 的大窗口盖住所有应用切不走。
     await appWindow.setAlwaysOnTop(false).catch(() => {});
+    if (isLinuxPlatform()) await setPinnedHoverBehavior(false);
     // 小插件不占任务栏；完整视图是常规窗口，要出现在任务栏里。
     // 无边框窗口的任务栏按钮由 WS_EX_APPWINDOW 决定，setSkipTaskbar 补不上它，
     // 所以走后端改窗口样式；样式必须在隐藏状态下改，重新显示后 shell 才重读。
@@ -721,7 +827,8 @@ async function applyWindowMode(mode, options = {}) {
     await appWindow.setMaximizable(true);
     await appWindow.setMinSize(new api.LogicalSize(minWidth, minHeight));
     await appWindow.setSize(new api.LogicalSize(targetWidth, targetHeight));
-    await appWindow.center();
+    if (isLinuxPlatform()) await appWindow.center().catch(() => {});
+    else await appWindow.center();
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
     return;
@@ -759,16 +866,25 @@ async function applyWindowMode(mode, options = {}) {
       stripScale,
       placement.monitor?.scaleFactor,
     );
+    // tauri.conf 的初始 resizable:false 会让 GTK 把启动尺寸写成固定约束，必须
+    // 先解除才能收成短边 40px 的胶囊。Linux 下此后保持 resizable:true：Tao
+    // 文档明确指出再次切回 false 会附带至少 100px 的限制，实机会被 Mutter
+    // 撑成 200×200 大框。内容观察器会把任何意外的手动尺寸变化立即校正回
+    // 设计值，页面也不提供缩放控件。
+    if (isLinuxPlatform()) await appWindow.setResizable(true).catch(() => {});
     await appWindow.setSize(physical).catch((error) => {
       console.warn("Unable to apply the strip window size.", error);
     });
     // 缩放只走设置页滑杆：原生无边框窗口的 resize 命中区覆盖所有边，
     // 限制不到四角（0.11.0–0.11.1 的拖拽缩放因此移除）。
-    await appWindow.setResizable(false);
+    if (!isLinuxPlatform()) await appWindow.setResizable(false);
     // 伸出屏幕的部分钳回工作区（挂靠残留、方向切换变宽等）；
     // 完全不在任何屏幕上（拔了扩展屏等）时居中，胶囊条永远看得见、够得着。
     const clamped = await clampIntoWorkArea(api, appWindow, physical);
-    if (!clamped) await appWindow.center().catch(() => {});
+    if (!clamped) {
+      if (isLinuxPlatform()) await appWindow.center().catch(() => {});
+      else await appWindow.center();
+    }
     // 钳位/居中后的最终坐标是显示后校验的基准。
     const stripFinal = await appWindow.outerPosition().catch(() => null);
     await appWindow.show().catch(() => {});
@@ -812,13 +928,17 @@ async function applyWindowMode(mode, options = {}) {
     console.warn("Unable to apply the compact window size.", error);
   }
   // 缩放只走设置页滑杆（同胶囊条，拖拽缩放在 0.11.0–0.11.1 后移除）。
-  await appWindow.setResizable(false);
+  if (!isLinuxPlatform()) {
+    await appWindow.setResizable(false);
+  }
 
   if (placement.position) {
     // 缩放系数调大后，记忆位置 + 新尺寸可能伸出屏幕，钳回工作区。
     await clampIntoWorkArea(api, appWindow, compactPhysical);
   } else {
-    await appWindow.center();
+    // Wayland 可以拒绝客户端指定位置；尺寸仍然有效，摆放交给合成器即可。
+    if (isLinuxPlatform()) await appWindow.center().catch(() => {});
+    else await appWindow.center();
   }
   // 钳位/居中后的最终坐标是显示后校验的基准。
   const compactFinal = await appWindow.outerPosition().catch(() => null);
@@ -832,6 +952,7 @@ async function applyWindowMode(mode, options = {}) {
     uiScale,
     compactPhysical,
   );
+  if (isLinuxPlatform()) await appWindow.setResizable(false).catch(() => {});
   await appWindow.setFocus().catch(() => {});
 }
 
@@ -848,6 +969,7 @@ async function resizeStripWindow({ width, height }) {
   const targetHeight = Math.max(size.minHeight, Math.round(height || size.height));
   // 变形前记下贴边状态：用户把条贴在屏幕右/下缘时，方向切换或格数变化
   // 只改尺寸会把它从边缘"撕"下来（只保左上角），必须按原贴边重新锚定。
+  const coordinateAware = !isLinuxPlatform() || await supportsGlobalWindowCoordinates();
   const [pos, outer, monitor] = await Promise.all([
     appWindow.outerPosition().catch(() => null),
     appWindow.outerSize().catch(() => null),
@@ -855,7 +977,7 @@ async function resizeStripWindow({ width, height }) {
   ]);
   const workArea = monitor?.workArea;
   const anchor = { right: false, bottom: false };
-  if (pos && outer && workArea) {
+  if (coordinateAware && pos && outer && workArea) {
     const workRight = workArea.position.x + workArea.size.width;
     const workBottom = workArea.position.y + workArea.size.height;
     anchor.right = Math.abs(pos.x + outer.width - workRight) <= 8;
@@ -882,6 +1004,7 @@ async function resizeStripWindow({ width, height }) {
   );
   // 测量收敛出的尺寸记作下次变形的首帧（否则首帧永远是常量估计）。
   rememberStripSize(targetWidth, targetHeight);
+  if (!coordinateAware) return;
   if ((anchor.right || anchor.bottom) && pos && workArea) {
     // 新尺寸必须用自己算出的 physical：setSize 是异步生效的，紧接着读
     // outerSize 会拿到旧值（Windows 实测拿到过 ~0），把窗口锚出屏幕。
@@ -938,6 +1061,7 @@ async function resizeCompactWindow({ height }) {
   );
   // 高度收敛值记作下次变形的首帧。
   rememberCompactHeight(targetHeight);
+  if (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates())) return;
   // 变高可能把窗口底边顶出屏幕；钳位用刚算出的 physical（setSize 异步生效，
   // 此刻读 outerSize 是旧值）；完全掉出所有屏幕时居中找回。
   const clamped = await clampIntoWorkArea(api, appWindow, physical);
@@ -1056,6 +1180,16 @@ async function setWindowGlass(enabled, radius = 12, tintStyle = "dark") {
     // external backdrop-filter sampling into an opaque white capture surface.
     return resolveWindowsGlassComposition({ enabled, tintStyle }).mode;
   }
+  if (isLinuxPlatform()) {
+    // WebKitGTK/Wayland 没有跨 GNOME、KDE 和 X11 都一致的原生 blur 协议。
+    // 明确使用 CSS 表面，避免 setEffects 看似成功却渲染成不透明/黑底。
+    return resolveGlassMode({
+      enabled,
+      tintStyle,
+      nativeAvailable: false,
+      trueAlphaAvailable: false,
+    });
+  }
   const api = await windowApi();
   if (!api) return enabled ? "css" : "off";
   const appWindow = api.getCurrentWindow();
@@ -1089,10 +1223,92 @@ const DOCK_PEEK_PX = 6;
 const DOCK_HIDE_DELAY_MS = 900;
 const DOCK_POLL_MS = 250;
 
+let pinnedHoverBehaviorQueue = Promise.resolve();
+let pinnedHoverEnabled = false;
+let pinnedHoverNative = false;
+let pinnedHoverInputsInstalled = false;
+let pinnedHoverTargetOpacity = 0;
+
+function applyPinnedHoverAppearance(inside) {
+  const root = document.documentElement;
+  root.dataset.pinnedHoverActive = pinnedHoverEnabled && inside ? "true" : "false";
+}
+
+/// Wayland/浏览器预览没有全局坐标，只能在窗口仍能收到的本地边界事件上回落。
+/// X11 的主通道直接改 GTK 顶层窗口 opacity，不经过这里或 WebKit 事件。
+function ensurePinnedHoverInputs() {
+  if (pinnedHoverInputsInstalled) return;
+  pinnedHoverInputsInstalled = true;
+  const onPointerOver = () => {
+    if (pinnedHoverEnabled && !pinnedHoverNative) applyPinnedHoverAppearance(true);
+  };
+  const onPointerOut = (event) => {
+    if (pinnedHoverEnabled && !pinnedHoverNative && !event.relatedTarget) {
+      applyPinnedHoverAppearance(false);
+    }
+  };
+  window.addEventListener("pointerover", onPointerOver, true);
+  window.addEventListener("pointerout", onPointerOut, true);
+}
+
+/// 串行同步置顶悬停监视器。窗口变形和 React StrictMode 都可能连续重断言
+/// 置顶状态；若让这些 IPC 并发，迟到的旧请求会覆盖最终配置。
+function setPinnedHoverBehavior(enabled) {
+  // 置顶悬停（含原生 X11 与 Wayland 本地回落）是 Linux shell 专属能力。
+  // Windows 继续保留原有的置顶窗口交互，不加载状态、事件或 CSS 回落。
+  if (!isLinuxPlatform()) return Promise.resolve();
+  const requested = Boolean(enabled);
+  const requestedOpacity = pinnedHoverTargetOpacity;
+  pinnedHoverBehaviorQueue = pinnedHoverBehaviorQueue
+    .catch(() => {})
+    .then(async () => {
+      ensurePinnedHoverInputs();
+      pinnedHoverEnabled = requested;
+      // Linux 先按原生通道处理，避免 IPC 返回前的 pointerover 把 CSS opacity
+      // 置零；命令若确认是 Wayland/连接失败，再切到本地回落。
+      pinnedHoverNative = requested && isDesktop() && isLinuxPlatform();
+      applyPinnedHoverAppearance(false);
+
+      let native = false;
+      if (isDesktop()) {
+        native = await invoke("configure_pinned_hover", {
+          enabled: requested,
+          targetOpacity: requestedOpacity,
+        })
+          .then(Boolean)
+          .catch((error) => {
+            console.warn("Unable to configure pinned hover behavior.", error);
+            return false;
+          });
+      }
+      pinnedHoverNative = requested && native;
+      document.documentElement.dataset.pinnedHoverDriver = pinnedHoverNative
+        ? "native-x11"
+        : "local";
+      if (!pinnedHoverNative && requested) {
+        const hovered = document.querySelector(".widget-shell:hover, .strip-shell:hover");
+        applyPinnedHoverAppearance(Boolean(hovered));
+      }
+    });
+  return pinnedHoverBehaviorQueue;
+}
+
+function setPinnedHoverTargetOpacity(opacity) {
+  if (!isLinuxPlatform()) return;
+  const parsed = Number(opacity);
+  pinnedHoverTargetOpacity = Number.isFinite(parsed)
+    ? Math.min(1, Math.max(0, parsed))
+    : 0;
+  if (pinnedHoverEnabled) setPinnedHoverBehavior(true);
+}
+
 /// 边缘挂靠：未固定的卡片和胶囊条可贴四边自动收起，只留一条细边。
 /// 细边落在窗口的非客户区，webview 收不到 hover，因此以全局光标位置判断显示。
 async function startEdgeDock({ getMode, getPinned }) {
-  if (isMacPlatform()) return () => {};
+  // Wayland 不提供全局指针与窗口坐标；Linux 的 X11 会话可以正常启用。
+  if (isMacPlatform() || (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates()))) {
+    return () => {};
+  }
   const api = await windowApi();
   if (!api) return () => {};
   const win = api.getCurrentWindow();
@@ -1254,6 +1470,23 @@ async function setWindowPinned(pinned) {
   const api = await windowApi();
   if (!api) return;
   await api.getCurrentWindow().setAlwaysOnTop(pinned);
+  // 悬停监视器与原生置顶状态共用同一条已串行化的窗口动作链，避免 React
+  // effect 的严格模式清理晚到一步、把已经置顶的监视器再次关掉。
+  if (isLinuxPlatform()) await setPinnedHoverBehavior(pinned);
+}
+
+/// Linux 托盘菜单的“置顶/取消置顶”请求。其 payload 是后端已经切换过的目标值，
+/// 前端只负责把窗口与持久化状态同步到该值。
+async function onTrayPinnedChange(handler) {
+  if (!isDesktop() || !isLinuxPlatform()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("tray://set-pinned", (event) => handler(Boolean(event.payload)));
+}
+
+/// 从设置页变更置顶后刷新 Linux 托盘项的文字；其它平台没有该菜单。
+async function syncLinuxTrayPinned(pinned) {
+  if (!isDesktop() || !isLinuxPlatform()) return;
+  await invoke("sync_linux_tray_pinned", { pinned: Boolean(pinned) }).catch(() => {});
 }
 
 async function autostartApi() {
@@ -1333,6 +1566,7 @@ export {
   getMacAgentSelection,
   installUpdate,
   isDesktop,
+  isLinuxPlatform,
   isMacPlatform,
   isWindowsPlatform,
   minimizeWindow,
@@ -1340,6 +1574,7 @@ export {
   onMacAgentSelection,
   onMacAppearance,
   onScaleFactorChanged,
+  onTrayPinnedChange,
   onTrayShowExpanded,
   openExpandedWindow,
   readStripScale,
@@ -1355,10 +1590,13 @@ export {
   updateMacStatusItems,
   setStripScale,
   setWindowGlass,
+  setPinnedHoverBehavior,
+  setPinnedHoverTargetOpacity,
   setWindowPinned,
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,
 };
