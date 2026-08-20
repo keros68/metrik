@@ -108,8 +108,10 @@ jobs:
         run: cargo fmt --check
         working-directory: src-tauri
 
+      # --all-targets 把测试代码也纳入检查：不带它时 #[cfg(test)] 里的问题
+      # 攒了一批才被发现。
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
 
       # 读取本机真实 Agent 日志的烟测标记为 ignored，CI 里跑不了也不该跑。

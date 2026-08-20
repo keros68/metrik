@@ -504,7 +504,7 @@ mod tests {
         // processed = input + output（cache/reasoning 已含在分量内，不另加）
         assert_eq!(first.tokens.processed(), 120);
         assert_eq!(first.model.as_deref(), Some("grok-4.5-build"));
-        assert_eq!(first.occurred_at_ms, 1785935395_000);
+        assert_eq!(first.occurred_at_ms, 1_785_935_395_000);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

@@ -377,9 +377,9 @@ fn fallback_identity(entry_id: &Option<String>, timestamp: Option<i64>) -> Strin
     format!("fallback:{id}")
 }
 
-/// 会话文件目录名（`--D--work-usage--`）是有损编码，不可反推项目路径；
-/// 项目归属只认 session 头里的 `cwd`（见 `project_attribution_never_comes_
-/// from_the_directory_name` 测试）。
+// 会话文件目录名（`--D--work-usage--`）是有损编码，不可反推项目路径；
+// 项目归属只认 session 头里的 `cwd`（见 `project_attribution_never_comes_
+// from_the_directory_name` 测试）。
 
 #[cfg(test)]
 mod tests {
@@ -415,7 +415,7 @@ mod tests {
         // 字段形状取自本机真实日志（zai-coding-cn / glm-5.3）。
         let path = session_file(
             "assistant",
-            &concat!(
+            concat!(
                 r#"{"type":"session","version":3,"id":"ses-1","timestamp":"2026-08-20T00:31:11.882Z","cwd":"D:\\work\\usage"}"#,
                 "\n",
                 r#"{"type":"message","id":"631fa049","parentId":"793123d5","timestamp":"2026-08-20T00:32:00.897Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"provider":"zai-coding-cn","model":"glm-5.3","responseId":"202608171505273491557405ff476a","usage":{"input":2882,"output":561,"cacheRead":1088,"cacheWrite":0,"reasoning":503,"totalTokens":4531,"cost":{"total":0}},"stopReason":"stop"}}"#,
@@ -449,7 +449,7 @@ mod tests {
         // 这次调用确实计费，照常入账。
         let path = session_file(
             "aborted",
-            &concat!(
+            concat!(
                 r#"{"type":"session","version":3,"id":"ses-1","cwd":"/tmp"}"#,
                 "\n",
                 r#"{"type":"message","id":"c6115304","timestamp":"2026-08-19T00:30:00.000Z","message":{"role":"assistant","provider":"zai-coding-cn","model":"glm-5.3","usage":{"input":100,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":120},"stopReason":"aborted"}}"#,
@@ -511,7 +511,7 @@ mod tests {
         // 摘要生成与工具内嵌 LLM 调用都是真实计费；pi 自己的会话合计也含它们。
         let path = session_file(
             "compaction",
-            &concat!(
+            concat!(
                 r#"{"type":"session","id":"ses-1","cwd":"/tmp"}"#,
                 "\n",
                 r#"{"type":"compaction","id":"f6g7h8i9","timestamp":"2026-08-20T01:00:00.000Z","summary":"…","tokensBefore":50000,"usage":{"input":8000,"output":900,"cacheRead":0,"cacheWrite":0,"totalTokens":8900}}"#,
@@ -555,7 +555,7 @@ mod tests {
     fn a_reported_total_that_disagrees_marks_the_source_partial() {
         let path = session_file(
             "mismatch",
-            &concat!(
+            concat!(
                 r#"{"type":"session","id":"ses-1","cwd":"/tmp"}"#,
                 "\n",
                 r#"{"type":"message","id":"m1","timestamp":"2026-08-20T00:32:00.000Z","message":{"role":"assistant","model":"glm-5.3","responseId":"r1","usage":{"input":100,"output":50,"totalTokens":999}}}"#,
@@ -577,7 +577,7 @@ mod tests {
     fn duplicate_identity_with_a_conflicting_model_is_rejected_keeping_other_events() {
         let path = session_file(
             "conflict",
-            &concat!(
+            concat!(
                 r#"{"type":"session","id":"ses-1","cwd":"/tmp"}"#,
                 "\n",
                 r#"{"type":"message","id":"a1","timestamp":"2026-08-20T00:32:00.000Z","message":{"role":"assistant","model":"glm-5.3","responseId":"r1","usage":{"input":100,"output":50,"totalTokens":150}}}"#,
@@ -605,7 +605,7 @@ mod tests {
         // 外来文件处理，整文件不计并标注数据不完整。
         let tolerant = session_file(
             "omp-title",
-            &concat!(
+            concat!(
                 r#"{"type":"title","v":1,"title":"Comment on GitHub issue","source":"auto"}"#,
                 "\n",
                 r#"{"type":"session","id":"ses-omp","cwd":"/tmp"}"#,
@@ -616,7 +616,7 @@ mod tests {
         );
         let foreign = session_file(
             "foreign",
-            &concat!(
+            concat!(
                 r#"{"type":"totally_unknown_thing","foo":"bar"}"#,
                 "\n",
                 r#"{"type":"session","id":"ses-x","cwd":"/tmp"}"#,
@@ -642,7 +642,7 @@ mod tests {
     fn malformed_lines_and_cutoff_respect_diagnostics() {
         let path = session_file(
             "diagnostics",
-            &concat!(
+            concat!(
                 r#"{"type":"session","id":"ses-1","cwd":"/tmp"}"#,
                 "\n",
                 "not-json\n",
