@@ -43,8 +43,9 @@ tauri-plugin-single-instance = "2"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# 取得 GTK 顶层窗口的 XID 后直接用 XQueryPointer(window)。窗口内相对坐标与
-# X11 几何天然同尺度，避开 HiDPI/多显示器下 GTK 逻辑坐标和根物理坐标混用。
+# 置顶悬停监视、透明度和输入穿透都在 GTK 主上下文执行，避免
+# 跨线程同时调用 GDK/X11 导致本地堆损坏。XQueryPointer 使用独立
+# display 连接，避免破坏 GDK 的 error-trap 序列，并保留 HiDPI/多显示器物理坐标精度。
 gtk = "0.18"
 gdkx11 = "0.18"
 

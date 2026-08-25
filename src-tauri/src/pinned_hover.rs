@@ -4,17 +4,14 @@ use tauri::WebviewWindow;
 
 #[cfg(target_os = "linux")]
 const HOVER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
-#[cfg(target_os = "linux")]
-const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// One long-lived hover worker per application process. Reconfiguring pinning
-/// only changes atomics; it never creates competing X11 clients or lets a stale
-/// watcher overwrite a newer setting.
+/// One long-lived GTK-main-context hover timer per application process.
+/// Reconfiguring pinning only changes atomics, so every GDK operation remains
+/// serialized on GTK's owning thread.
 #[derive(Default)]
 pub struct Monitor {
     enabled: AtomicBool,
     target_opacity_bits: AtomicU64,
-    window_id: AtomicU64,
     started: AtomicBool,
     available: AtomicBool,
 }
@@ -29,27 +26,21 @@ pub fn configure(
     {
         if !super::linux_supports_global_window_coordinates() {
             monitor.enabled.store(false, Ordering::Release);
-            apply_native_hover_state(&window, false, 1.0);
+            schedule_native_hover_state(&window, false, 1.0);
             return false;
         }
-        let Some(window_id) = x11_window_id(&window) else {
-            monitor.enabled.store(false, Ordering::Release);
-            apply_native_hover_state(&window, false, 1.0);
-            return false;
-        };
-        monitor.window_id.store(window_id, Ordering::Release);
         monitor
             .target_opacity_bits
             .store(target_opacity.clamp(0.0, 1.0).to_bits(), Ordering::Release);
 
         if !enabled {
             monitor.enabled.store(false, Ordering::Release);
-            apply_native_hover_state(&window, false, 1.0);
+            schedule_native_hover_state(&window, false, 1.0);
             return false;
         }
-        if !ensure_worker(window.clone(), Arc::clone(&monitor)) {
+        if !ensure_monitor(window.clone(), Arc::clone(&monitor)) {
             monitor.enabled.store(false, Ordering::Release);
-            apply_native_hover_state(&window, false, 1.0);
+            schedule_native_hover_state(&window, false, 1.0);
             return false;
         }
         // Repeated startup assertions are intentionally idempotent: do not
@@ -66,7 +57,7 @@ pub fn configure(
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_worker(window: WebviewWindow, monitor: Arc<Monitor>) -> bool {
+fn ensure_monitor(window: WebviewWindow, monitor: Arc<Monitor>) -> bool {
     if monitor.available.load(Ordering::Acquire) {
         return true;
     }
@@ -78,79 +69,64 @@ fn ensure_worker(window: WebviewWindow, monitor: Arc<Monitor>) -> bool {
         return monitor.available.load(Ordering::Acquire);
     }
 
-    let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
-    let worker_monitor = Arc::clone(&monitor);
-    let spawn_result = std::thread::Builder::new()
-        .name("metrik-pinned-hover".into())
-        .spawn(move || {
-            let Some(pointer) = X11Pointer::connect() else {
-                worker_monitor.started.store(false, Ordering::Release);
-                let _ = ready_sender.send(false);
-                return;
-            };
-            worker_monitor.available.store(true, Ordering::Release);
-            let _ = ready_sender.send(true);
-            watch_x11_pointer(window, Arc::clone(&worker_monitor), pointer);
-            worker_monitor.available.store(false, Ordering::Release);
-            worker_monitor.started.store(false, Ordering::Release);
-        });
-    if spawn_result.is_err() {
+    let dispatcher = window.clone();
+    let target = window.clone();
+    let timer_monitor = Arc::clone(&monitor);
+    if dispatcher
+        .run_on_main_thread(move || install_hover_timer(target, timer_monitor))
+        .is_err()
+    {
         monitor.started.store(false, Ordering::Release);
         return false;
     }
-    ready_receiver
-        .recv_timeout(std::time::Duration::from_millis(250))
-        .unwrap_or(false)
+    monitor.available.store(true, Ordering::Release);
+    true
 }
 
 #[cfg(target_os = "linux")]
-fn watch_x11_pointer(window: WebviewWindow, monitor: Arc<Monitor>, pointer: X11Pointer) {
+fn install_hover_timer(window: WebviewWindow, monitor: Arc<Monitor>) {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        monitor.available.store(false, Ordering::Release);
+        monitor.started.store(false, Ordering::Release);
+        return;
+    };
+    let Some(pointer) = X11Pointer::connect() else {
+        monitor.available.store(false, Ordering::Release);
+        monitor.started.store(false, Ordering::Release);
+        return;
+    };
+
     let mut last_inside = false;
-    let mut last_window_id = 0;
     let mut last_target_bits = 1.0_f64.to_bits();
-    loop {
+    gtk::glib::timeout_add_local(HOVER_POLL_INTERVAL, move || {
         if !monitor.enabled.load(Ordering::Acquire) {
             if last_inside {
-                apply_native_hover_state(&window, false, 1.0);
+                apply_gtk_hover_state(&gtk_window, false, 1.0);
                 last_inside = false;
             }
-            std::thread::sleep(IDLE_POLL_INTERVAL);
-            continue;
+            return gtk::glib::ControlFlow::Continue;
         }
 
-        let visible = match window.is_visible() {
-            Ok(visible) => visible,
-            Err(_) => break,
-        };
-        if !visible {
+        if !gtk_window.is_visible() {
             if last_inside {
-                apply_native_hover_state(&window, false, 1.0);
+                apply_gtk_hover_state(&gtk_window, false, 1.0);
                 last_inside = false;
             }
-            std::thread::sleep(IDLE_POLL_INTERVAL);
-            continue;
+            return gtk::glib::ControlFlow::Continue;
         }
 
-        let window_id = monitor.window_id.load(Ordering::Acquire);
         let target_bits = monitor.target_opacity_bits.load(Ordering::Acquire);
-        let inside = pointer
-            .inside_window(window_id)
-            // A transient X11 query failure keeps the previous state so the
-            // widget never flashes back to full opacity for one poll.
-            .unwrap_or(last_inside);
+        let inside = gtk_pointer_inside_window(&gtk_window, &pointer).unwrap_or(last_inside);
 
-        if inside != last_inside
-            || window_id != last_window_id
-            || (inside && target_bits != last_target_bits)
-        {
-            apply_native_hover_state(&window, inside, f64::from_bits(target_bits));
+        if inside != last_inside || (inside && target_bits != last_target_bits) {
+            apply_gtk_hover_state(&gtk_window, inside, f64::from_bits(target_bits));
             last_inside = inside;
-            last_window_id = window_id;
             last_target_bits = target_bits;
         }
-        std::thread::sleep(HOVER_POLL_INTERVAL);
-    }
-    apply_native_hover_state(&window, false, 1.0);
+        gtk::glib::ControlFlow::Continue
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -162,23 +138,29 @@ fn hover_state(inside: bool, target_opacity: f64) -> (f64, bool) {
     };
     // Opacity only controls painting: both fade and complete-hide are passive
     // presentation modes and must let clicks reach the desktop underneath.
-    // The independent XQueryPointer worker still knows when the global pointer
-    // leaves the unchanged bounds and restores normal hit-testing immediately.
+    // The independent XQueryPointer connection still knows when the global
+    // pointer leaves the unchanged bounds and restores hit-testing immediately.
     (opacity, inside)
 }
 
 #[cfg(target_os = "linux")]
-fn apply_native_hover_state(window: &WebviewWindow, inside: bool, target_opacity: f64) {
+fn apply_gtk_hover_state(gtk_window: &gtk::ApplicationWindow, inside: bool, target_opacity: f64) {
+    use gtk::prelude::*;
+
     let (opacity, ignore_cursor_events) = hover_state(inside, target_opacity);
+    let Some(gdk_window) = gtk_window.window() else {
+        return;
+    };
 
     if ignore_cursor_events {
         // Hide first, then expose the desktop underneath to input. On restore,
         // reverse the order so a visible widget never remains click-through.
-        set_native_opacity(window, opacity);
-        let _ = window.set_ignore_cursor_events(true);
+        gtk_window.set_opacity(opacity);
+        let empty_region = gtk::cairo::Region::create();
+        gdk_window.input_shape_combine_region(&empty_region, 0, 0);
     } else {
-        let _ = window.set_ignore_cursor_events(false);
-        set_native_opacity(window, opacity);
+        gtk_window.input_shape_combine_region(None);
+        gtk_window.set_opacity(opacity);
     }
 }
 
@@ -191,70 +173,17 @@ fn point_inside_window(pointer_x: i32, pointer_y: i32, width: u32, height: u32) 
 }
 
 #[cfg(target_os = "linux")]
-fn x11_window_id(window: &WebviewWindow) -> Option<u64> {
+fn gtk_pointer_inside_window(
+    window: &gtk::ApplicationWindow,
+    pointer: &X11Pointer,
+) -> Option<bool> {
     use gtk::prelude::*;
 
-    let gtk_window = window.gtk_window().ok()?;
-    let gdk_window = gtk_window.window()?;
+    let gdk_window = window.window()?;
     let x11_window = gdk_window.downcast::<gdkx11::X11Window>().ok()?;
-    Some(x11_window.xid())
+    pointer.inside_window(x11_window.xid())
 }
 
-#[cfg(target_os = "linux")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) {
-    use gtk::prelude::*;
-
-    let dispatcher = window.clone();
-    let target = window.clone();
-    let _ = dispatcher.run_on_main_thread(move || {
-        if let Ok(gtk_window) = target.gtk_window() {
-            gtk_window.set_opacity(opacity);
-        }
-    });
-}
-
-#[cfg(target_os = "linux")]
-mod xlib {
-    use std::ffi::{c_char, c_int, c_uint, c_ulong};
-
-    #[repr(C)]
-    pub struct Display {
-        _private: [u8; 0],
-    }
-
-    pub type Window = c_ulong;
-
-    #[link(name = "X11")]
-    extern "C" {
-        pub fn XOpenDisplay(display_name: *const c_char) -> *mut Display;
-        pub fn XQueryPointer(
-            display: *mut Display,
-            window: Window,
-            root_return: *mut Window,
-            child_return: *mut Window,
-            root_x_return: *mut c_int,
-            root_y_return: *mut c_int,
-            window_x_return: *mut c_int,
-            window_y_return: *mut c_int,
-            mask_return: *mut c_uint,
-        ) -> c_int;
-        pub fn XGetGeometry(
-            display: *mut Display,
-            drawable: Window,
-            root_return: *mut Window,
-            x_return: *mut c_int,
-            y_return: *mut c_int,
-            width_return: *mut c_uint,
-            height_return: *mut c_uint,
-            border_width_return: *mut c_uint,
-            depth_return: *mut c_uint,
-        ) -> c_int;
-        pub fn XCloseDisplay(display: *mut Display) -> c_int;
-    }
-}
-
-/// The X11 connection is opened, queried and eventually closed by the same
-/// worker thread. GTK owns its own display connection on the main thread.
 #[cfg(target_os = "linux")]
 struct X11Pointer {
     display: *mut xlib::Display,
@@ -323,6 +252,57 @@ impl Drop for X11Pointer {
             xlib::XCloseDisplay(self.display);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+mod xlib {
+    use std::ffi::{c_char, c_int, c_uint, c_ulong};
+
+    #[repr(C)]
+    pub struct Display {
+        _private: [u8; 0],
+    }
+
+    pub type Window = c_ulong;
+
+    #[link(name = "X11")]
+    extern "C" {
+        pub fn XOpenDisplay(display_name: *const c_char) -> *mut Display;
+        pub fn XQueryPointer(
+            display: *mut Display,
+            window: Window,
+            root_return: *mut Window,
+            child_return: *mut Window,
+            root_x_return: *mut c_int,
+            root_y_return: *mut c_int,
+            window_x_return: *mut c_int,
+            window_y_return: *mut c_int,
+            mask_return: *mut c_uint,
+        ) -> c_int;
+        pub fn XGetGeometry(
+            display: *mut Display,
+            drawable: Window,
+            root_return: *mut Window,
+            x_return: *mut c_int,
+            y_return: *mut c_int,
+            width_return: *mut c_uint,
+            height_return: *mut c_uint,
+            border_width_return: *mut c_uint,
+            depth_return: *mut c_uint,
+        ) -> c_int;
+        pub fn XCloseDisplay(display: *mut Display) -> c_int;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn schedule_native_hover_state(window: &WebviewWindow, inside: bool, opacity: f64) {
+    let dispatcher = window.clone();
+    let target = window.clone();
+    let _ = dispatcher.run_on_main_thread(move || {
+        if let Ok(gtk_window) = target.gtk_window() {
+            apply_gtk_hover_state(&gtk_window, inside, opacity);
+        }
+    });
 }
 
 #[cfg(all(test, target_os = "linux"))]
