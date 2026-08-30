@@ -2140,11 +2140,13 @@ mod tests {
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
-        let today = Local::now().date_naive();
+        // 日期固定在周三：北京周末全天谷段的规则生效后，周末的本地日里根本
+        // 没有峰段时刻，取“今天”会让这个测试在北京时间周末必挂。
+        let today = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
         let local_now = test_local_time(today, 23);
 
         // 本地一天覆盖 24 个 UTC 小时，峰段最长的空档也只有 15 小时，
-        // 所以 0–22 点里一定各能找到一个峰段和一个谷段时刻（与时区无关）。
+        // 所以工作日里 0–22 点一定各能找到一个峰段和一个谷段时刻（与时区无关）。
         let hour_ms = |hour: u32| -> Option<i64> {
             Local
                 .from_local_datetime(&today.and_hms_opt(hour, 0, 0).unwrap())
