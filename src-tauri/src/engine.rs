@@ -1549,14 +1549,6 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             }
             .into(),
         },
-        SourceView {
-            id: "qwen-quota".into(),
-            kind: "official".into(),
-            label: "Qwen Token Plan 官方配额".into(),
-            detail: "阿里百炼个人 Token Plan 是账户级套餐（pi 等客户端用它的 sk-sp- key 消耗），额度只能从百炼控制台读取：用你提供的登录 cookie 查询 5 小时与每周滚动窗，cookie 仅明文保存在本机、不入账本不同步，可随时清除。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
     ];
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {

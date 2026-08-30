@@ -635,20 +635,6 @@ async function configureQoderCookie(cookie) {
   return invoke("configure_qoder_cookie", { cookie });
 }
 
-async function getQwenCookieStatus() {
-  if (!isTauriRuntime()) {
-    return { demo: true, configured: false, source: null, message: null };
-  }
-  return invoke("qwen_cookie_status");
-}
-
-async function configureQwenCookie(cookie) {
-  if (!isTauriRuntime()) {
-    throw new Error("浏览器演示模式不能配置 cookie");
-  }
-  return invoke("configure_qwen_cookie", { cookie });
-}
-
 async function getClaudeOauthStatus() {
   if (!isTauriRuntime()) {
     return {
@@ -692,6 +678,4 @@ export {
   setClaudeOauth,
   getQoderCookieStatus,
   configureQoderCookie,
-  getQwenCookieStatus,
-  configureQwenCookie,
 };
