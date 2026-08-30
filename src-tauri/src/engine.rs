@@ -1549,14 +1549,6 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             }
             .into(),
         },
-        SourceView {
-            id: "qwen-quota".into(),
-            kind: "official".into(),
-            label: "Qwen Token Plan 官方配额".into(),
-            detail: "阿里百炼个人 Token Plan 是账户级套餐（pi 等客户端用它的 sk-sp- key 消耗），额度只能从百炼控制台读取：用你提供的登录 cookie 查询 5 小时与每周滚动窗，cookie 仅明文保存在本机、不入账本不同步，可随时清除。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
     ];
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
@@ -2140,11 +2132,13 @@ mod tests {
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
-        let today = Local::now().date_naive();
+        // 日期固定在周三：北京周末全天谷段的规则生效后，周末的本地日里根本
+        // 没有峰段时刻，取“今天”会让这个测试在北京时间周末必挂。
+        let today = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
         let local_now = test_local_time(today, 23);
 
         // 本地一天覆盖 24 个 UTC 小时，峰段最长的空档也只有 15 小时，
-        // 所以 0–22 点里一定各能找到一个峰段和一个谷段时刻（与时区无关）。
+        // 所以工作日里 0–22 点一定各能找到一个峰段和一个谷段时刻（与时区无关）。
         let hour_ms = |hour: u32| -> Option<i64> {
             Local
                 .from_local_datetime(&today.and_hms_opt(hour, 0, 0).unwrap())

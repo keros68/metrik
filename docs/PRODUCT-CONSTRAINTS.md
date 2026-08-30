@@ -49,10 +49,14 @@ change.
   Their account-level Credits are shared, so they must never create separate
   agent counters or be summed. Qoder CLI's local telemetry is not a token
   source when it reports zero counters.
-- Qoder Credits and the Bailian personal Token Plan (shown as `Qwen`) are
-  separate account-level quotas from the same vendor group: different plans,
-  accounts, and quota hosts. Never merge, sum, or cross-fill their windows or
-  cookies.
+- Qoder Credits and the Bailian personal Token Plan are separate
+  account-level products from the same vendor group: different plans,
+  accounts, and hosts. Never merge, sum, or cross-fill their windows or
+  credentials. Metrik does not fetch a quota for the Bailian personal Token
+  Plan (shown as `Qwen`): its only source is the console's interactive login
+  state, whose cookies stopped working within days on a real account, and the
+  product exposes no programmable quota API. The Qwen card carries locally
+  attributed usage only, like the Pi card.
 - Pi is a harness, not a quota identity: it has no coding plan of its own.
   Its session usage is attributed by provider — GLM Coding Plan providers to
   the GLM card, Qwen Token Plan providers to the Qwen card, direct providers

@@ -18,7 +18,8 @@ use std::path::PathBuf;
 pub enum Probe {
     /// 任一路径存在即算装了。路径已按平台解析成绝对路径。
     Paths(Vec<PathBuf>),
-    /// 由用户配置的凭据提供（Qoder 只有账户级 Credits，没有本地日志）。
+    /// 由用户配置的凭据提供（Qoder 只有账户级 Credits，没有本地日志；Qwen 看
+    /// pi auth.json 里有没有百炼 Token Plan 的 key）。
     Credential(fn() -> bool),
     /// 没有便宜且可靠的安装痕迹。此类 Agent 只能靠"本周期有用量"反推，
     /// 由调用方补上，这里如实返回"未知"而不是猜一个路径。
@@ -117,9 +118,11 @@ pub fn table() -> Vec<AgentProbe> {
             ]),
         },
         AgentProbe {
-            // 配额-only：百炼 Token Plan 只有控制台 cookie 能查（同 Qoder 模式）。
+            // 百炼 Token Plan 没有可编程的额度接口，控制台 cookie 只能活几天，
+            // 官方额度源已移除；卡片只承载 pi 归属过来的用量，探针看 pi 配了没配
+            // 百炼 Token Plan 的 key。
             id: "qwen",
-            probe: Probe::Credential(|| coding_quota::qwen_cookie_source().is_some()),
+            probe: Probe::Credential(coding_quota::pi_auth_has_qwen_token_plan),
         },
     ]
 }

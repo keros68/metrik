@@ -202,7 +202,7 @@ fn env_cookie(name: &str) -> Option<String> {
 }
 
 /// cookie 文件与应用数据库同目录（identifier 与 tauri.conf.json 一致）。
-/// 写与读走同一个 helper，路径自洽。各 provider 一份文件（qoder/qwen）。
+/// 写与读走同一个 helper，路径自洽。各 provider 一份文件（当前只有 qoder）。
 fn provider_cookie_file(name: &str) -> Option<PathBuf> {
     Some(
         dirs::data_local_dir()?
@@ -219,10 +219,6 @@ fn read_provider_cookie_file(name: &str) -> Option<String> {
 
 pub fn read_qoder_cookie_file() -> Option<String> {
     read_provider_cookie_file("qoder")
-}
-
-pub fn read_qwen_cookie_file() -> Option<String> {
-    read_provider_cookie_file("qwen")
 }
 
 /// 宽容解析用户粘贴的内容：接受裸 cookie 值、带 `Cookie:` 前缀的单行、
@@ -300,7 +296,7 @@ pub fn normalize_qoder_cookie_input(raw: &str) -> Option<String> {
 }
 
 /// 保存（Some 且非空）或清除（None/空）本地 cookie 文件；返回保存后是否存在。
-/// 各 provider 共用同一套文件读写（qoder / qwen）。
+/// 各 provider 共用同一套文件读写（当前只有 qoder）。
 pub fn write_provider_cookie_file(name: &str, cookie: Option<&str>) -> Result<bool> {
     let path = provider_cookie_file(name).context("无法定位本地数据目录")?;
     match cookie.map(str::trim).filter(|value| !value.is_empty()) {
@@ -326,26 +322,12 @@ pub fn write_qoder_cookie_file(cookie: Option<&str>) -> Result<bool> {
     write_provider_cookie_file("qoder", cookie)
 }
 
-pub fn write_qwen_cookie_file(cookie: Option<&str>) -> Result<bool> {
-    write_provider_cookie_file("qwen", cookie)
-}
-
 /// 当前生效的 cookie 来源（设置页展示用）；None = 未配置。
 pub fn qoder_cookie_source() -> Option<&'static str> {
     if read_qoder_cookie_file().is_some() {
         return Some("file");
     }
     ["QODER_COOKIE", "METRIK_QODER_COOKIE"]
-        .iter()
-        .any(|name| env_cookie(name).is_some())
-        .then_some("env")
-}
-
-pub fn qwen_cookie_source() -> Option<&'static str> {
-    if read_qwen_cookie_file().is_some() {
-        return Some("file");
-    }
-    ["QWEN_COOKIE", "METRIK_QWEN_COOKIE"]
         .iter()
         .any(|name| env_cookie(name).is_some())
         .then_some("env")
@@ -416,158 +398,6 @@ fn qoder_summary(payload: &Value, camel: &str, snake: &str) -> Option<(f64, f64)
     let used = number("usedValue", "used_value")?;
     let limit = number("limitValue", "limit_value")?;
     (used >= 0.0 && limit >= 0.0).then_some((used, limit))
-}
-
-// ── Qwen Token Plan（阿里百炼个人版）──────────────────────────
-// 唯一可用来源是百炼控制台的登录态（cookie），API key 查不到套餐额度。
-// 请求形状 2026-08 按真实账号核验（无头 Edge 抓包 + curl 复现）：
-//   1) GET bailian.console.aliyun.com/tool/user/info.json → data.secToken；
-//   2) POST bailian-cs.console.aliyun.com/data/api.json
-//      ?action=BroadScopeAspnGateway&product=sfm_bailian&api=<urlencoded API 名>
-//      body: params={"Api":…,"V":"1.0","Data":{"cornerstoneParam":{…}}}
-//            &region=cn-beijing&sec_token=…（表单编码，ureq send_form 即可）
-// 少了 sec_token/region 会被网关弹到 err.taobao.com 错误页，看起来像 WAF。
-// usage 响应里窗口字段是 0..1 的**已用比例**（CodexBar 的解析同此：clamp 到
-// [0,1] 再乘 100），重置时间是毫秒时间戳。5 小时窗与周窗都可能缺席
-// （未活跃/套餐没有），缺哪个就不出哪个窗口。
-const QWEN_INFO_URL: &str = "https://bailian.console.aliyun.com/tool/user/info.json";
-const QWEN_GATEWAY_URL: &str = "https://bailian-cs.console.aliyun.com/data/api.json";
-const QWEN_USAGE_API: &str = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage";
-const QWEN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
-
-fn resolve_qwen_cookie() -> Option<String> {
-    if let Some(cookie) = read_qwen_cookie_file() {
-        return Some(cookie);
-    }
-    ["QWEN_COOKIE", "METRIK_QWEN_COOKIE"]
-        .iter()
-        .find_map(|name| env_cookie(name))
-}
-
-pub fn fetch_qwen_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
-    let cookie = resolve_qwen_cookie()
-        .context("未找到 Qwen Token Plan 的 cookie（设置页保存，或设置 QWEN_COOKIE 环境变量）")?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-
-    // 1. sec_token：拿不到时照发（尽力而为，个别账号无 sec_token 也能过）。
-    let info = agent
-        .get(QWEN_INFO_URL)
-        .set("Cookie", &cookie)
-        .set("User-Agent", QWEN_UA)
-        .set("Accept", "application/json")
-        .set("Referer", "https://bailian.console.aliyun.com/")
-        .call()
-        .map_err(|error| map_ureq_error("Qwen", error))?;
-    let info_body = info.into_string().context("读取 Qwen 会话信息失败")?;
-    if info_body.trim_start().starts_with('<') {
-        bail!("Qwen cookie 已失效（返回登录页），请重新获取");
-    }
-    let sec_token = serde_json::from_str::<Value>(&info_body)
-        .ok()
-        .and_then(|json| {
-            json.pointer("/data/secToken")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_default();
-
-    // 2. usage：控制台网关调用，表单编码。
-    let payload = serde_json::json!({
-        "Api": QWEN_USAGE_API,
-        "V": "1.0",
-        "Data": {
-            "cornerstoneParam": {
-                "feURL": "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
-                "protocol": "V2",
-                "console": "ONE_CONSOLE",
-                "productCode": "p_efm",
-                "switchUserType": 3,
-                "domain": "bailian.console.aliyun.com",
-                "consoleSite": "BAILIAN_ALIYUN",
-                "xsp_lang": "zh-CN"
-            }
-        }
-    });
-    let response = agent
-        .post(&format!(
-            "{QWEN_GATEWAY_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api={}&_v=undefined",
-            QWEN_USAGE_API.replace('/', "%2F")
-        ))
-        .set("Cookie", &cookie)
-        .set("User-Agent", QWEN_UA)
-        .set("Accept", "application/json")
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .set("Origin", "https://bailian.console.aliyun.com")
-        .set("Referer", "https://bailian.console.aliyun.com/cn-beijing?tab=plan")
-        .send_form(&[
-            ("params", payload.to_string().as_str()),
-            ("region", "cn-beijing"),
-            ("sec_token", sec_token.as_str()),
-        ])
-        .map_err(|error| map_ureq_error("Qwen", error))?;
-    let body = response.into_string().context("读取 Qwen 配额响应失败")?;
-    if body.trim_start().starts_with('<') {
-        bail!("Qwen cookie 已失效（网关返回错误页），请重新获取");
-    }
-    let json: Value = serde_json::from_str(&body).context("Qwen 配额响应不是预期的 JSON")?;
-    let samples = parse_qwen_quota(&json, chrono::Utc::now().timestamp_millis());
-    if samples.is_empty() {
-        bail!("Qwen 配额响应缺少可用窗口");
-    }
-    Ok(samples)
-}
-
-/// 深度寻找带窗口字段的对象：信封嵌套（data.DataV2.data.data）可能随网关
-/// 版本变，字段名才是稳定契约；拿到任何一个含窗口字段的对象即可。
-fn qwen_find_usage_object<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
-    let object = value.as_object()?;
-    if names.iter().any(|name| object.contains_key(*name)) {
-        return Some(value);
-    }
-    object
-        .values()
-        .find_map(|child| qwen_find_usage_object(child, names))
-}
-
-fn parse_qwen_quota(value: &Value, now: i64) -> Vec<QuotaSample> {
-    // 网关把业务错误放在 HTTP 200 的 body 里（code 非 200 / success=false）。
-    if let Some(code) = value.get("code").and_then(Value::as_str) {
-        if code != "200" {
-            return Vec::new();
-        }
-    }
-    let Some(usage) = qwen_find_usage_object(value, &["per5HourPercentage", "per1WeekPercentage"])
-    else {
-        return Vec::new();
-    };
-    let number = |name: &str| -> Option<f64> {
-        usage
-            .get(name)
-            .and_then(|raw| raw.as_f64().or_else(|| raw.as_str()?.trim().parse().ok()))
-    };
-    let mut samples = Vec::new();
-    for (percent_field, reset_field, key) in [
-        ("per5HourPercentage", "per5HourResetTime", "five_hour"),
-        ("per1WeekPercentage", "per1WeekResetTime", "seven_day"),
-    ] {
-        let Some(ratio) = number(percent_field) else {
-            continue;
-        };
-        // 0..1 已用比例 → 剩余百分比。越界值 clamp，不猜。
-        let used = ratio.clamp(0.0, 1.0);
-        let resets_at_ms = number(reset_field).map(|ms| ms as i64);
-        samples.push(QuotaSample {
-            adapter_id: "qwen",
-            window_key: key.to_owned(),
-            remaining_percent: ((1.0 - used) * 100.0).clamp(0.0, 100.0),
-            resets_at_ms: resets_at_ms
-                .and_then(|ms| crate::domain::sane_resets_at_ms(key, ms, now)),
-            collected_at_ms: now,
-            source_label: "Qwen Token Plan 官方配额".into(),
-            quality: "official_live",
-        });
-    }
-    samples
 }
 
 pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
@@ -988,6 +818,23 @@ fn pi_auth_paths() -> Vec<PathBuf> {
         home.join(".pi").join("agent").join("auth.json"),
         home.join(".omp").join("agent").join("auth.json"),
     ]
+}
+
+/// 百炼 Token Plan 的官方额度入口已移除：控制台网关只认交互式登录态，
+/// cookie 实测只能活几天，百炼也没有可编程查询该额度的官方接口（2026-08 核
+/// 对官方 SDK 全部接口无相关端点）。Qwen 卡片从此只承载 pi 归属过来的本地用
+/// 量；安装探针降级为“pi auth.json 里是否配置了百炼 Token Plan 的 key”。
+pub fn pi_auth_has_qwen_token_plan() -> bool {
+    pi_auth_paths()
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .any(|raw| auth_json_has_qwen_token_plan(&raw))
+}
+
+fn auth_json_has_qwen_token_plan(raw: &str) -> bool {
+    parse_provider_key_map(raw)
+        .keys()
+        .any(|provider| crate::pi_providers::credited_agent(Some(provider.as_str())) == "qwen")
 }
 
 /// pi 是 harness，不是配额身份：它 auth.json 里的 GLM key 与 zcode 桌面端
@@ -1629,6 +1476,21 @@ mod tests {
         assert!(pi_glm_credentials_from_auth_json("not json").is_empty());
     }
 
+    /// Qwen 探针只看百炼 Token Plan 的 provider；GLM 与直连 key 不算。
+    #[test]
+    fn qwen_probe_matches_only_token_plan_providers() {
+        assert!(auth_json_has_qwen_token_plan(
+            r#"{"qwen-token-plan-cn": {"type": "api_key", "key": "sk-sp-x"}}"#
+        ));
+        assert!(auth_json_has_qwen_token_plan(
+            r#"{"qwen-token-plan-individual": {"type": "api_key", "key": "k"}}"#
+        ));
+        assert!(!auth_json_has_qwen_token_plan(
+            r#"{"zai-coding-cn": {"type": "api_key", "key": "k"}, "anthropic": {"type": "api_key", "key": "k"}}"#
+        ));
+        assert!(!auth_json_has_qwen_token_plan("not json"));
+    }
+
     /// 同一份 GLM 响应解析后，样本落在各自卡片的 adapter_id 下。
     #[test]
     fn glm_quota_parsing_keeps_the_requested_adapter_identity() {
@@ -1636,92 +1498,6 @@ mod tests {
         let samples = parse_glm_quota(&json, "pi");
         assert_eq!(samples.len(), 2);
         assert!(samples.iter().all(|sample| sample.adapter_id == "pi"));
-    }
-
-    /// 真机抓包（2026-08，百炼个人 Token Plan）：信封嵌套 data.DataV2.data.data，
-    /// 字段是 0..1 的已用比例；该账号当时只有周窗（1.0 = 已用完，约 2.6 小时后重置）。
-    const QWEN_LIVE_RESPONSE: &str = r#"{
-        "code": "200",
-        "data": {
-            "DataV2": {
-                "ret": ["SUCCESS::接口调用成功"],
-                "data": {
-                    "msg": "Success.",
-                    "code": "SUCCESS",
-                    "data": {
-                        "per1WeekResetTime": 1787202720000,
-                        "per1WeekPercentage": 1.0
-                    },
-                    "requestId": "75667df2-d953-9dbc-8e56-8bf7a38a73f8",
-                    "success": true
-                }
-            },
-            "success": true,
-            "httpStatus": 200,
-            "errorCode": "",
-            "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage",
-            "errorMsg": ""
-        },
-        "httpStatusCode": "200",
-        "requestId": "75667df2-d953-4dbc-8e56-8bf7a38a73f8",
-        "successResponse": true
-    }"#;
-
-    #[test]
-    fn qwen_quota_reads_ratios_and_only_present_windows() {
-        let json: Value = serde_json::from_str(QWEN_LIVE_RESPONSE).unwrap();
-        let samples = parse_qwen_quota(&json, 1_787_193_340_000);
-
-        // 只有周窗：1.0 已用比例 → 剩余 0%，重置时刻原样保留（在周窗合理范围内）。
-        assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].adapter_id, "qwen");
-        assert_eq!(samples[0].window_key, "seven_day");
-        assert_eq!(samples[0].remaining_percent, 0.0);
-        assert_eq!(samples[0].resets_at_ms, Some(1_787_202_720_000));
-    }
-
-    #[test]
-    fn qwen_quota_handles_both_windows_and_ratio_scale() {
-        // 5h 窗 0.25 已用 → 剩 75%；周窗 0.05 → 剩 95%；百分比字符串也认。
-        let json: Value = serde_json::json!({
-            "code": "200",
-            "data": {"DataV2": {"data": {"data": {
-                "per5HourPercentage": 0.25,
-                "per5HourResetTime": 1787196940000_i64,
-                "per1WeekPercentage": "0.05",
-                "per1WeekResetTime": 1787202720000_i64
-            }}}}
-        });
-        let samples = parse_qwen_quota(&json, 1_787_193_340_000);
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0].window_key, "five_hour");
-        assert_eq!(samples[0].remaining_percent, 75.0);
-        assert_eq!(samples[1].window_key, "seven_day");
-        assert_eq!(samples[1].remaining_percent, 95.0);
-    }
-
-    #[test]
-    fn qwen_quota_rejects_business_errors_and_windowless_payloads() {
-        let error = serde_json::json!({"code": "500", "errorMsg": "系统异常"});
-        assert!(parse_qwen_quota(&error, 0).is_empty());
-        let no_windows = serde_json::json!({"code": "200", "data": {"foo": 1}});
-        assert!(parse_qwen_quota(&no_windows, 0).is_empty());
-    }
-
-    /// 打真实百炼接口的烟测：需要设置页保存或 QWEN_COOKIE 里有控制台 cookie。
-    #[test]
-    #[ignore = "reads local Qwen console cookie and calls the live quota API"]
-    fn live_qwen_quota_smoke_test() {
-        let samples = fetch_qwen_quota(Duration::from_secs(15)).expect("fetch qwen quota");
-        assert!(!samples.is_empty(), "配额响应里没有可用窗口");
-        for sample in &samples {
-            println!(
-                "qwen quota: window={} remaining={:.1}% resets_at={:?}",
-                sample.window_key, sample.remaining_percent, sample.resets_at_ms
-            );
-            assert_eq!(sample.adapter_id, "qwen");
-            assert!((0.0..=100.0).contains(&sample.remaining_percent));
-        }
     }
 
     /// 真机抓包（2026-07，Kimi Code + OAuth 登录），只把 userId 换成占位符。

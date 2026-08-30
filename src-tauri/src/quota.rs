@@ -132,7 +132,6 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         ("kimiwork", coding_quota::fetch_kimiwork_quota),
         ("qoder", coding_quota::fetch_qoder_quota),
         ("workbuddy", coding_quota::fetch_workbuddy_quota),
-        ("qwen", coding_quota::fetch_qwen_quota),
     ] {
         providers.push(Box::new(HttpQuota { adapter_id, fetch }));
     }
@@ -200,8 +199,8 @@ pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> 
     Ok(())
 }
 
-/// 清除注册表已不存在的 adapter 的残留配额行。0.17.2 把 pi 配额源移除后，
-/// 0.17.1 写入的 pi 行若不清理，卡片/胶囊会继续显示一个不再有来源的配额。
+/// 清除注册表已不存在的 adapter 的残留配额行。来源被移除后（如 pi 额度源、
+/// Qwen Token Plan 的控制台 cookie 源），旧版本写入的行若不清理，卡片/胶囊会继续显示一个不再有来源的配额。
 /// 只删“不再有 provider”的 adapter；仍在注册表里的（含 kimiwork 这类内部源）
 /// 即使本轮拉空也保留旧行（陈旧展示由展示层负责）。
 pub fn prune_unmanaged_quota_rows(connection: &Connection) -> Result<()> {
@@ -348,8 +347,9 @@ mod tests {
     fn prune_removes_rows_of_removed_quota_sources_only() {
         use crate::domain::QuotaSample;
         let connection = memory_ledger();
-        // pi 曾是配额源（0.17.1），0.17.2 移除；kimiwork 仍在注册表。
-        for adapter in ["pi", "kimiwork"] {
+        // pi 曾是配额源（0.17.1）、Qwen 控制台 cookie 源后来也移除；
+        // kimiwork 仍在注册表。
+        for adapter in ["pi", "qwen", "kimiwork"] {
             storage::upsert_quota(
                 &connection,
                 &QuotaSample {
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(
             left,
             vec!["kimiwork".to_string()],
-            "pi 残留应被清除、kimiwork 保留"
+            "pi 与 qwen 残留应被清除、kimiwork 保留"
         );
     }
 
@@ -400,7 +400,6 @@ mod tests {
                 "kimi",
                 "kimiwork",
                 "qoder",
-                "qwen",
                 "workbuddy",
                 "zcode"
             ]

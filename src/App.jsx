@@ -60,8 +60,6 @@ import {
   getUsageSessions,
   getUsageProjects,
   getProjectRules,
-  getQwenCookieStatus,
-  configureQwenCookie,
   setProjectRules,
   getUsageSnapshot,
   rebuildLocalLedger,
@@ -219,8 +217,8 @@ const AGENT_META = {
     iconClass: "agent-icon--pi",
   },
   qwen: {
-    // 配额-only：百炼个人 Token Plan 是账户级套餐，由 pi 等客户端的
-    // qwen-token-plan key 消耗；额度只能在百炼控制台查。
+    // 百炼个人 Token Plan 是账户级套餐，由 pi 等客户端的 qwen-token-plan key
+    // 消耗；额度没有可编程的官方接口，这张卡只记本地归属用量。
     label: "Qwen",
     // 千问 App 官方图标；紫与 GLM 的 #6a5ae0 同系不同值，亮度更高。
     accent: "#7b5cd6",
@@ -2881,106 +2879,6 @@ const SETTINGS_TABS = [
   },
 ];
 
-function QwenQuotaCard({ onSnapshotRefresh }) {
-  const [status, setStatus] = useState(null);
-  const [cookieInput, setCookieInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getQwenCookieStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const apply = async (cookie) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await configureQwenCookie(cookie);
-      setStatus(next);
-      setCookieInput("");
-      // 验证失败也已保存：如实转述后端的结果，不粉饰。
-      setFeedback({
-        tone: next.message?.includes("失败") ? "error" : "success",
-        message: next.message || "已更新。",
-      });
-      if (cookie && !next.message?.includes("失败")) onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `操作失败：${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="settings-card">
-      <h2>Qwen Token Plan 官方额度</h2>
-      <p className="settings-muted">
-        阿里百炼个人 Token Plan 是账户级套餐，pi 等客户端用它的订阅 key 消耗额度；额度只能在百炼控制台查询，需要你提供一次
-        登录 cookie。cookie 仅明文保存在本机（不入账本、不进同步导出），可随时清除。
-      </p>
-      <details className="settings-guide">
-        <summary>如何获取 cookie</summary>
-        <ol>
-          <li>浏览器登录 bailian.console.aliyun.com，打开「资源食用 → Token 管理」下的 Token Plan 页；</li>
-          <li>按 F12 打开开发者工具 → 网络（Network）标签，点过滤器里的 Fetch/XHR；</li>
-          <li>刷新页面，右键任意 aliyun.com 域名的请求 → 复制 →「以 cURL 格式复制」，把整段粘贴到下面——会自动提取其中的 Cookie。</li>
-        </ol>
-      </details>
-      {status?.demo ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
-      ) : (
-        <>
-          <div className="settings-directory-row">
-            <input
-              type="password"
-              value={cookieInput}
-              placeholder="粘贴 Cookie 值 / 整段请求标头 / cURL 命令"
-              spellCheck={false}
-              disabled={busy}
-              aria-label="Qwen cookie"
-              onChange={(event) => setCookieInput(event.target.value)}
-            />
-            <button
-              type="button"
-              className="ledger-button ledger-button--primary"
-              disabled={busy || !cookieInput.trim()}
-              onClick={() => apply(cookieInput.trim())}
-            >
-              保存并验证
-            </button>
-          </div>
-          {status?.source === "file" && (
-            <button
-              type="button"
-              className="ledger-button ledger-button--secondary"
-              disabled={busy}
-              onClick={() => apply(null)}
-            >
-              清除已保存的 cookie
-            </button>
-          )}
-          {feedback && (
-            <p
-              className={`settings-feedback settings-feedback--${feedback.tone}`}
-              role={feedback.tone === "error" ? "alert" : "status"}
-            >
-              {feedback.message}
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
@@ -3112,7 +3010,6 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
           <>
             <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
-            <QwenQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
           </>
         )}
 

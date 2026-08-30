@@ -86,7 +86,12 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   quota source additionally accepts the key pi stores in
   `~/.pi/agent/auth.json`, so a pi-only install still shows the GLM quota on
   the GLM card. The Pi card carries local usage only, never a quota.
-- **Qwen**: the Bailian personal Token Plan is an account-level subscription consumed by any client holding its `sk-sp-` key, but its quota is only exposed through the Bailian console login. The cookie-based source (same storage rules as Qoder) calls the console gateway verified on a real account in 2026-08: `tool/user/info.json` yields a `secToken`, then a form-encoded `BroadScopeAspnGateway` call to `bailian-cs.console.aliyun.com` returns `per5Hour*`/`per1Week*` used **ratios (0..1, not percentage points)** and millisecond reset times; a request missing `sec_token`/`region` is bounced to an error page that looks like a WAF block. Absent windows are omitted, never fabricated.
+- **Qwen**: removed. The Bailian personal Token Plan exposes its quota only
+  behind the console's interactive login; its cookie stopped working within
+  days on a real account, and the product has no programmable quota API
+  (official OpenAPI surface checked 2026-08). The Qwen card carries local
+  usage attributed from pi sessions only; rows written by older versions are
+  cleaned up by the unmanaged-row prune.
 - A window whose reset time has passed without fresh data renders as `--`, not as its last known percentage.
 
 ## Storage

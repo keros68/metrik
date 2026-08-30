@@ -822,71 +822,6 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
     .map_err(|error| format!("qoder cookie task failed: {error}"))?
 }
 
-/// Qwen cookie 状态/配置视图与 Qoder 同构，设置页共用样式。
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct QwenCookieView {
-    configured: bool,
-    source: Option<&'static str>,
-    message: Option<String>,
-}
-
-#[tauri::command]
-async fn qwen_cookie_status() -> Result<QwenCookieView, String> {
-    let source = coding_quota::qwen_cookie_source();
-    Ok(QwenCookieView {
-        configured: source.is_some(),
-        source,
-        message: None,
-    })
-}
-
-/// 保存/清除 Qwen（百炼）控制台 cookie，保存后立即拉一次官方额度验证。
-#[tauri::command]
-async fn configure_qwen_cookie(cookie: Option<String>) -> Result<QwenCookieView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let normalized = match cookie.as_deref() {
-            Some(raw) => Some(
-                coding_quota::normalize_qoder_cookie_input(raw)
-                    .ok_or_else(|| "粘贴内容里没有找到 Cookie 行".to_owned())?,
-            ),
-            None => None,
-        };
-        let saved = coding_quota::write_qwen_cookie_file(normalized.as_deref())
-            .map_err(|error| error.to_string())?;
-        let source = coding_quota::qwen_cookie_source();
-        if !saved {
-            return Ok(QwenCookieView {
-                configured: source.is_some(),
-                source,
-                message: Some("已清除本地保存的 cookie。".to_owned()),
-            });
-        }
-        let message = match coding_quota::fetch_qwen_quota(std::time::Duration::from_secs(10)) {
-            Ok(samples) => {
-                let mut parts = Vec::new();
-                for sample in &samples {
-                    let label = if sample.window_key == "five_hour" {
-                        "5 小时"
-                    } else {
-                        "每周"
-                    };
-                    parts.push(format!("{label}剩余 {:.0}%", sample.remaining_percent));
-                }
-                format!("已保存并验证成功：{}。", parts.join("，"))
-            }
-            Err(error) => format!("已保存，但验证失败：{error}"),
-        };
-        Ok(QwenCookieView {
-            configured: true,
-            source,
-            message: Some(message),
-        })
-    })
-    .await
-    .map_err(|error| format!("qwen cookie task failed: {error}"))?
-}
-
 #[tauri::command]
 async fn sync_settings(state: State<'_, AppState>) -> Result<domain::SyncView, String> {
     let database_path = state.database_path.clone();
@@ -1661,8 +1596,6 @@ pub fn run() {
             set_claude_oauth,
             qoder_cookie_status,
             configure_qoder_cookie,
-            qwen_cookie_status,
-            configure_qwen_cookie,
             set_taskbar_button,
             set_tray_quota_icon,
             #[cfg(target_os = "linux")]
