@@ -90,6 +90,10 @@ impl Pricing {
 ///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
 /// - glm-5.3：同页（2026-08-20 核对），官方定价与 glm-5.2 相同：输入 $1.4/M、
 ///   缓存命中 $0.26/M、输出 $4.4/M。同价是官方定价如此，不是沿用旧价。
+/// - glm-5.3-flash：同页（2026-08-31 核对）：输入 $0.15/M、缓存命中 $0.03/M、
+///   输出 $0.50/M（约为 GLM-5.3 的 1/10）。页面上有 2026-09-09 截止的限时五折
+///   （$0.075/$0.015/$0.25），按「存官方标价」的口径存标准价，折扣不进表；
+///   缓存写入官方标注限时免费 → 记 0。
 /// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
 ///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
 ///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
@@ -144,6 +148,15 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
         },
     ),
     (
+        "glm-5.3-flash",
+        Pricing {
+            input: 0.15,
+            cache_read: 0.03,
+            cache_write: 0.0,
+            output: 0.5,
+        },
+    ),
+    (
         "kimi-k3",
         Pricing {
             input: 3.0,
@@ -178,8 +191,14 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 /// 仅限"同一模型"，且要有官方佐证，不是看名字像就归一：
 /// - Kimi Code 订阅记的 `kimi-code/k3` 就是 kimi-k3 本身，
 ///   官方称 Extra Usage"接近开放平台官方 API 价"；成本页始终标注为估算。
-/// - ZCode coding-plan 记的 `GLM-5.2`、`GLM-5.3` 只是 glm-5.2、glm-5.3 的
-///   大小写变体，同一模型。
+///   `kimi-code/k3-256k` 是官方文档写明的同一模型的 256K 上下文版（"The 256K
+///   context version of Kimi K3…delivers the same results"，2026-08-31 核对），
+///   Hermes 记的裸名 `k3` 同样是它——按同一官方 API 价估算。官方明说 k3 (1M)
+///   的订阅额度消耗约为 k3-256k 的两倍，但那讲的是套餐额度，不是逐 token 价；
+///   官方未公布 256k 档单独的 API 价目，Kimi 官方又历来按上下文档分价
+///   （kimi-latest-8k/32k/128k），官方公布后再分档。
+/// - ZCode coding-plan 记的 `GLM-5.2`、`GLM-5.3`、`GLM-5.3-Flash` 只是
+///   glm-5.2、glm-5.3、glm-5.3-flash 的大小写变体，同一模型。
 /// - Grok Build 订阅记的 `grok-4.5-build`：docs.x.ai 模型页里 grok-4.5 的官方
 ///   别名就含 `grok-build-latest`（Build 产品线 = grok-4.5，2026-08-19 核对），
 ///   故按 grok-4.5 官方 API 价估算。
@@ -191,7 +210,10 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("GLM-5.2", "glm-5.2"),
     ("GLM-5.3", "glm-5.3"),
+    ("GLM-5.3-Flash", "glm-5.3-flash"),
     ("kimi-code/k3", "kimi-k3"),
+    ("kimi-code/k3-256k", "kimi-k3"),
+    ("k3", "kimi-k3"),
     ("grok-4.5-build", "grok-4.5"),
     ("codex-auto-review", "gpt-5.4"),
 ];
@@ -364,6 +386,17 @@ mod tests {
         let five_three_upper = price_for("GLM-5.3", ANY_TIME_MS).expect("alias priced");
         assert_eq!(five_three_upper.input, five_three.input);
         assert_eq!(five_three_upper.output, five_three.output);
+
+        // glm-5.3-flash 官方标准价（2026-08-31 核对）：输入 $0.15、缓存 $0.03、
+        // 输出 $0.50。限时五折是折扣不是标价，不进表。ZCode 记的大写
+        // GLM-5.3-Flash 是同一模型的大小写变体。
+        let flash = price_for("glm-5.3-flash", ANY_TIME_MS).expect("glm-5.3-flash priced");
+        assert_eq!(flash.input, 0.15);
+        assert_eq!(flash.cache_read, 0.03);
+        assert_eq!(flash.output, 0.5);
+        let flash_upper = price_for("GLM-5.3-Flash", ANY_TIME_MS).expect("alias priced");
+        assert_eq!(flash_upper.input, flash.input);
+        assert_eq!(flash_upper.output, flash.output);
     }
 
     #[test]
@@ -375,11 +408,19 @@ mod tests {
         assert_eq!(direct.cache_read, 0.3);
         assert_eq!(direct.output, 15.0);
         // 窄例外：Kimi Code 订阅的 kimi-code/k3 就是 K3 本身，按同一官方价估算。
+        // 256K 上下文版与 Hermes 记的裸名 k3 同为 K3（官方文档佐证，见别名表）。
         let aliased = price_for("kimi-code/k3", ANY_TIME_MS).expect("alias priced");
         assert_eq!(aliased.input, direct.input);
         assert_eq!(aliased.output, direct.output);
+        let capped = price_for("kimi-code/k3-256k", ANY_TIME_MS).expect("alias priced");
+        assert_eq!(capped.input, direct.input);
+        assert_eq!(capped.output, direct.output);
+        let bare = price_for("k3", ANY_TIME_MS).expect("alias priced");
+        assert_eq!(bare.input, direct.input);
+        assert_eq!(bare.output, direct.output);
         // 其他订阅 ID 仍不得蒙混（见上一条测试）。
         assert!(price_for("kimi-code/k4", ANY_TIME_MS).is_none());
+        assert!(price_for("kimi-for-coding", ANY_TIME_MS).is_none());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, GrokAdapter, KimiAdapter,
-    OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, GrokAdapter, HermesAdapter,
+    KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter,
+    ZcodeAdapter,
 };
 use crate::claude_oauth;
 use crate::detect;
@@ -751,6 +752,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(WorkbuddyAdapter::detected()),
         Box::new(GrokAdapter::detected()),
         Box::new(PiAdapter::detected()),
+        Box::new(HermesAdapter::detected()),
     ];
     let mut report = ScanReport::default();
     let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
@@ -3144,6 +3146,7 @@ mod tests {
             Box::new(KimiAdapter::detected()),
             Box::new(WorkbuddyAdapter::detected()),
             Box::new(PiAdapter::detected()),
+            Box::new(HermesAdapter::detected()),
         ];
 
         for adapter in adapters {

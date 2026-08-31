@@ -78,6 +78,7 @@ const QODER_MARK: &[u8] = include_bytes!("../../src/assets/qoder-app-icon.png");
 const GROK_MARK: &[u8] = include_bytes!("../../src/assets/grok-app-icon.png");
 const PI_MARK: &[u8] = include_bytes!("../../src/assets/pi-app-icon.png");
 const QWEN_MARK: &[u8] = include_bytes!("../../src/assets/qwen-app-icon.png");
+const HERMES_MARK: &[u8] = include_bytes!("../../src/assets/hermes-app-icon.png");
 
 #[derive(Clone, Copy)]
 struct StatusItemSpec {
@@ -86,7 +87,7 @@ struct StatusItemSpec {
     icon: &'static [u8],
 }
 
-const STATUS_ITEMS: [StatusItemSpec; 11] = [
+const STATUS_ITEMS: [StatusItemSpec; 12] = [
     StatusItemSpec {
         id: "codex",
         name: "ChatGPT",
@@ -141,6 +142,11 @@ const STATUS_ITEMS: [StatusItemSpec; 11] = [
         id: "qwen",
         name: "Qwen",
         icon: QWEN_MARK,
+    },
+    StatusItemSpec {
+        id: "hermes",
+        name: "Hermes",
+        icon: HERMES_MARK,
     },
 ];
 
