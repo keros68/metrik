@@ -1,13 +1,23 @@
 # Metrik
 
-Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent 的官方配额余量与 Token 消耗，支持 ChatGPT、Claude、GLM、Kimi、Grok 等主流 Agent。
+同时使用多个 AI 编程 Agent 时，Metrik 在一个桌面组件里显示各 Agent 的剩余额度、重置时间和本地 Token 用量。
 
 [![Download](https://img.shields.io/github/v/release/keros68/metrik?label=下载&color=success)](https://github.com/keros68/metrik/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app/)
 [![Platform](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Ubuntu%20CI-0078D6.svg)](#平台支持)
 
-[下载最新版](https://github.com/keros68/metrik/releases/latest)：Windows `.exe`、macOS 通用 `.dmg`；Ubuntu 24.04 x86_64 的 `.deb` / `.AppImage` 自下一个 Release 起随发布页提供，更早的版本不含 Linux 包。安装包未签名，首次运行需手动放行系统安全校验；Release 页附 SHA256 校验值。
+## 下载
+
+[打开最新版本下载页](https://github.com/keros68/metrik/releases/latest)，按系统选择：
+
+| 系统 | 推荐文件 |
+| --- | --- |
+| Windows x64 | `Metrik_*_x64-setup.exe` |
+| macOS | `Metrik_*_universal.dmg` |
+| Ubuntu 24.04 x86_64 | `Metrik_*_amd64.deb`，或免安装的 `AppImage` |
+
+安装包尚未加入 Windows / Apple 商业代码签名，首次运行需按系统提示手动放行。Release 页提供 SHA256 校验值。
 
 <p align="center">
   <img src="design/shot-glass.jpg" alt="Metrik 桌面小组件与配额胶囊条 · 透明档">
@@ -62,7 +72,7 @@ Metrik 是一款桌面常驻工具，统一查看本机各个 AI 编程 Agent �
 2. **配额胶囊条（Windows / Ubuntu）**：收缩成一根横条或竖条，每格只有图标与剩余占比，固定、横竖切换、还原这些按钮平时收起，点「…」就地展开；展示哪些 Agent、按什么排序可配置，卡片与胶囊条各自独立。
 3. **统计与报表**：26 周热力图、周趋势折线、Agent 占比环形图、项目走势；用量页以项目为主视图（占比环形 + 排名列表），点击项目进入该项目的会话明细，项目总表与会话明细都可导出 CSV。项目按各 Agent 记录的工作目录归集，默认向上合并到 git 仓库根，也可手动登记项目根或隐藏目录；读不到目录的用量单独列出。完整面板分概览、用量、报告、设置四页，主题可跟随系统或手动指定。
 4. **多设备同步**：指定共享文件夹（坚果云 / OneDrive / Syncthing 均可），各设备导出近 30 天统计事件并自动合并，无云端服务。
-5. **系统能力**：托盘常驻、可选开机自启、单实例运行。更新检查由设置页手动触发，是本应用唯一主动发起的网络请求；更新包经 minisign 校验，签名不符拒绝安装。
+5. **系统能力**：托盘常驻、可选开机自启、单实例运行。更新检查默认开启，启动后检查一次，持续运行时每天检查一次，可在设置中关闭；这是本应用唯一主动发起的网络请求。下载与安装仍由用户确认，更新包经 minisign 校验，签名不符拒绝安装。
 
 ## 数据口径
 
@@ -106,7 +116,7 @@ cargo test live_snapshot_smoke_test -- --ignored --nocapture  # 读本机真实�
 ## 已知限制
 
 1. 安装包未做数字签名，首次运行需手动放行；Windows 未预装 WebView2 时安装程序需联网获取运行时。
-2. Linux 仅覆盖 Ubuntu 24.04 x86_64（`.deb` / `.AppImage` 自下一个 Release 起随发布页提供），其它发行版与架构尚未验证，需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
+2. Linux 仅覆盖 Ubuntu 24.04 x86_64，其它发行版与架构尚未验证，需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
 3. Antigravity 需对应 IDE 处于运行状态才有数据。
 4. 首次索引大体量日志会占用一段 CPU 与磁盘，界面可正常操作，未覆盖完整历史的数值会标注说明。
 
