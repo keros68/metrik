@@ -94,6 +94,13 @@ impl Pricing {
 ///   输出 $0.50/M（约为 GLM-5.3 的 1/10）。页面上有 2026-09-09 截止的限时五折
 ///   （$0.075/$0.015/$0.25），按「存官方标价」的口径存标准价，折扣不进表；
 ///   缓存写入官方标注限时免费 → 记 0。
+/// - kimi-k2.7-code：Kimi 开放平台定价页
+///   platform.kimi.com/docs/pricing/chat-k27-code（2026-08-31 核对）。页面只标
+///   人民币：缓存命中 ¥1.30、未命中 ¥6.50、输出 ¥27.00，并注明输入/输出与
+///   K2.6 同价、仅缓存命中由 ¥1.10 调至 ¥1.30——故美元价取生成表 kimi-k2.6
+///   的输入 $0.95 / 输出 $4.0，缓存按 ¥1.30/¥1.10 等比得 $0.19。缓存写入
+///   未列出 → 记 0。官方文档另明确订阅 ID kimi-for-coding 就是 K2.7 Code
+///   （见 SUBSCRIPTION_ALIASES）。
 /// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
 ///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
 ///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
@@ -166,6 +173,15 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
         },
     ),
     (
+        "kimi-k2.7-code",
+        Pricing {
+            input: 0.95,
+            cache_read: 0.19,
+            cache_write: 0.0,
+            output: 4.0,
+        },
+    ),
+    (
         "qwen3.8-max",
         Pricing {
             input: 2.0,
@@ -197,6 +213,9 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 ///   的订阅额度消耗约为 k3-256k 的两倍，但那讲的是套餐额度，不是逐 token 价；
 ///   官方未公布 256k 档单独的 API 价目，Kimi 官方又历来按上下文档分价
 ///   （kimi-latest-8k/32k/128k），官方公布后再分档。
+/// - `kimi-for-coding` 是 Kimi Code 文档模型表里的固定模型 ID，版本一栏写明
+///   "Kimi K2.7 Code"（2026-08-31 核对），按 kimi-k2.7-code 官方 API 价估算。
+///   其高速变体 kimi-for-coding-highspeed 官方价目单列（标准版两倍），未收录。
 /// - ZCode coding-plan 记的 `GLM-5.2`、`GLM-5.3`、`GLM-5.3-Flash` 只是
 ///   glm-5.2、glm-5.3、glm-5.3-flash 的大小写变体，同一模型。
 /// - Grok Build 订阅记的 `grok-4.5-build`：docs.x.ai 模型页里 grok-4.5 的官方
@@ -206,7 +225,8 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 ///   alignment.openai.com/auto-review 明写「Auto-review uses GPT-5.4 Thinking
 ///   (low reasoning)」（2026-08-20 核对），故按 gpt-5.4 官方 API 价估算。
 ///
-/// 没有官方价的订阅 ID（kimi-for-coding 等）继续 unpriced。
+/// 没有官方价的订阅 ID 继续unpriced；kimi-for-coding 已有官方佐证（K2.7
+/// Code），见上。
 const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("GLM-5.2", "glm-5.2"),
     ("GLM-5.3", "glm-5.3"),
@@ -214,6 +234,7 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("kimi-code/k3", "kimi-k3"),
     ("kimi-code/k3-256k", "kimi-k3"),
     ("k3", "kimi-k3"),
+    ("kimi-for-coding", "kimi-k2.7-code"),
     ("grok-4.5-build", "grok-4.5"),
     ("codex-auto-review", "gpt-5.4"),
 ];
@@ -356,7 +377,6 @@ mod tests {
         // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
         // 转售价或同系模型的价格蒙混（Kimi Code 订阅等）。
         assert!(price_for("kimi-code/kimi-for-coding", ANY_TIME_MS).is_none());
-        assert!(price_for("kimi-for-coding", ANY_TIME_MS).is_none());
         // 有 -preview 后缀的官方价也不补给稳定版名字。
         assert!(price_for("gemini-3.1-pro", ANY_TIME_MS).is_none());
     }
@@ -420,7 +440,20 @@ mod tests {
         assert_eq!(bare.output, direct.output);
         // 其他订阅 ID 仍不得蒙混（见上一条测试）。
         assert!(price_for("kimi-code/k4", ANY_TIME_MS).is_none());
-        assert!(price_for("kimi-for-coding", ANY_TIME_MS).is_none());
+        assert!(price_for("kimi-code/kimi-for-coding", ANY_TIME_MS).is_none());
+
+        // kimi-for-coding 官方文档写明是 Kimi K2.7 Code（2026-08-31 核对），
+        // 按 kimi-k2.7-code 官方 API 价估算：页面只标人民币（缓存命中 ¥1.30 /
+        // 未命中 ¥6.50 / 输出 ¥27），输入输出官方注明与 K2.6 同价、缓存按
+        // ¥1.30/¥1.10 等比。
+        let k27 = price_for("kimi-for-coding", ANY_TIME_MS).expect("kimi-for-coding priced");
+        assert_eq!(k27.input, 0.95);
+        assert_eq!(k27.cache_read, 0.19);
+        assert_eq!(k27.output, 4.0);
+        let k27_api = price_for("kimi-k2.7-code", ANY_TIME_MS).expect("kimi-k2.7-code priced");
+        assert_eq!(k27_api.input, k27.input);
+        assert_eq!(k27_api.cache_read, k27.cache_read);
+        assert_eq!(k27_api.output, k27.output);
     }
 
     #[test]
