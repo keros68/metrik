@@ -2248,8 +2248,8 @@ mod tests {
             "claude",
             "sess-mixed",
             test_local_time(today, 9).timestamp_millis(),
-            // 订阅 coding-plan 专属 ID，没有官方按 token 价目（见 pricing.rs）。
-            Some("kimi-for-coding"),
+            // 订阅专属 ID 且官方未公布价目，保持未计价（见 pricing.rs）。
+            Some("kimi-for-coding-highspeed"),
             10,
             0,
             0,
@@ -2275,8 +2275,9 @@ mod tests {
             "claude",
             "sess-none",
             test_local_time(today, 8).timestamp_millis(),
-            // 同上：kimi-for-coding 是订阅专属 ID，必须保持未计价。
-            Some("kimi-for-coding"),
+            // 订阅专属 ID 且官方未公布价目的模型必须保持未计价
+            // （kimi-for-coding 已按 K2.7 Code 计价，不能再当反例）。
+            Some("kimi-for-coding-highspeed"),
             10,
             0,
             0,
@@ -2790,14 +2791,14 @@ mod tests {
             1_000_000,
             1_000_000,
         );
-        // claude: kimi-for-coding 是订阅 coding-plan 专属 ID，没有官方按 token
-        // 价目，必须保持未计价（见 pricing.rs 的覆盖范围说明）。
+        // claude: kimi-for-coding-highspeed 是订阅专属 ID，官方价目单列且未
+        // 收录，必须保持未计价（kimi-for-coding 本体已按 K2.7 Code 计价）。
         insert_test_usage_full(
             &connection,
             "claude-glm",
             "claude",
             at,
-            Some("kimi-for-coding"),
+            Some("kimi-for-coding-highspeed"),
             100,
             0,
             0,
