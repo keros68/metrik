@@ -38,6 +38,7 @@ function demoSeries(period) {
         antigravity: Math.round(total * 0.025),
         workbuddy: Math.round(total * 0.02),
         grok: Math.round(total * 0.035),
+        hermes: Math.round(total * 0.015),
       },
     }));
   }
@@ -56,6 +57,7 @@ function demoSeries(period) {
         antigravity: Math.round(31_500 * config.factor * (0.82 + (index % 5) / 15) * weekend / config.points),
         workbuddy: Math.round(24_800 * config.factor * (0.8 + (index % 3) / 13) * weekend / config.points),
         grok: Math.round(44_200 * config.factor * (0.88 + (index % 4) / 12) * weekend / config.points),
+        hermes: Math.round(18_600 * config.factor * (0.86 + (index % 5) / 11) * weekend / config.points),
       },
     };
   });
@@ -98,8 +100,10 @@ function demoSnapshot(period = "today") {
   const antigravityTokens = Math.round(31_500 * scale);
   const workbuddyTokens = Math.round(24_800 * scale);
   const grokTokens = Math.round(44_200 * scale);
+  // Hermes：harness，直连 API 部分按模型计价，演示里给小额成本。
+  const hermesTokens = Math.round(18_600 * scale);
   const totalTokens =
-    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens + grokTokens;
+    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens + grokTokens + hermesTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -165,11 +169,12 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("antigravity", antigravityTokens, totalTokens),
       demoAgentSummary("workbuddy", workbuddyTokens, totalTokens),
       demoAgentSummary("grok", grokTokens, totalTokens),
+      demoAgentSummary("hermes", hermesTokens, totalTokens),
     ],
     cost: {
       available: true,
       // 演示值按 gpt-5.2 / claude / grok-4.5 价目的量级粗算。
-      totalUsd: 5.84 * scale,
+      totalUsd: 5.93 * scale,
       // ZCode / OpenCode / Kimi / Antigravity / WorkBuddy 未计价：演示数据也如实反映这一点。
       unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens,
       pricingAsOf: "2026-08-19",
@@ -195,6 +200,7 @@ function demoSnapshot(period = "today") {
       { model: "gemini-3.1-pro", agent: "antigravity", tokens: antigravityTokens, share: (antigravityTokens / totalTokens) * 100 },
       { model: "glm-5.2", agent: "workbuddy", tokens: workbuddyTokens, share: (workbuddyTokens / totalTokens) * 100 },
       { model: "grok-4.5-build", agent: "grok", tokens: grokTokens, share: (grokTokens / totalTokens) * 100 },
+      { model: "deepseek-v4-flash", agent: "hermes", tokens: hermesTokens, share: (hermesTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },

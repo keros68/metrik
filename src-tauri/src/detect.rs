@@ -124,6 +124,12 @@ pub fn table() -> Vec<AgentProbe> {
             id: "qwen",
             probe: Probe::Credential(coding_quota::pi_auth_has_qwen_token_plan),
         },
+        AgentProbe {
+            // Hermes 的数据根：与 HermesAdapter::detected() 同源（扫描的是
+            // ~/.hermes/state.db，探针看库文件本身）。
+            id: "hermes",
+            probe: Probe::Paths(vec![home.join(".hermes").join("state.db")]),
+        },
     ]
 }
 
@@ -207,6 +213,11 @@ mod tests {
                 home.join(".pi").join("agent"),
                 home.join(".omp").join("agent")
             ]
+        );
+        // hermes 探针与 HermesAdapter::detected() 同源：state.db 文件本身。
+        assert_eq!(
+            paths(by_id("hermes")),
+            vec![home.join(".hermes").join("state.db")]
         );
     }
 

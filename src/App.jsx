@@ -36,6 +36,7 @@ import {
 import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
 import opencodeAppIcon from "./assets/opencode-app-icon.png";
 import qoderAppIcon from "./assets/qoder-app-icon.png";
@@ -224,6 +225,17 @@ const AGENT_META = {
     accent: "#7b5cd6",
     iconSrc: qwenAppIcon,
     iconClass: "agent-icon--qwen",
+  },
+  hermes: {
+    // Hermes（Nous Research）是 harness：与 pi 同样没有自己的套餐，走别家
+    // coding plan 的用量按路由归属到对应卡片（GLM / Kimi / ChatGPT），其余
+    // 直连 API 留在这张卡；不显示配额。
+    label: "Hermes",
+    // 官方应用图标是黑白 nous-girl 圆角瓦片（戴耳机的少女，四角透明）；
+    // 强调色取与 pi 银灰相邻但更深的暖灰，两张中性卡在图里不互相混淆。
+    accent: "#8a8d92",
+    iconSrc: hermesAppIcon,
+    iconClass: "agent-icon--hermes",
   },
 };
 

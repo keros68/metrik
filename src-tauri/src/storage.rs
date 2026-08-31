@@ -319,8 +319,15 @@ fn insert_or_merge_usage_event(
     // component-wise maxima (identical copies are no-ops) and reject only a
     // contradictory model, exactly like Claude.
     let mergeable_pi_entry = event.adapter_id == "pi";
-    let mergeable =
-        mergeable_claude_message || mergeable_antigravity_response || mergeable_pi_entry;
+    // Hermes 的用量行是累计计数器（per-API-call 增量累加），每次扫描都会重新
+    // 观察到更大的数——与 Antigravity 的活会话快照同型。归属可能记到别的卡片
+    // （见 hermes_providers），所以按事件键的 `hermes:` 前缀识别，不按 adapter。
+    // model 与路由全列都在事件键里，矛盾模型到不了合并路径，无需拒绝分支。
+    let mergeable_hermes_usage = event.event_key.starts_with("hermes:");
+    let mergeable = mergeable_claude_message
+        || mergeable_antigravity_response
+        || mergeable_pi_entry
+        || mergeable_hermes_usage;
     // A contradictory model makes the provider message ambiguous. Reject only
     // this observation; the caller will commit the source's other valid events
     // and surface partial coverage through scan diagnostics.
@@ -758,6 +765,65 @@ mod tests {
         assert_eq!(events, 1, "fork 副本必须并入同一事件");
         assert_eq!(observations, 2, "两个源各自登记观察");
         assert_eq!(processed, 4_531, "相同分量合并后不叠加");
+    }
+
+    /// Hermes 的用量行是累计计数器：同一路由行重扫时会观察到更大的数。
+    /// 事件按 `hermes:` 前缀做分量最大值合并——即使归属记到了别的卡片
+    /// （hermes_providers 把 GLM/Kimi/Codex 计划的路由记过去），也照常合并，
+    /// 不按 adapter_id 判断。
+    #[test]
+    fn hermes_cumulative_reobservations_merge_component_wise_across_credits() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let event_key =
+            "hermes:sess-1|glm-5.2|custom|https://open.bigmodel.cn/api/coding/paas/v4||".to_owned();
+        let observed = |input: i64, cache_read: i64, output: i64, last_seen_ms: i64| {
+            UsageEvent::new(
+                // 归属在 adapter 层落到 GLM 卡片，事件键仍是 hermes 命名空间。
+                "zcode",
+                event_key.clone(),
+                last_seen_ms,
+                "sess-1".into(),
+                Some("glm-5.2".into()),
+                TokenVector {
+                    input_uncached: input,
+                    cache_read,
+                    output,
+                    ..Default::default()
+                },
+                "exact",
+            )
+        };
+
+        replace_source(
+            &mut connection,
+            &source("hermes-db", "hermes", vec![observed(100, 300, 20, 1_000)]),
+            0,
+        )
+        .unwrap();
+        // 会话继续：同一行累计变大、last_seen 前移。
+        replace_source(
+            &mut connection,
+            &source("hermes-db", "hermes", vec![observed(260, 700, 45, 2_000)]),
+            0,
+        )
+        .unwrap();
+
+        let (events, input, processed, occurred): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), MAX(input_uncached_tokens), MAX(processed_tokens),
+                        MAX(occurred_at_ms)
+                 FROM usage_event",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(events, 1, "同一路由行只算一个事件");
+        assert_eq!(input, 260, "分量取重扫后的更大值");
+        assert_eq!(processed, 260 + 700 + 45);
+        assert_eq!(occurred, 2_000, "时间戳跟随 last_seen 前移");
     }
 
     #[test]

@@ -94,6 +94,7 @@ fn agent_label(id: &str) -> &'static str {
         "qoder" => "Qoder",
         "pi" => "Pi",
         "qwen" => "Qwen",
+        "hermes" => "Hermes",
         _ => "Agent",
     }
 }

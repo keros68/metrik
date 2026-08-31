@@ -64,6 +64,15 @@ change.
   usage only and never a quota; the GLM quota source additionally accepts the
   key pi stores so a pi-only install still shows the GLM quota on the GLM
   card.
+- Hermes (Nous Research's agent CLI) is a harness like Pi: it has no coding
+  plan of its own and bills whatever upstream it is configured for. Its
+  recorded usage is attributed by billing route — GLM Coding Plan, Kimi Code,
+  and ChatGPT/Codex subscription endpoints to their own cards, everything
+  else (direct and custom APIs) to the Hermes card. Attribution keys on the
+  billing base URL's plan-specific endpoint, never on the user-editable
+  provider alias; a vendor's plain pay-as-you-go endpoint is not a plan and
+  stays on the Hermes card. The Hermes card carries local usage only and
+  never a quota.
 - Do not expose credentials or raw provider responses through UI, logs, storage,
   sync, fixtures, or diagnostics.
 

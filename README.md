@@ -63,6 +63,9 @@
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | ✅ 官方 Credits |
 | Qoder | — | ✅ 官方 Credits |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 周 Credits（CLI 日志快照） |
+| Pi | `~/.pi/agent/sessions`、`~/.omp/agent/sessions` | ❌ |
+| Qwen | pi 会话按百炼 Token Plan 路由归属 | ❌ |
+| Hermes | `~/.hermes/state.db` | ❌ |
 
 暂不支持 Gemini CLI；Cursor 待设计独立的凭据授权机制后再评估。
 

@@ -6,6 +6,7 @@ mod coding_quota;
 mod detect;
 mod domain;
 mod engine;
+mod hermes_providers;
 #[cfg(target_os = "macos")]
 mod macos;
 mod pi_providers;

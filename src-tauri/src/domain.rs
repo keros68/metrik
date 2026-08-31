@@ -9,7 +9,9 @@ use std::path::PathBuf;
 /// kimiwork 只保留为内部配额来源，窗口合并到 kimi，不作为独立可见 Agent。
 /// qwen 只有本地用量：pi 的 qwen-token-plan key 用量归属到这张卡；百炼 Token
 /// Plan 没有可编程的官方额度接口，不拉官方配额。
-pub const AGENT_IDS: [&str; 11] = [
+/// hermes 只有本地用量：Hermes 是 harness，走别家 coding plan 的用量按路由
+/// 归属到对应卡片（见 hermes_providers），其余直连 API 留在这张卡。
+pub const AGENT_IDS: [&str; 12] = [
     "codex",
     "claude",
     "zcode",
@@ -21,6 +23,7 @@ pub const AGENT_IDS: [&str; 11] = [
     "grok",
     "pi",
     "qwen",
+    "hermes",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
