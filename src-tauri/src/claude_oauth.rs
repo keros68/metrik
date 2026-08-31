@@ -306,7 +306,7 @@ impl ClaudeOauth {
         };
         // 过期就别发那个注定被拒的请求：刷新只有 Claude Code 自己做得到。
         if credentials.is_expired(chrono::Utc::now().timestamp_millis()) {
-            bail!("Claude 凭据已过期，用一次 Claude Code 即可自动刷新");
+            bail!("Claude 凭据已过期，运行一次 Claude Code 即可自动刷新");
         }
         self.request_usage(&credentials, timeout)
     }

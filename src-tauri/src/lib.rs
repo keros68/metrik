@@ -777,7 +777,7 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
         let normalized = match cookie.as_deref() {
             Some(raw) => Some(
                 coding_quota::normalize_qoder_cookie_input(raw)
-                    .ok_or_else(|| "粘贴内容里没有找到 Cookie 行".to_owned())?,
+                    .ok_or_else(|| "粘贴内容中未找到 Cookie 行".to_owned())?,
             ),
             None => None,
         };
