@@ -271,7 +271,7 @@ function unavailableSnapshot(period = "today") {
         id: "load-error",
         kind: "local",
         label: "本地统计暂不可用",
-        detail: "Metrik 没有用演示数字替代失败结果。请稍后重试；原始 Agent 日志不会因此被修改。",
+        detail: "Metrik 不以演示数据替代失败结果。请稍后重试；原始 Agent 日志不会因此被修改。",
         quality: "unavailable",
         qualityLabel: "未载入",
       },

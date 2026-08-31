@@ -575,7 +575,7 @@ function QuotaBarRow({ label, view, windowKey, accent }) {
       {pace && (
         <small className={`quota-pace ${pace.tone === "behind" ? "quota-pace--behind" : ""}`}>
           {pace.tone === "ahead"
-            ? `节奏从容 ${Math.abs(pace.delta).toFixed(0)}% · 按当前用量可撑到重置`
+            ? `节奏从容 ${Math.abs(pace.delta).toFixed(0)}% · 按当前用量可维持至重置`
             : pace.tone === "close"
               ? `节奏略偏快 ${pace.delta.toFixed(0)}% · 接近临界节奏`
               : `节奏偏快 ${pace.delta.toFixed(0)}% · 按当前用量重置前可能耗尽`}
@@ -604,7 +604,7 @@ function sourceStatusCopy(snapshot, loading, partial) {
       title: "读取失败",
       hint: "点此排查",
       state: "读取失败",
-      detail: "本机日志读取失败。界面不会用演示数字顶替，点此查看数据来源。",
+      detail: "本机日志读取失败。界面不会以演示数据替代，点此查看数据来源。",
     };
   }
   if (indexingPending > 0) {
@@ -621,7 +621,7 @@ function sourceStatusCopy(snapshot, loading, partial) {
       title: "数据不完整",
       hint: "点此查看",
       state: "数据不完整",
-      detail: "部分日志未能解析，统计数字少于真实用量。点此查看涉及哪些来源。",
+      detail: "部分日志未能解析，统计数字低于真实用量。点此查看受影响的来源。",
     };
   }
   if (snapshot.isDemo) {
@@ -633,10 +633,10 @@ function sourceStatusCopy(snapshot, loading, partial) {
     };
   }
   return {
-    title: "数据可追溯",
+    title: "数据源正常",
     hint: loading ? "更新中" : formatClock(snapshot.generatedAt),
     state: loading ? "更新中" : `更新于 ${formatClock(snapshot.generatedAt)}`,
-    detail: `每个数字都能追到来源日志。更新于 ${formatClock(snapshot.generatedAt)}。`,
+    detail: `各项数据均可溯源。更新于 ${formatClock(snapshot.generatedAt)}。`,
   };
 }
 
@@ -864,7 +864,7 @@ function ChartState({ pending }) {
         <HardDrives size={28} weight="light" aria-hidden="true" />
         <div>
           <h2 id="usage-chart-state-title">{pending ? "正在读取本机趋势" : "趋势暂不可用"}</h2>
-          <p>{pending ? "索引完成后会显示真实曲线。" : "未用零值或演示曲线替代读取失败。"}</p>
+          <p>{pending ? "索引完成后将显示真实曲线。" : "读取失败时不会以零值或演示曲线替代。"}</p>
         </div>
       </div>
     </section>
@@ -966,8 +966,8 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources, widg
       </div>
 
       <button className={`traceability ${snapshot.loadError ? "traceability--error" : ""} ${partial ? "traceability--warning" : ""}`} type="button" onClick={onOpenSources}>
-        <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? "正在读取本机数据" : snapshot.loadError ? "数据暂不可用" : partial ? "部分数据可能不完整" : "数据可追溯"}</span>
-        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "没有用演示数字替代失败结果" : partial ? "打开统计说明查看受影响来源" : snapshot.isDemo ? "当前为演示模式" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
+        <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? "正在读取本机数据" : snapshot.loadError ? "数据暂不可用" : partial ? "部分数据可能不完整" : "数据源正常"}</span>
+        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "失败结果未以演示数据替代" : partial ? "打开统计说明查看受影响来源" : snapshot.isDemo ? "当前为演示模式" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
       </button>
     </aside>
   );
@@ -2019,7 +2019,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "钩子已安装。下次 Claude Code 刷新状态栏后，这里就会出现官方 5 小时与 7 天额度。"
+          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处即显示官方 5 小时与 7 天额度。"
           : "钩子已卸载，statusLine 设置已恢复。",
       });
       onSnapshotRefresh();
@@ -2131,8 +2131,8 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
       <p className="settings-muted">
         备选来源：用本机 Claude Code 已保存的凭据直接查询官方额度（账户级合并值，约两分钟一刷新），
         网页版与桌面客户端的消耗同样计入。凭据只在内存中读取，不存储、不上传。
-        前提是最近用过 Claude Code：凭据只活几小时，且只有 Claude Code 自己跑起来才会刷新它，
-        过期后这里回落到状态栏钩子。
+        前提是最近使用过 Claude Code：凭据有效期仅数小时，且仅在 Claude Code 运行时刷新；
+        过期后回落到状态栏钩子。
       </p>
       <p className="settings-muted">
         ⚠️ 条款风险须知：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的
@@ -2160,7 +2160,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
                   : !status.scopeOk
                     ? "凭据缺少 user:profile 权限，开启后可能查询失败（可运行 claude login 重新登录）"
                     : status.expired
-                      ? `${status.enabled ? "已开启" : "未开启"} · 凭据已过期，用一次 Claude Code 即可自动刷新`
+                      ? `${status.enabled ? "已开启" : "未开启"} · 凭据已过期，运行一次 Claude Code 即可自动刷新`
                       : status.enabled
                         ? "已开启 · 凭据可用"
                         : "未开启 · 凭据可用"}
@@ -2225,7 +2225,7 @@ function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
     <div className="settings-card">
       <h2>启动与位置</h2>
       <p className="settings-muted">
-        位置会被记住，下次启动回到原处；掉出屏幕时自动居中。
+        位置会被记住，下次启动时恢复；超出屏幕范围时自动居中。
       </p>
       {enabled === null ? (
         <p className="settings-muted">浏览器演示模式：仅桌面应用可配置开机启动。</p>
@@ -2498,7 +2498,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         <div className="settings-subsection">
           <h3>透明档文字</h3>
           <p className="settings-muted">
-            深色字配白霜，浅色壁纸上最清楚；白色字配一层薄暗罩，接近桌面挂件常见的风格。
+            深色字配白霜，在浅色壁纸上更清晰；白色字配一层薄暗罩，接近桌面挂件常见的风格。
           </p>
           <div className="theme-toggle" role="group" aria-label="透明档文字">
             {GLASS_INK_OPTIONS.map((option) => (
@@ -2695,7 +2695,7 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
       <div className="settings-agent-columns">
         <AgentListColumn
           title={IS_MAC ? "菜单栏、小组件与侧栏" : "小组件与侧栏"}
-          hint="完整视图侧栏还会自动补上本周期有用量的 Agent。"
+          hint="完整视图侧栏还会自动加入本周期内有用量的 Agent。"
           agents={widgetAgents}
           detected={detectedAgents}
           onToggle={onToggleWidgetAgent}
@@ -2777,16 +2777,16 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
     <div className="settings-card">
       <h2>Qoder 官方额度</h2>
       <p className="settings-muted">
-        Qoder、QoderWork 与 Qoder CLI 共用账户级 Credits；本地客户端不提供可可靠解析的 token 用量，只能读官网 Credits 额度，需要你提供一次
+        Qoder、QoderWork 与 Qoder CLI 共用账户级 Credits；本地客户端不提供可被可靠解析的 token 用量，只能读取官网 Credits 额度，需要提供一次
         登录 cookie。cookie 仅明文保存在本机（不入账本、不进同步导出），可随时清除。
       </p>
       <details className="settings-guide">
         <summary>如何获取 cookie</summary>
         <ol>
           <li>浏览器登录 qoder.com.cn（国际版 qoder.com），进入「用量明细」页；</li>
-          <li>按 F12 打开开发者工具 → 网络（Network）标签，点过滤器里的 Fetch/XHR；</li>
-          <li>右键列表里任意 qoder 域名的请求（如 big_model_credits）→ 复制 →
-            「复制请求标头」或「以 cURL 格式复制」，把整段粘贴到下面——会自动提取其中的 Cookie。</li>
+          <li>按 F12 打开开发者工具 → 网络（Network）标签，点击过滤器中的 Fetch/XHR；</li>
+          <li>右键列表中任意 qoder 域名的请求（如 big_model_credits）→ 复制 →
+            「复制请求标头」或「以 cURL 格式复制」，将整段粘贴到下方，系统会自动提取其中的 Cookie。</li>
         </ol>
       </details>
       {status?.demo ? (
@@ -3085,7 +3085,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                 <div className="settings-subsection">
                   <h3>已发现的设备</h3>
                   {settings.devices.length === 0 ? (
-                    <p className="settings-muted">尚未发现其他设备的导出文件。另一台电脑指向同一文件夹后会出现在这里。</p>
+                    <p className="settings-muted">尚未发现其他设备的导出文件。其他电脑指向同一文件夹后即会显示。</p>
                   ) : (
                     <ul className="settings-device-list">
                       {settings.devices.map((device) => (
@@ -3291,7 +3291,7 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
             </div>
           )}
           {rules.roots.length === 0 && rules.hidden.length === 0 && (
-            <p className="settings-muted">还没有手动归类。在项目行上点图钉或眼睛，或在上方登记目录。</p>
+            <p className="settings-muted">尚无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。</p>
           )}
         </>
       )}
@@ -3512,7 +3512,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
       <main className="usage-section">
         <header className="settings-header">
           <h1>用量</h1>
-          <p>本地账本读取失败，明细暂不可用；没有用演示数字替代。请稍后重试。</p>
+          <p>本地账本读取失败，明细暂不可用；未以演示数据替代。请稍后重试。</p>
         </header>
       </main>
     );
@@ -4174,7 +4174,7 @@ function ReportsSection({ report }) {
       <main className="reports-section">
         <header className="settings-header">
           <h1>报告</h1>
-          <p>本地账本读取失败，报告暂不可用；没有用演示数字替代。请稍后重试。</p>
+          <p>本地账本读取失败，报告暂不可用；未以演示数据替代。请稍后重试。</p>
         </header>
       </main>
     );
@@ -4290,7 +4290,7 @@ function ReportsSection({ report }) {
               ))}
             </ul>
           ) : (
-            <p className="settings-muted">这段时间的用量还没有可归属的项目。</p>
+            <p className="settings-muted">该时间段内暂无可归属的项目用量。</p>
           )
         ) : view === "trend" ? (
           <ReportTrendChart weeks={trendWeeks} />
@@ -4386,7 +4386,7 @@ function EmptySection({ section, onReturn }) {
     <main className="empty-section">
       <span><Icon size={30} weight="light" /></span>
       <h1>{item?.label || "功能"}</h1>
-      <p>这部分会在统计内核稳定后展开，首版先把概览和数据可信度做好。</p>
+      <p>该功能将在统计内核稳定后提供，首版优先实现概览与数据可信度。</p>
       <button type="button" onClick={onReturn}>返回概览</button>
     </main>
   );
