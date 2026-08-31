@@ -1524,7 +1524,7 @@ async function autostartApi() {
   return import("@tauri-apps/plugin-autostart");
 }
 
-/// 检查更新（设置页手动点击，或自动检查每天一次；后者可在设置关闭）。
+/// 检查更新（设置页手动点击，或启动后及持续运行时每天自动检查；后者可在设置关闭）。
 /// 返回 null 表示已是最新（或非桌面环境）。
 async function checkForUpdate() {
   if (!isDesktop()) return null;

@@ -2301,7 +2301,7 @@ function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
     <div className="settings-subsection">
       <h3>更新</h3>
       <p className="settings-muted">
-        当前版本 {__APP_VERSION__}。每六小时自动检查一次，新版本以小圆点提示；
+        当前版本 {__APP_VERSION__}。自动检查开启后，启动时检查一次，持续运行时每天检查一次；
         下载与安装由你确认，更新包经签名校验。
       </p>
       <label className="update-autocheck">
@@ -4582,10 +4582,9 @@ export function App() {
         })
         .catch(() => {}); // 静默失败：提醒是尽力而为，不打扰
     };
-    // 错开启动扫描的高峰再查；之后每六小时一次。间隔只在应用连续运行时计时，
-    // 而这是个常驻托盘的程序：按天计的话，一天里发布的版本它一个也看不见。
+    // 错开启动扫描的高峰再查；之后每天一次。间隔只在应用连续运行时计时。
     const startTimer = window.setTimeout(check, 15000);
-    const interval = window.setInterval(check, 6 * 60 * 60 * 1000);
+    const interval = window.setInterval(check, 24 * 60 * 60 * 1000);
     return () => {
       cancelled = true;
       window.clearTimeout(startTimer);
