@@ -9,6 +9,25 @@ function isStableFloatingMode(mode, transient = false) {
   return mode === "compact" || mode === "strip" || mode === "strip-horizontal" || mode === "strip-vertical";
 }
 
+/// 原生窗口移动事件是物理坐标。挂靠窗口只要离开当前锚点，就说明用户正在
+/// 把它拖往别处；旧挂靠轮询必须立即失效，不能在拖动途中按旧边缘把窗口拉回。
+function isDockAnchorPosition(position, anchor, tolerance = 2) {
+  if (
+    !position
+    || !anchor
+    || !Number.isFinite(position.x)
+    || !Number.isFinite(position.y)
+    || !Number.isFinite(anchor.x)
+    || !Number.isFinite(anchor.y)
+  ) {
+    return false;
+  }
+  return (
+    Math.abs(position.x - anchor.x) <= tolerance
+    && Math.abs(position.y - anchor.y) <= tolerance
+  );
+}
+
 function monitorArea(monitor) {
   if (!monitor?.position || !monitor?.size) return null;
   return {
@@ -245,6 +264,7 @@ function monitorForWindowPosition(
 
 export {
   horizontalStripTargetWidth,
+  isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,

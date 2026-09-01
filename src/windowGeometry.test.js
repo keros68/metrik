@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   horizontalStripTargetWidth,
+  isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
@@ -11,6 +12,13 @@ import {
   viewportCorrectedPhysicalSize,
   viewportCorrectedZoom,
 } from "./windowGeometry.js";
+
+test("moving a docked window away from its anchor is treated as a user drag", () => {
+  const anchor = { x: 1878, y: 300 };
+  assert.equal(isDockAnchorPosition({ x: 1878, y: 300 }, anchor), true);
+  assert.equal(isDockAnchorPosition({ x: 1880, y: 299 }, anchor), true);
+  assert.equal(isDockAnchorPosition({ x: 1600, y: 300 }, anchor), false);
+});
 
 test("transient strip geometry never participates in persistent floating state", () => {
   assert.equal(isStableFloatingMode("compact"), true);

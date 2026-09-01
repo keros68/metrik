@@ -10,6 +10,7 @@ import {
   trayBadgeKey,
 } from "./trayBadge.js";
 import {
+  isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
@@ -1505,6 +1506,16 @@ async function startEdgeDock({ getMode, getPinned }) {
     pollTimer = undefined;
   };
 
+  // 用户从已挂靠的边缘开始拖动时只清理旧状态，不把窗口“恢复”回旧锚点。
+  // 否则仍在运行的轮询会把拖动中的光标判为离开旧窗口，900ms 后强制拉回。
+  const releaseDockForDrag = () => {
+    dock = null;
+    hidden = false;
+    outsideSinceMs = null;
+    stopPoll();
+    win.setAlwaysOnTop(Boolean(getPinned())).catch(() => {});
+  };
+
   const undock = async () => {
     if (dock && hidden) await slideTo(exposedPosition());
     dock = null;
@@ -1521,7 +1532,7 @@ async function startEdgeDock({ getMode, getPinned }) {
       return;
     }
     const cursor = await api.cursorPosition().catch(() => null);
-    if (!cursor) return;
+    if (!cursor || !dock) return;
     if (hidden) {
       const visible = peek();
       const onStrip = dock.edge === "bottom"
@@ -1605,7 +1616,11 @@ async function startEdgeDock({ getMode, getPinned }) {
     if (!pollTimer) pollTimer = window.setInterval(poll, DOCK_POLL_MS);
   };
 
-  const onMove = () => {
+  const onMove = (event) => {
+    if (dock) {
+      const anchor = hidden ? hiddenPosition() : exposedPosition();
+      if (!isDockAnchorPosition(event?.payload, anchor)) releaseDockForDrag();
+    }
     window.clearTimeout(checkTimer);
     checkTimer = window.setTimeout(check, 220);
   };
