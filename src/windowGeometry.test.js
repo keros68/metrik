@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   horizontalStripTargetWidth,
+  isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
   verticalStripHoverLocalLayout,
@@ -10,6 +11,13 @@ import {
   viewportCorrectedPhysicalSize,
   viewportCorrectedZoom,
 } from "./windowGeometry.js";
+
+test("transient strip geometry never participates in persistent floating state", () => {
+  assert.equal(isStableFloatingMode("compact"), true);
+  assert.equal(isStableFloatingMode("strip-vertical"), true);
+  assert.equal(isStableFloatingMode("strip-vertical", true), false);
+  assert.equal(isStableFloatingMode("expanded"), false);
+});
 
 function monitor(x, width, scaleFactor, workHeight = 1080) {
   return {

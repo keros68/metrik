@@ -1286,26 +1286,32 @@ function StripBar({
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   const detailEnabled = (IS_WINDOWS || IS_LINUX) && vertical && !(pinned && IS_LINUX);
   const [hoveredDetail, setHoveredDetail] = useState(null);
+  // 控制菜单与详情卡不能共用同一次临时扩窗：菜单需要按真实条身高度扩展，
+  // 固定/切形态按钮也必须落在原生窗口的有效命中区内。
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [detailLayout, setDetailLayout] = useState({
     side: IS_LINUX ? "left" : "right",
     railOffsetY: 0,
   });
-  const detailCell = detailEnabled && hoveredDetail
+  const detailCell = detailEnabled && !controlsOpen && hoveredDetail
     ? cells.find(({ agentId }) => agentId === hoveredDetail.agentId) ?? null
     : null;
   const detailOpen = Boolean(detailCell);
   // 控制按钮不再常驻：四个 26px 的槽在竖条上要吃掉 130px，比三个格子还高。
   // 改成按需就地展开——点状态灯位上浮出的 … 把它们放出来，条身随之变长，
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
-  const [controlsOpen, setControlsOpen] = useState(false);
-  const toggleControls = useCallback(() => setControlsOpen((open) => !open), []);
+  const toggleControls = useCallback(() => {
+    latestWindowCorrection += 1;
+    setHoveredDetail(null);
+    setControlsOpen((open) => !open);
+  }, []);
   // 一旦进入置顶只读态，立即丢弃胶囊的临时操作面板状态，只保留数据展示。
   useEffect(() => {
     if (pinned && IS_LINUX) setControlsOpen(false);
   }, [pinned]);
   useEffect(() => {
-    if (!detailEnabled) setHoveredDetail(null);
-  }, [detailEnabled]);
+    if (!detailEnabled || controlsOpen) setHoveredDetail(null);
+  }, [controlsOpen, detailEnabled]);
   const shellAppearance = glassShellAppearance("strip", {
     transparent,
     glassMode,
@@ -1469,7 +1475,7 @@ function StripBar({
     }, STRIP_DETAIL_LEAVE_DELAY);
   };
   const showDetail = (event, agentId) => {
-    if (!detailEnabled) return;
+    if (!detailEnabled || controlsOpen) return;
     cancelPointerLeave();
     const railBounds = railRef.current?.getBoundingClientRect();
     const cellBounds = event.currentTarget.getBoundingClientRect();
@@ -5366,6 +5372,7 @@ export function App() {
       return;
     }
     const fromMode = viewModeRef.current;
+    latestWindowCorrection += 1;
     previousViewModeRef.current = fromMode;
     const fromPositionMode = fromMode === "strip"
       ? stripPositionMode(stripOrientationRef.current)
@@ -5415,6 +5422,8 @@ export function App() {
     // 完整视图始终是普通窗口；在设置中选择“置顶只读”只为下次回到悬浮形态
     // 预设状态，不能让 1120×760 的设置窗口本身盖住其它应用。
     runWindowAction(async () => {
+      latestWindowCorrection += 1;
+      await collapseVerticalStripHover();
       await setWindowPinned(value && viewModeRef.current !== "expanded");
       await syncLinuxTrayPinned(value);
     });
@@ -5547,7 +5556,7 @@ export function App() {
 
   return (
     <>
-      <div className={`app-shell app-shell--expanded ${appBusy ? "is-loading" : ""}`}>
+      <div className={`app-shell app-shell--expanded ${appBusy ? "is-loading" : ""} ${!IS_MAC ? "app-shell--native-resize" : ""}`}>
         {/* macOS 的完整视图是标准窗口：拖动和窗口按钮都归原生标题栏，不自绘。 */}
         {!IS_MAC && (
           <>

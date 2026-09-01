@@ -2,6 +2,13 @@ function normalizedScale(value) {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
+/// 只有稳定的悬浮形态才能参与位置记忆与边缘挂靠。竖条详情会临时移动、
+/// 放大同一个原生窗口；那段几何不能被当成用户摆放结果。
+function isStableFloatingMode(mode, transient = false) {
+  if (transient) return false;
+  return mode === "compact" || mode === "strip" || mode === "strip-horizontal" || mode === "strip-vertical";
+}
+
 function monitorArea(monitor) {
   if (!monitor?.position || !monitor?.size) return null;
   return {
@@ -238,6 +245,7 @@ function monitorForWindowPosition(
 
 export {
   horizontalStripTargetWidth,
+  isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
   verticalStripHoverLocalLayout,

@@ -10,6 +10,7 @@ import {
   trayBadgeKey,
 } from "./trayBadge.js";
 import {
+  isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
   verticalStripHoverLocalLayout,
@@ -693,9 +694,10 @@ async function startPositionMemory(getMode) {
   let timer = null;
   const unlistenPromise = appWindow.onMoved(() => {
     const mode = getMode();
-    if (!POSITION_KEYS[mode]) return;
+    if (!POSITION_KEYS[mode] || !isStableFloatingMode(mode, Boolean(stripHoverRestore))) return;
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
+      if (!isStableFloatingMode(getMode(), Boolean(stripHoverRestore))) return;
       rememberWindowPosition(api, appWindow, mode).catch(() => {});
     }, 400);
   });
@@ -823,6 +825,11 @@ async function applyWindowMode(mode, options = {}) {
 
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
+
+  // 详情卡借用同一个 HWND 临时扩窗。任何真正的形态切换都先恢复胶囊基准
+  // 几何；否则下面的记位会保存透明承载区坐标，卸载清理还会在完整视图
+  // 显示后把大窗口重新拖回胶囊位置。
+  await collapseVerticalStripHover();
 
   // 变形前记下离开的悬浮形态的坐标：compact/横条/竖条各记各的，互不污染
   // （以前无条件写 lastPositions.compact，从胶囊条进大视图会把小插件的
@@ -1472,7 +1479,10 @@ async function startEdgeDock({ getMode, getPinned }) {
   let checkTimer;
   let pollTimer;
 
-  const canDock = () => getMode() === "compact" || getMode() === "strip";
+  const canDock = () => isStableFloatingMode(
+    getMode(),
+    Boolean(stripHoverRestore),
+  );
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const peek = () => Math.round(DOCK_PEEK_PX * dock.scale);
   const exposedPosition = () => ({ x: dock.x, y: dock.y });
