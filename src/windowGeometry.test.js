@@ -107,8 +107,48 @@ test("vertical strip hover expands away from the nearest screen edge", () => {
       anchorY: 69,
       cardHeight: 280,
     }),
-    { side: "right", x: 1528, y: 221, cardCenter: 148, railOffsetY: 79 },
+    { side: "right", x: 1528, y: 240, cardCenter: 148, railOffsetY: 60 },
   );
+});
+
+test("vertical strip hover keeps the whole rail visible for a lower cell", () => {
+  const layout = verticalStripHoverLayout({
+    railPosition: { x: 1878, y: 300 },
+    railSize: { width: 42, height: 360 },
+    workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+    targetSize: { width: 312, height: 360 },
+    anchorY: 299,
+    cardHeight: 180,
+  });
+
+  assert.deepEqual(layout, {
+    side: "right",
+    x: 1608,
+    y: 300,
+    cardCenter: 262,
+    railOffsetY: 0,
+  });
+  assert.ok(layout.railOffsetY >= 0);
+  assert.ok(layout.railOffsetY + 360 <= 360);
+});
+
+test("vertical strip hover keeps the rail bottom visible for the first cell", () => {
+  const layout = verticalStripHoverLayout({
+    railPosition: { x: 2464, y: 357 },
+    railSize: { width: 54, height: 314 },
+    workArea: { x: 0, y: 0, width: 2560, height: 1400 },
+    targetSize: { width: 510, height: 314 },
+    anchorY: 23,
+    cardHeight: 270,
+  });
+
+  assert.deepEqual(layout, {
+    side: "right",
+    x: 2008,
+    y: 357,
+    cardCenter: 143,
+    railOffsetY: 0,
+  });
 });
 
 test("vertical strip hover stays inside the work area near the top-left", () => {

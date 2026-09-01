@@ -1084,9 +1084,40 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   const base = stripHoverRestore;
   const scale = stripScale * factor;
   let physical = await scaledPhysicalSize(api, appWindow, width, height, stripScale, factor);
-  await appWindow.setSize(physical).catch((error) => {
-    console.warn("Unable to expand the strip hover window.", error);
+  const hoverLayoutFor = (targetSize) => verticalStripHoverLayout({
+    railPosition: base.position,
+    railSize: base.size,
+    workArea: {
+      x: workArea.position.x,
+      y: workArea.position.y,
+      width: workArea.size.width,
+      height: workArea.size.height,
+    },
+    targetSize,
+    anchorY: anchorY * scale,
+    cardHeight: cardHeight * scale,
+    margin: 8 * scale,
   });
+  const predictedLayout = coordinateAware ? hoverLayoutFor(physical) : null;
+  if (coordinateAware && !predictedLayout) return null;
+  const mutations = [
+    appWindow.setSize(physical).catch((error) => {
+      console.warn("Unable to expand the strip hover window.", error);
+    }),
+  ];
+  if (predictedLayout) {
+    mutations.push(
+      appWindow
+        .setPosition(new api.PhysicalPosition(
+          Math.round(predictedLayout.x),
+          Math.round(predictedLayout.y),
+        ))
+        .catch(() => {}),
+    );
+  }
+  // Windows 会在 resize 与随后的 move 之间绘制中间帧；胶囊先跳出鼠标命中区
+  // 就会触发收回。两项原生变更同时下发，随后再按实际视口做一次最终校正。
+  await Promise.all(mutations);
   physical = await reconcileFloatingSizeAfterShow(
     api,
     appWindow,
@@ -1113,20 +1144,7 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
       railOffsetY: 0,
     };
   }
-  const layout = verticalStripHoverLayout({
-    railPosition: base.position,
-    railSize: base.size,
-    workArea: {
-      x: workArea.position.x,
-      y: workArea.position.y,
-      width: workArea.size.width,
-      height: workArea.size.height,
-    },
-    targetSize: physical,
-    anchorY: anchorY * scale,
-    cardHeight: cardHeight * scale,
-    margin: 8 * scale,
-  });
+  const layout = hoverLayoutFor(physical);
   if (!layout) return null;
   await appWindow
     .setPosition(new api.PhysicalPosition(Math.round(layout.x), Math.round(layout.y)))
@@ -1152,8 +1170,9 @@ async function collapseVerticalStripHover() {
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();
-  await appWindow.setSize(restore.size).catch(() => {});
-  if (restore.position) await appWindow.setPosition(restore.position).catch(() => {});
+  const mutations = [appWindow.setSize(restore.size).catch(() => {})];
+  if (restore.position) mutations.push(appWindow.setPosition(restore.position).catch(() => {}));
+  await Promise.all(mutations);
   rememberStripSize(restore.width, restore.height);
 }
 
