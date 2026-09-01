@@ -1516,7 +1516,6 @@ async function startEdgeDock({ getMode, getPinned }) {
 
   const poll = async () => {
     if (disposed || !dock) return;
-    if (stripHoverRestore) return;
     if (getPinned() || !canDock()) {
       await undock();
       return;
@@ -1556,7 +1555,6 @@ async function startEdgeDock({ getMode, getPinned }) {
 
   const check = async () => {
     if (disposed) return;
-    if (stripHoverRestore) return;
     if (!canDock() || getPinned()) {
       if (dock) await undock();
       return;
