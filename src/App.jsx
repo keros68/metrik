@@ -74,8 +74,10 @@ import {
   broadcastMacAgentSelection,
   broadcastMacAppearance,
   checkForUpdate,
+  collapseVerticalStripHover,
   closeWindow,
   getMacAgentSelection,
+  expandVerticalStripHover,
   getAutostart,
   installUpdate,
   isDesktop,
@@ -271,6 +273,8 @@ const STRIP_BAR_HEIGHT = 28;
 // 竖条宽度由 26px 控件槽 + 外壳 padding 定死下限（32px）；42 留 10px 呼吸，
 // 再宽图标和百分比周围就空得发肥。
 const STRIP_VERTICAL_WIDTH = 42;
+const STRIP_DETAIL_WINDOW_WIDTH = 392;
+const STRIP_DETAIL_CARD_MARGIN = 16;
 const STRIP_VCELL_HEIGHT = 46;
 // 横条宽度的收缩迟滞。一格 54px，所以 6px 远低于「真的少了一个 Agent」，
 // 又高于 DPI/zoom 取整带来的亚像素噪声。
@@ -545,6 +549,50 @@ function quotaSeverity(view) {
   // 与 bindingWindow 的"告急"同一条线：越过它，这个窗口才会顶到行首。
   if (used >= 100 - QUOTA_LOW_REMAINING) return "warn";
   return "";
+}
+
+function StripDetailCard({ agentId, cell, cardRef }) {
+  const meta = AGENT_META[agentId];
+  const firstView = cell?.windows?.[0]?.view;
+  const stale = firstView && (firstView.stale || firstView.quality === "official_snapshot");
+  return (
+    <aside ref={cardRef} className="strip-detail-card" role="tooltip" aria-label={`${meta.label} 用量详情`}>
+      <header className="strip-detail-header">
+        <img src={meta.iconSrc} className={meta.iconClass || ""} alt="" draggable={false} />
+        <strong>{meta.label} 用量</strong>
+      </header>
+      {cell?.windows?.length ? (
+        <div className="strip-detail-metrics">
+          {cell.windows.map((window) => {
+            const view = window.view;
+            const used = Math.round(quotaUsedPercent(view));
+            const severity = quotaSeverity(view);
+            const reset = Number.isFinite(view.resetsInMinutes)
+              ? `${formatReset(view.resetsInMinutes)}后重置`
+              : "重置时间不可用";
+            return (
+              <section className="strip-detail-metric" key={window.key}>
+                <span>{window.label || shortWindowLabel(window.key)}</span>
+                <div className="strip-detail-track" aria-hidden="true">
+                  <i
+                    className={severity ? `strip-detail-fill--${severity}` : ""}
+                    style={{ width: `${used}%`, backgroundColor: severity ? undefined : meta.accent }}
+                  />
+                </div>
+                <p>
+                  <strong>已用 {used}%</strong>
+                  <small>{reset}</small>
+                </p>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="strip-detail-empty">官方配额暂不可用</p>
+      )}
+      {stale && <footer>官方快照 · {formatQuotaAge(firstView.ageMinutes)}</footer>}
+    </aside>
+  );
 }
 
 // 消耗节奏（仅长窗口有意义）：已用占比对比窗口已经过时间占比，
@@ -1231,7 +1279,19 @@ function StripBar({
   // 透明档的真实桌面背景变化很大，控制图标加粗以稳定识别。
   const buttonWeight = transparent && glassTint === "clear" ? "bold" : "regular";
   const shellRef = useRef(null);
+  const railRef = useRef(null);
+  const detailCardRef = useRef(null);
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
+  const detailEnabled = (IS_WINDOWS || IS_LINUX) && vertical && !(pinned && IS_LINUX);
+  const [hoveredDetail, setHoveredDetail] = useState(null);
+  const [detailLayout, setDetailLayout] = useState({
+    side: IS_LINUX ? "left" : "right",
+    railOffsetY: 0,
+  });
+  const detailCell = detailEnabled && hoveredDetail
+    ? cells.find(({ agentId }) => agentId === hoveredDetail.agentId) ?? null
+    : null;
+  const detailOpen = Boolean(detailCell);
   // 控制按钮不再常驻：四个 26px 的槽在竖条上要吃掉 130px，比三个格子还高。
   // 改成按需就地展开——点状态灯位上浮出的 … 把它们放出来，条身随之变长，
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
@@ -1241,6 +1301,9 @@ function StripBar({
   useEffect(() => {
     if (pinned && IS_LINUX) setControlsOpen(false);
   }, [pinned]);
+  useEffect(() => {
+    if (!detailEnabled) setHoveredDetail(null);
+  }, [detailEnabled]);
   const shellAppearance = glassShellAppearance("strip", {
     transparent,
     glassMode,
@@ -1250,6 +1313,64 @@ function StripBar({
     isMac: IS_MAC,
     vertical,
   });
+  useLayoutEffect(() => {
+    if (!detailOpen) {
+      latestWindowCorrection += 1;
+      if (isDesktop() && (IS_WINDOWS || IS_LINUX)) {
+        runWindowAction(collapseVerticalStripHover);
+      }
+      return;
+    }
+    const rail = railRef.current;
+    const card = detailCardRef.current;
+    if (!rail || !card) return;
+    const railRect = rail.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const targetHeight = Math.max(
+      Math.ceil(railRect.height),
+      Math.ceil(cardRect.height + STRIP_DETAIL_CARD_MARGIN * 2),
+    );
+    if (!isDesktop()) {
+      const shellHeight = shellRef.current?.clientHeight || window.innerHeight;
+      const halfCard = cardRect.height / 2;
+      const cardCenterY = Math.min(
+        Math.max(hoveredDetail.anchorY, halfCard + STRIP_DETAIL_CARD_MARGIN),
+        Math.max(shellHeight - halfCard - STRIP_DETAIL_CARD_MARGIN, halfCard + STRIP_DETAIL_CARD_MARGIN),
+      );
+      const pointerY = Math.min(
+        Math.max(hoveredDetail.anchorY - cardCenterY + halfCard, 22),
+        Math.max(cardRect.height - 22, 22),
+      );
+      setDetailLayout({
+        side: IS_LINUX ? "left" : "right",
+        railOffsetY: 0,
+        cardCenterY,
+        pointerY,
+      });
+      return;
+    }
+    runLatestWindowCorrection(async () => {
+      const layout = await expandVerticalStripHover({
+        width: STRIP_DETAIL_WINDOW_WIDTH,
+        height: targetHeight,
+        railWidth: STRIP_VERTICAL_WIDTH,
+        railHeight: Math.ceil(railRect.height),
+        anchorY: hoveredDetail.anchorY,
+        cardHeight: Math.ceil(cardRect.height),
+      });
+      if (layout) {
+        setDetailLayout(layout);
+      } else {
+        setHoveredDetail((current) =>
+          current?.agentId === hoveredDetail.agentId ? null : current,
+        );
+      }
+    });
+  }, [detailOpen, hoveredDetail?.agentId, hoveredDetail?.anchorY]);
+  useEffect(() => () => {
+    latestWindowCorrection += 1;
+    if (IS_WINDOWS || IS_LINUX) runWindowAction(collapseVerticalStripHover);
+  }, []);
   // 窗口尺寸跟随真实内容（通用方案，替代手写常量）：每次渲染后与视口变化时
   // 复核目标尺寸，差 ≥1px 才调窗；量的是 CSS px，resizeStripWindow 内部统一
   // 乘缩放系数与 DPI。任何字体/DPI/缩放/更新点组合都收敛，不再裁按钮。
@@ -1260,6 +1381,7 @@ function StripBar({
     let timer = null;
     const fit = () => {
       timer = null;
+      if (detailOpen) return;
       const isVertical = shell.classList.contains("strip-shell--vertical");
       if (isVertical) {
         const targetHeight = measureStripVerticalContent(shell);
@@ -1328,12 +1450,28 @@ function StripBar({
   // 展开态跟着指针走：移出条身就收回，省得用户忘了收，条一直长着。
   const handlePointerLeave = (event) => {
     glassProps.onPointerLeave?.(event);
+    setHoveredDetail(null);
     setControlsOpen(false);
   };
+  const showDetail = (event, agentId) => {
+    if (!detailEnabled) return;
+    const railBounds = railRef.current?.getBoundingClientRect();
+    const cellBounds = event.currentTarget.getBoundingClientRect();
+    if (!railBounds) return;
+    setHoveredDetail({
+      agentId,
+      anchorY: cellBounds.top - railBounds.top + cellBounds.height / 2,
+    });
+  };
+  const shellClassName = [
+    shellAppearance.className,
+    detailOpen ? "strip-shell--detail-open" : "",
+    detailOpen ? `strip-shell--detail-${detailLayout.side}` : "",
+  ].filter(Boolean).join(" ");
   return (
     <main
       ref={shellRef}
-      className={shellAppearance.className}
+      className={shellClassName}
       data-glass-surface={shellAppearance.trueAlpha ? "true-alpha" : undefined}
       data-pinned={pinned && IS_LINUX ? "true" : undefined}
       inert={pinned && IS_LINUX ? true : undefined}
@@ -1342,10 +1480,16 @@ function StripBar({
       onPointerLeave={handlePointerLeave}
       style={{
         ...shellAppearance.style,
+        "--strip-rail-offset-y": `${detailLayout.railOffsetY}px`,
+        "--strip-detail-card-center-y": `${detailLayout.cardCenterY ?? ((hoveredDetail?.anchorY || 0) + detailLayout.railOffsetY)}px`,
+        "--strip-detail-pointer-y": Number.isFinite(detailLayout.pointerY)
+          ? `${detailLayout.pointerY}px`
+          : "50%",
         ...(pinned ? { cursor: "default" } : {}),
       }}
     >
       <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
+      <div ref={railRef} className="strip-rail">
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
           const meta = AGENT_META[agentId];
@@ -1355,6 +1499,7 @@ function StripBar({
                 key={agentId}
                 className="strip-cell strip-cell--unavailable"
                 title={`${meta.label}：官方配额不可用`}
+                onPointerEnter={(event) => showDetail(event, agentId)}
                 {...dragProps}
               >
                 <img
@@ -1375,7 +1520,8 @@ function StripBar({
             <div
               key={agentId}
               className={`strip-cell ${severity ? `strip-cell--${severity}` : ""}`}
-              title={stripTooltip(agentId, cell.windows)}
+              title={detailEnabled ? undefined : stripTooltip(agentId, cell.windows)}
+              onPointerEnter={(event) => showDetail(event, agentId)}
               {...dragProps}
             >
               <img
@@ -1474,6 +1620,14 @@ function StripBar({
           </>
         )}
       </div>
+      </div>
+      {detailOpen && detailCell && (
+        <StripDetailCard
+          agentId={detailCell.agentId}
+          cell={detailCell.cell}
+          cardRef={detailCardRef}
+        />
+      )}
     </main>
   );
 }

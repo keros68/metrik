@@ -114,6 +114,14 @@ change.
   pointer exit, and reveal from that edge's remaining visible sliver. Pinning
   immediately keeps the complete form visible. Horizontal and vertical strip
   placements are remembered independently.
+- On Windows and Linux, hovering an Agent in the unpinned vertical strip opens
+  its complete official-quota windows in a pointer-anchored detail bubble. The temporary
+  transparent berth expands away from the nearest screen edge when global
+  coordinates are available, while the strip itself remains fixed in place.
+  On Wayland it expands toward the window-local right and leaves placement to
+  the compositor. Leaving the berth restores the exact prior window size and,
+  when the platform exposes it, position. Linux pinned read-only hover behavior
+  remains authoritative and never opens the detail bubble.
 - Floating-form size uses the destination monitor's DPI. Compact and strip
   reassert size from native DPI-change payloads, and window mutations are
   serialized so stale resizes cannot overwrite corrections.

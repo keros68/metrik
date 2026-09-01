@@ -12,6 +12,8 @@ import {
 import {
   monitorForWindowPosition,
   physicalWindowSize,
+  verticalStripHoverLocalLayout,
+  verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
   viewportCorrectedZoom,
 } from "./windowGeometry";
@@ -80,6 +82,7 @@ function readStoredStripScale() {
 }
 
 let stripScale = readStoredStripScale();
+let stripHoverRestore = null;
 
 /// 设置胶囊条缩放系数（钳到 0.75–2.0）并持久化；返回实际生效值。
 /// 生效在形态切换里（进入胶囊条时应用），这里只管存储。
@@ -1053,6 +1056,107 @@ async function resizeStripWindow({ width, height }) {
   if (!clamped) await appWindow.center().catch(() => {});
 }
 
+/// Windows 与 Linux 竖向胶囊悬停时临时扩出一个透明画布承载详情卡。
+/// Windows/X11 用全局坐标保持原条身位置；Wayland 只改变本地尺寸，向右展开，
+/// 最终摆放交给合成器。关闭时恢复悬停前的尺寸以及可用时的全局位置。
+async function expandVerticalStripHover({ width, height, railWidth, railHeight, anchorY, cardHeight }) {
+  if (!isWindowsPlatform() && !isLinuxPlatform()) return null;
+  const api = await windowApi();
+  if (!api) return null;
+  const appWindow = api.getCurrentWindow();
+  const coordinateAware = !isLinuxPlatform() || await supportsGlobalWindowCoordinates();
+  const [currentPosition, currentSize, monitor, factor] = await Promise.all([
+    coordinateAware ? appWindow.outerPosition().catch(() => null) : null,
+    appWindow.outerSize().catch(() => null),
+    api.currentMonitor().catch(() => null),
+    appWindow.scaleFactor().catch(() => 1),
+  ]);
+  const workArea = monitor?.workArea;
+  if (!currentSize || (coordinateAware && (!currentPosition || !workArea))) return null;
+  if (!stripHoverRestore) {
+    stripHoverRestore = {
+      position: currentPosition,
+      size: currentSize,
+      width: railWidth,
+      height: railHeight,
+    };
+  }
+  const base = stripHoverRestore;
+  const scale = stripScale * factor;
+  let physical = await scaledPhysicalSize(api, appWindow, width, height, stripScale, factor);
+  await appWindow.setSize(physical).catch((error) => {
+    console.warn("Unable to expand the strip hover window.", error);
+  });
+  physical = await reconcileFloatingSizeAfterShow(
+    api,
+    appWindow,
+    width,
+    height,
+    stripScale,
+    physical,
+  );
+  if (!coordinateAware) {
+    const local = verticalStripHoverLocalLayout({
+      targetHeight: physical.height / scale,
+      anchorY,
+      cardHeight,
+      margin: 8,
+      pointerMargin: 22,
+    });
+    if (!local) return null;
+    return {
+      // Wayland cannot reveal the screen side. Growing toward the local right
+      // keeps the rail at the window origin and lets the compositor constrain it.
+      side: "left",
+      cardCenterY: local.cardCenter,
+      pointerY: local.pointerY,
+      railOffsetY: 0,
+    };
+  }
+  const layout = verticalStripHoverLayout({
+    railPosition: base.position,
+    railSize: base.size,
+    workArea: {
+      x: workArea.position.x,
+      y: workArea.position.y,
+      width: workArea.size.width,
+      height: workArea.size.height,
+    },
+    targetSize: physical,
+    anchorY: anchorY * scale,
+    cardHeight: cardHeight * scale,
+    margin: 8 * scale,
+  });
+  if (!layout) return null;
+  await appWindow
+    .setPosition(new api.PhysicalPosition(Math.round(layout.x), Math.round(layout.y)))
+    .catch(() => {});
+  const cardCenterY = layout.cardCenter / scale;
+  const railOffsetY = layout.railOffsetY / scale;
+  const pointerY = Math.min(
+    Math.max(anchorY + railOffsetY - cardCenterY + cardHeight / 2, 22),
+    Math.max(cardHeight - 22, 22),
+  );
+  return {
+    side: layout.side,
+    cardCenterY,
+    pointerY,
+    railOffsetY,
+  };
+}
+
+async function collapseVerticalStripHover() {
+  if ((!isWindowsPlatform() && !isLinuxPlatform()) || !stripHoverRestore) return;
+  const restore = stripHoverRestore;
+  stripHoverRestore = null;
+  const api = await windowApi();
+  if (!api) return;
+  const appWindow = api.getCurrentWindow();
+  await appWindow.setSize(restore.size).catch(() => {});
+  if (restore.position) await appWindow.setPosition(restore.position).catch(() => {});
+  rememberStripSize(restore.width, restore.height);
+}
+
 /// 小组件内容（Agent 行数）变化时只调高度，宽度恒为 320，不走 hide/show。
 /// 上限取工作区高度留 48px 呼吸位（CSS px），超出部分由列表内部滚动承担。
 async function resizeCompactWindow({ height }) {
@@ -1591,9 +1695,11 @@ export {
   broadcastMacAgentSelection,
   broadcastMacAppearance,
   checkForUpdate,
+  collapseVerticalStripHover,
   closeWindow,
   getAutostart,
   getMacAgentSelection,
+  expandVerticalStripHover,
   installUpdate,
   isDesktop,
   isLinuxPlatform,

@@ -5,6 +5,8 @@ import {
   horizontalStripTargetWidth,
   monitorForWindowPosition,
   physicalWindowSize,
+  verticalStripHoverLocalLayout,
+  verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
   viewportCorrectedZoom,
 } from "./windowGeometry.js";
@@ -92,6 +94,53 @@ test("horizontal strip width includes every outer flex gap", () => {
       gap: 4,
     }),
     230,
+  );
+});
+
+test("vertical strip hover expands away from the nearest screen edge", () => {
+  assert.deepEqual(
+    verticalStripHoverLayout({
+      railPosition: { x: 1878, y: 300 },
+      railSize: { width: 42, height: 260 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      targetSize: { width: 392, height: 320 },
+      anchorY: 69,
+      cardHeight: 280,
+    }),
+    { side: "right", x: 1528, y: 221, cardCenter: 148, railOffsetY: 79 },
+  );
+});
+
+test("vertical strip hover stays inside the work area near the top-left", () => {
+  assert.deepEqual(
+    verticalStripHoverLayout({
+      railPosition: { x: 0, y: 0 },
+      railSize: { width: 42, height: 90 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      targetSize: { width: 392, height: 300 },
+      anchorY: 23,
+      cardHeight: 270,
+    }),
+    { side: "left", x: 0, y: 0, cardCenter: 143, railOffsetY: 0 },
+  );
+});
+
+test("Wayland-local strip hover clamps the card and pointer without global coordinates", () => {
+  assert.deepEqual(
+    verticalStripHoverLocalLayout({
+      targetHeight: 300,
+      anchorY: 23,
+      cardHeight: 270,
+    }),
+    { cardCenter: 143, pointerY: 22 },
+  );
+  assert.deepEqual(
+    verticalStripHoverLocalLayout({
+      targetHeight: 300,
+      anchorY: 277,
+      cardHeight: 270,
+    }),
+    { cardCenter: 157, pointerY: 248 },
   );
 });
 
