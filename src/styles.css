@@ -1315,6 +1315,9 @@ html:has(.strip-shell) #root {
 }
 
 .strip-shell {
+  --strip-detail-surface: rgba(248, 248, 247, 0.98);
+  --strip-detail-ink: rgba(29, 31, 35, 0.94);
+  --strip-detail-muted: rgba(48, 51, 57, 0.48);
   display: flex;
   align-items: center;
   width: 100vw;
@@ -1331,6 +1334,14 @@ html:has(.strip-shell) #root {
   user-select: none;
 }
 
+.strip-rail {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
 .strip-shell--vertical {
   flex-direction: column;
   align-items: stretch;
@@ -1338,11 +1349,199 @@ html:has(.strip-shell) #root {
   gap: 4px;
 }
 
+.strip-shell--vertical .strip-rail {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  gap: 4px;
+}
+
+/* Windows 竖条悬停详情：透明主窗口只提供承载区，原条身和气泡各自画表面。
+   条身按原坐标留在屏幕上，详情从指向当前 Agent 的尖角位置展开。 */
+.strip-shell--vertical.strip-shell--detail-open {
+  position: relative;
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+}
+
+.strip-shell--detail-open .strip-rail {
+  position: absolute;
+  z-index: 2;
+  top: var(--strip-rail-offset-y, 0px);
+  display: flex;
+  flex: none;
+  width: 42px;
+  height: max-content;
+  padding: 6px 3px 4px;
+  gap: 4px;
+  border-radius: 8px;
+  background:
+    radial-gradient(140% 180% at 14% 0%, rgba(255, 255, 255, 0.9), transparent 60%),
+    linear-gradient(165deg, #fbfbfa, #f0efeb);
+  box-shadow: inset 0 0 0 1px rgba(31, 33, 36, 0.08);
+}
+
+.strip-shell--detail-right .strip-rail { right: 0; }
+.strip-shell--detail-left .strip-rail { left: 0; }
+
+.strip-detail-card {
+  position: absolute;
+  z-index: 4;
+  top: var(--strip-detail-card-center-y, 50%);
+  width: 310px;
+  padding: 18px;
+  color: var(--strip-detail-ink);
+  background: var(--strip-detail-surface);
+  border: 1px solid rgba(31, 33, 36, 0.075);
+  border-radius: 20px;
+  box-shadow:
+    0 24px 56px rgba(10, 12, 16, 0.2),
+    0 6px 18px rgba(10, 12, 16, 0.12),
+    inset 0 1px rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+  transform: translateY(-50%);
+  transform-origin: right var(--strip-detail-pointer-y, 50%);
+  animation: strip-detail-reveal-right 220ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
+}
+
+.strip-shell--detail-right .strip-detail-card { right: 68px; }
+.strip-shell--detail-left .strip-detail-card {
+  left: 68px;
+  transform-origin: left var(--strip-detail-pointer-y, 50%);
+  animation-name: strip-detail-reveal-left;
+}
+
+.strip-detail-card::after {
+  content: "";
+  position: absolute;
+  top: var(--strip-detail-pointer-y, 50%);
+  width: 19px;
+  height: 38px;
+  background: var(--strip-detail-surface);
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 16% 72%, 22% 50%, 16% 28%);
+  transform: translateY(-50%);
+}
+
+.strip-shell--detail-right .strip-detail-card::after { right: -18px; }
+.strip-shell--detail-left .strip-detail-card::after {
+  left: -18px;
+  transform: translateY(-50%) scaleX(-1);
+}
+
+.strip-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.strip-detail-header img {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+}
+
+.strip-detail-header strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-detail-metrics {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.strip-detail-metric { display: grid; gap: 7px; }
+.strip-detail-metric > span {
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-detail-track {
+  height: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--strip-detail-ink) 15%, transparent);
+  border-radius: 999px;
+}
+
+.strip-detail-track i {
+  display: block;
+  min-width: 3px;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.strip-detail-track .strip-detail-fill--warn { background: #e8b04a; }
+.strip-detail-track .strip-detail-fill--critical { background: #ec7a63; }
+
+.strip-detail-metric p {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 14px;
+}
+
+.strip-detail-metric p strong { font-weight: 580; }
+.strip-detail-metric p small {
+  overflow: hidden;
+  color: var(--strip-detail-muted);
+  font-size: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-detail-empty,
+.strip-detail-card footer {
+  margin: 14px 0 0;
+  color: var(--strip-detail-muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+@keyframes strip-detail-reveal-right {
+  from { opacity: 0; transform: translate(8px, -50%) scale(0.97); }
+  to { opacity: 1; transform: translate(0, -50%) scale(1); }
+}
+
+@keyframes strip-detail-reveal-left {
+  from { opacity: 0; transform: translate(-8px, -50%) scale(0.97); }
+  to { opacity: 1; transform: translate(0, -50%) scale(1); }
+}
+
 /* 玻璃模式与小卡片同一条稳定 Alpha 管线；不在条带变形时切换 DWM 材质。 */
 .strip-shell--transparent {
   --glass-alpha: 0.82;
   border-radius: 8px;
   color: rgba(255, 255, 255, 0.92);
+  background:
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
+    rgba(21, 23, 28, var(--glass-alpha));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.09),
+    inset 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.strip-shell--detail-open.strip-shell--transparent {
+  --strip-detail-surface: rgba(9, 10, 12, 0.96);
+  --strip-detail-ink: rgba(255, 255, 255, 0.94);
+  --strip-detail-muted: rgba(255, 255, 255, 0.46);
+}
+
+.strip-shell--detail-open.strip-shell--transparent .strip-rail {
   background:
     radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
     rgba(21, 23, 28, var(--glass-alpha));
@@ -1974,6 +2173,23 @@ html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinne
   color: var(--blue);
 }
 
+.strip-shell--vertical.strip-shell--detail-open.strip-shell--glass-light {
+  --strip-detail-surface: rgba(248, 249, 250, 0.97);
+  --strip-detail-ink: rgba(24, 26, 30, 0.94);
+  --strip-detail-muted: rgba(48, 51, 57, 0.5);
+  background: transparent;
+  box-shadow: none;
+}
+
+.strip-shell--detail-open.strip-shell--glass-light .strip-rail {
+  background:
+    radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.42), transparent 55%),
+    linear-gradient(168deg, rgb(252 253 255 / calc(var(--glass-alpha) + 0.06)), rgb(236 240 247 / calc(var(--glass-alpha) - 0.02)));
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 33, 36, 0.1),
+    inset 0 1px rgba(255, 255, 255, 0.68);
+}
+
 /* ============ 透明配色（--glass-clear，Windows 卡片与胶囊） ============
    Coffee 式单合成管线：透明 HWND/WebView2 始终不切换 DWM 材质，只承载一层
    罩层 + backdrop-filter，因此桌面、图标和后方窗口都是真实取样，卡片/胶囊
@@ -2277,6 +2493,30 @@ html:has(.strip-shell--glass-ink-light) #root {
   html:has(.strip-shell--glass-clear) #root::after {
     transition: none;
   }
+}
+
+/* 清透档原本把霜层画在整个 #root 上；详情打开后根节点已经是透明承载区，
+   霜层只画在条身与气泡本身，避免出现一整块矩形玻璃。 */
+html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-ink-light) {
+  --strip-detail-surface: rgba(239, 244, 249, 0.92);
+}
+
+.strip-shell--detail-open.strip-shell--glass-clear.strip-shell--glass-ink-light {
+  --strip-detail-surface: rgba(16, 20, 27, 0.9);
+}
+
+.strip-shell--detail-open.strip-shell--glass-clear .strip-detail-card,
+.strip-shell--detail-open.strip-shell--glass-clear .strip-rail {
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
 }
 
 .sr-only {

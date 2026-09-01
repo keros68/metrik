@@ -126,6 +126,69 @@ function horizontalStripTargetWidth({
   );
 }
 
+/// 竖向胶囊的悬停卡片需要临时放大透明窗口。窗口扩展方向取胶囊所在的
+/// 半屏，原胶囊的屏幕坐标保持不动；纵向只移动到足够容纳卡片的位置。
+function verticalStripHoverLocalLayout({ targetHeight, anchorY, cardHeight, margin = 8, pointerMargin = 22 }) {
+  if ([targetHeight, anchorY, cardHeight, margin, pointerMargin].some((value) => !Number.isFinite(value))) {
+    return null;
+  }
+  const halfCard = cardHeight / 2;
+  const cardCenter = Math.min(
+    Math.max(anchorY, halfCard + margin),
+    Math.max(targetHeight - halfCard - margin, halfCard + margin),
+  );
+  const pointerY = Math.min(
+    Math.max(anchorY - cardCenter + halfCard, pointerMargin),
+    Math.max(cardHeight - pointerMargin, pointerMargin),
+  );
+  return { cardCenter, pointerY };
+}
+
+function verticalStripHoverLayout({ railPosition, railSize, workArea, targetSize, anchorY, cardHeight, margin = 8 }) {
+  const values = [
+    railPosition?.x,
+    railPosition?.y,
+    railSize?.width,
+    railSize?.height,
+    workArea?.x,
+    workArea?.y,
+    workArea?.width,
+    workArea?.height,
+    targetSize?.width,
+    targetSize?.height,
+    anchorY,
+    cardHeight,
+  ];
+  if (values.some((value) => !Number.isFinite(value))) return null;
+
+  const workRight = workArea.x + workArea.width;
+  const workBottom = workArea.y + workArea.height;
+  const railCenterX = railPosition.x + railSize.width / 2;
+  const side = railCenterX < workArea.x + workArea.width / 2 ? "left" : "right";
+  const local = verticalStripHoverLocalLayout({
+    targetHeight: targetSize.height,
+    anchorY,
+    cardHeight,
+    margin,
+  });
+  if (!local) return null;
+  const { cardCenter } = local;
+  const desiredX = side === "left"
+    ? railPosition.x
+    : railPosition.x + railSize.width - targetSize.width;
+  const desiredY = railPosition.y - (cardCenter - anchorY);
+  const x = Math.min(Math.max(desiredX, workArea.x), Math.max(workRight - targetSize.width, workArea.x));
+  const y = Math.min(Math.max(desiredY, workArea.y), Math.max(workBottom - targetSize.height, workArea.y));
+
+  return {
+    side,
+    x,
+    y,
+    cardCenter,
+    railOffsetY: railPosition.y - y,
+  };
+}
+
 /// 记忆坐标是物理像素；用每台显示器自己的 DPI 推导候选窗口大小，再选与工作区
 /// 重叠最多的显示器。不能先读当前窗口 DPI——窗口随后可能恢复到另一台屏幕。
 function monitorForWindowPosition(
@@ -172,6 +235,8 @@ export {
   horizontalStripTargetWidth,
   monitorForWindowPosition,
   physicalWindowSize,
+  verticalStripHoverLocalLayout,
+  verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
   viewportCorrectedZoom,
 };
