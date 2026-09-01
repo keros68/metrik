@@ -178,7 +178,12 @@ function verticalStripHoverLayout({ railPosition, railSize, workArea, targetSize
     : railPosition.x + railSize.width - targetSize.width;
   const desiredY = railPosition.y - (cardCenter - anchorY);
   const x = Math.min(Math.max(desiredX, workArea.x), Math.max(workRight - targetSize.width, workArea.x));
-  const y = Math.min(Math.max(desiredY, workArea.y), Math.max(workBottom - targetSize.height, workArea.y));
+  // 窗口不仅要留在工作区，也必须完整包住原胶囊。只按卡片锚点移动时，
+  // 悬停下方条目会让 railOffsetY 变成负数，把胶囊上半段推出透明窗口。
+  const railBottom = railPosition.y + railSize.height;
+  const minY = Math.max(workArea.y, railBottom - targetSize.height);
+  const maxY = Math.min(workBottom - targetSize.height, railPosition.y);
+  const y = Math.min(Math.max(desiredY, minY), Math.max(maxY, minY));
 
   return {
     side,

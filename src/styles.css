@@ -1316,6 +1316,9 @@ html:has(.strip-shell) #root {
 
 .strip-shell {
   --strip-detail-surface: rgba(248, 248, 247, 0.98);
+  --strip-detail-background:
+    radial-gradient(140% 180% at 14% 0%, rgba(255, 255, 255, 0.9), transparent 60%),
+    linear-gradient(165deg, #fbfbfa, #f0efeb);
   --strip-detail-ink: rgba(29, 31, 35, 0.94);
   --strip-detail-muted: rgba(48, 51, 57, 0.48);
   display: flex;
@@ -1378,9 +1381,7 @@ html:has(.strip-shell) #root {
   padding: 6px 3px 4px;
   gap: 4px;
   border-radius: 8px;
-  background:
-    radial-gradient(140% 180% at 14% 0%, rgba(255, 255, 255, 0.9), transparent 60%),
-    linear-gradient(165deg, #fbfbfa, #f0efeb);
+  background: var(--strip-detail-background);
   box-shadow: inset 0 0 0 1px rgba(31, 33, 36, 0.08);
 }
 
@@ -1391,25 +1392,26 @@ html:has(.strip-shell) #root {
   position: absolute;
   z-index: 4;
   top: var(--strip-detail-card-center-y, 50%);
-  width: 310px;
-  padding: 18px;
+  width: 232px;
+  padding: 12px;
   color: var(--strip-detail-ink);
-  background: var(--strip-detail-surface);
-  border: 1px solid rgba(31, 33, 36, 0.075);
-  border-radius: 20px;
+  background: var(--strip-detail-background);
+  border: 1px solid color-mix(in srgb, var(--strip-detail-ink) 9%, transparent);
+  border-radius: 14px;
   box-shadow:
-    0 24px 56px rgba(10, 12, 16, 0.2),
-    0 6px 18px rgba(10, 12, 16, 0.12),
-    inset 0 1px rgba(255, 255, 255, 0.45);
+    0 12px 26px rgba(10, 12, 16, 0.15),
+    0 3px 10px rgba(10, 12, 16, 0.09),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px rgba(255, 255, 255, 0.16);
   pointer-events: none;
   transform: translateY(-50%);
   transform-origin: right var(--strip-detail-pointer-y, 50%);
-  animation: strip-detail-reveal-right 220ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
+  animation: strip-detail-reveal-right 160ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
 }
 
-.strip-shell--detail-right .strip-detail-card { right: 68px; }
+.strip-shell--detail-right .strip-detail-card { right: 54px; }
 .strip-shell--detail-left .strip-detail-card {
-  left: 68px;
+  left: 54px;
   transform-origin: left var(--strip-detail-pointer-y, 50%);
   animation-name: strip-detail-reveal-left;
 }
@@ -1418,58 +1420,58 @@ html:has(.strip-shell) #root {
   content: "";
   position: absolute;
   top: var(--strip-detail-pointer-y, 50%);
-  width: 19px;
-  height: 38px;
+  width: 14px;
+  height: 28px;
   background: var(--strip-detail-surface);
   clip-path: polygon(0 0, 100% 50%, 0 100%, 16% 72%, 22% 50%, 16% 28%);
   transform: translateY(-50%);
 }
 
-.strip-shell--detail-right .strip-detail-card::after { right: -18px; }
+.strip-shell--detail-right .strip-detail-card::after { right: -13px; }
 .strip-shell--detail-left .strip-detail-card::after {
-  left: -18px;
+  left: -13px;
   transform: translateY(-50%) scaleX(-1);
 }
 
 .strip-detail-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
 }
 
 .strip-detail-header img {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
   border-radius: 4px;
 }
 
 .strip-detail-header strong {
   overflow: hidden;
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 650;
-  line-height: 19px;
+  line-height: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .strip-detail-metrics {
   display: grid;
-  gap: 14px;
-  margin-top: 14px;
+  gap: 9px;
+  margin-top: 9px;
 }
 
-.strip-detail-metric { display: grid; gap: 7px; }
+.strip-detail-metric { display: grid; gap: 5px; }
 .strip-detail-metric > span {
   overflow: hidden;
-  font-size: 11.5px;
-  line-height: 14px;
+  font-size: 10.5px;
+  line-height: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .strip-detail-track {
-  height: 6px;
+  height: 5px;
   overflow: hidden;
   background: color-mix(in srgb, var(--strip-detail-ink) 15%, transparent);
   border-radius: 999px;
@@ -1489,10 +1491,10 @@ html:has(.strip-shell) #root {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   margin: 0;
-  font-size: 11.5px;
-  line-height: 14px;
+  font-size: 10.5px;
+  line-height: 13px;
 }
 
 .strip-detail-metric p strong { font-weight: 580; }
@@ -1506,20 +1508,24 @@ html:has(.strip-shell) #root {
 
 .strip-detail-empty,
 .strip-detail-card footer {
-  margin: 14px 0 0;
+  margin: 9px 0 0;
   color: var(--strip-detail-muted);
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 10px;
+  line-height: 13px;
 }
 
 @keyframes strip-detail-reveal-right {
-  from { opacity: 0; transform: translate(8px, -50%) scale(0.97); }
-  to { opacity: 1; transform: translate(0, -50%) scale(1); }
+  from { opacity: 0; transform: translate(4px, -50%); }
+  to { opacity: 1; transform: translate(0, -50%); }
 }
 
 @keyframes strip-detail-reveal-left {
-  from { opacity: 0; transform: translate(-8px, -50%) scale(0.97); }
-  to { opacity: 1; transform: translate(0, -50%) scale(1); }
+  from { opacity: 0; transform: translate(-4px, -50%); }
+  to { opacity: 1; transform: translate(0, -50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strip-detail-card { animation: none; }
 }
 
 /* 玻璃模式与小卡片同一条稳定 Alpha 管线；不在条带变形时切换 DWM 材质。 */
@@ -1536,15 +1542,16 @@ html:has(.strip-shell) #root {
 }
 
 .strip-shell--detail-open.strip-shell--transparent {
-  --strip-detail-surface: rgba(9, 10, 12, 0.96);
+  --strip-detail-surface: rgb(21 23 28 / var(--glass-alpha));
+  --strip-detail-background:
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
+    rgb(21 23 28 / var(--glass-alpha));
   --strip-detail-ink: rgba(255, 255, 255, 0.94);
   --strip-detail-muted: rgba(255, 255, 255, 0.46);
 }
 
 .strip-shell--detail-open.strip-shell--transparent .strip-rail {
-  background:
-    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
-    rgba(21, 23, 28, var(--glass-alpha));
+  background: var(--strip-detail-background);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.09),
     inset 0 1px rgba(255, 255, 255, 0.12);
@@ -2174,7 +2181,10 @@ html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinne
 }
 
 .strip-shell--vertical.strip-shell--detail-open.strip-shell--glass-light {
-  --strip-detail-surface: rgba(248, 249, 250, 0.97);
+  --strip-detail-surface: rgb(244 247 251 / var(--glass-alpha));
+  --strip-detail-background:
+    radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.42), transparent 55%),
+    linear-gradient(168deg, rgb(252 253 255 / calc(var(--glass-alpha) + 0.06)), rgb(236 240 247 / calc(var(--glass-alpha) - 0.02)));
   --strip-detail-ink: rgba(24, 26, 30, 0.94);
   --strip-detail-muted: rgba(48, 51, 57, 0.5);
   background: transparent;
@@ -2182,9 +2192,7 @@ html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinne
 }
 
 .strip-shell--detail-open.strip-shell--glass-light .strip-rail {
-  background:
-    radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.42), transparent 55%),
-    linear-gradient(168deg, rgb(252 253 255 / calc(var(--glass-alpha) + 0.06)), rgb(236 240 247 / calc(var(--glass-alpha) - 0.02)));
+  background: var(--strip-detail-background);
   box-shadow:
     inset 0 0 0 1px rgba(31, 33, 36, 0.1),
     inset 0 1px rgba(255, 255, 255, 0.68);
@@ -2505,12 +2513,23 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   box-shadow: none;
 }
 
-.strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-ink-light) {
-  --strip-detail-surface: rgba(239, 244, 249, 0.92);
+.strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-ink-light):not(.strip-shell--glass-css) {
+  --strip-detail-surface: rgb(
+    229 237 246 /
+      clamp(0.34, calc(0.26 + var(--shell-glass-alpha, 0.82) * 0.32), 0.62)
+  );
+  --strip-detail-background:
+    radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.42), transparent 55%),
+    var(--strip-detail-surface);
 }
 
-.strip-shell--detail-open.strip-shell--glass-clear.strip-shell--glass-ink-light {
-  --strip-detail-surface: rgba(16, 20, 27, 0.9);
+.strip-shell--detail-open.strip-shell--glass-clear.strip-shell--glass-ink-light:not(.strip-shell--glass-css) {
+  --strip-detail-surface: rgb(
+    18 24 36 / clamp(0.14, calc(0.1 + var(--shell-glass-alpha, 0.82) * 0.34), 0.44)
+  );
+  --strip-detail-background:
+    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
+    var(--strip-detail-surface);
 }
 
 .strip-shell--detail-open.strip-shell--glass-clear .strip-detail-card,

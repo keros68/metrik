@@ -273,8 +273,9 @@ const STRIP_BAR_HEIGHT = 28;
 // 竖条宽度由 26px 控件槽 + 外壳 padding 定死下限（32px）；42 留 10px 呼吸，
 // 再宽图标和百分比周围就空得发肥。
 const STRIP_VERTICAL_WIDTH = 42;
-const STRIP_DETAIL_WINDOW_WIDTH = 392;
-const STRIP_DETAIL_CARD_MARGIN = 16;
+const STRIP_DETAIL_WINDOW_WIDTH = 312;
+const STRIP_DETAIL_CARD_MARGIN = 12;
+const STRIP_DETAIL_LEAVE_DELAY = 180;
 const STRIP_VCELL_HEIGHT = 46;
 // 横条宽度的收缩迟滞。一格 54px，所以 6px 远低于「真的少了一个 Agent」，
 // 又高于 DPI/zoom 取整带来的亚像素噪声。
@@ -1049,7 +1050,7 @@ function runLatestWindowCorrection(action) {
   const correction = ++latestWindowCorrection;
   return runWindowAction(() => {
     if (correction !== latestWindowCorrection) return undefined;
-    return action();
+    return action(() => correction === latestWindowCorrection);
   });
 }
 
@@ -1281,6 +1282,7 @@ function StripBar({
   const shellRef = useRef(null);
   const railRef = useRef(null);
   const detailCardRef = useRef(null);
+  const pointerLeaveTimerRef = useRef(null);
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   const detailEnabled = (IS_WINDOWS || IS_LINUX) && vertical && !(pinned && IS_LINUX);
   const [hoveredDetail, setHoveredDetail] = useState(null);
@@ -1326,8 +1328,9 @@ function StripBar({
     if (!rail || !card) return;
     const railRect = rail.getBoundingClientRect();
     const cardRect = card.getBoundingClientRect();
+    const railHeight = Math.ceil(Math.max(railRect.height, rail.scrollHeight));
     const targetHeight = Math.max(
-      Math.ceil(railRect.height),
+      railHeight,
       Math.ceil(cardRect.height + STRIP_DETAIL_CARD_MARGIN * 2),
     );
     if (!isDesktop()) {
@@ -1349,15 +1352,16 @@ function StripBar({
       });
       return;
     }
-    runLatestWindowCorrection(async () => {
+    runLatestWindowCorrection(async (isLatest) => {
       const layout = await expandVerticalStripHover({
         width: STRIP_DETAIL_WINDOW_WIDTH,
         height: targetHeight,
         railWidth: STRIP_VERTICAL_WIDTH,
-        railHeight: Math.ceil(railRect.height),
+        railHeight,
         anchorY: hoveredDetail.anchorY,
         cardHeight: Math.ceil(cardRect.height),
       });
+      if (!isLatest()) return;
       if (layout) {
         setDetailLayout(layout);
       } else {
@@ -1368,6 +1372,7 @@ function StripBar({
     });
   }, [detailOpen, hoveredDetail?.agentId, hoveredDetail?.anchorY]);
   useEffect(() => () => {
+    window.clearTimeout(pointerLeaveTimerRef.current);
     latestWindowCorrection += 1;
     if (IS_WINDOWS || IS_LINUX) runWindowAction(collapseVerticalStripHover);
   }, []);
@@ -1447,14 +1452,25 @@ function StripBar({
     };
   });
   const glassProps = glassPointerProps(shellAppearance.edgeInteractive);
-  // 展开态跟着指针走：移出条身就收回，省得用户忘了收，条一直长着。
+  const cancelPointerLeave = () => {
+    window.clearTimeout(pointerLeaveTimerRef.current);
+    pointerLeaveTimerRef.current = null;
+  };
+  // Windows 扩宽并重定位原生窗口时，WebView 会短暂收到 pointerleave；立即收回
+  // 会与仍停在胶囊上的指针形成展开/收起循环。短缓冲只跨过这次原生事务，
+  // 真正离开整个透明承载区后仍会自动收回。
   const handlePointerLeave = (event) => {
     glassProps.onPointerLeave?.(event);
-    setHoveredDetail(null);
-    setControlsOpen(false);
+    cancelPointerLeave();
+    pointerLeaveTimerRef.current = window.setTimeout(() => {
+      pointerLeaveTimerRef.current = null;
+      setHoveredDetail(null);
+      setControlsOpen(false);
+    }, STRIP_DETAIL_LEAVE_DELAY);
   };
   const showDetail = (event, agentId) => {
     if (!detailEnabled) return;
+    cancelPointerLeave();
     const railBounds = railRef.current?.getBoundingClientRect();
     const cellBounds = event.currentTarget.getBoundingClientRect();
     if (!railBounds) return;
@@ -1477,6 +1493,7 @@ function StripBar({
       inert={pinned && IS_LINUX ? true : undefined}
       {...dragProps}
       {...glassProps}
+      onPointerEnter={cancelPointerLeave}
       onPointerLeave={handlePointerLeave}
       style={{
         ...shellAppearance.style,
