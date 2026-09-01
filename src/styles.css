@@ -2852,6 +2852,15 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   overflow: hidden;
 }
 
+/* Windows/Linux 的完整视图由同一个原生窗口从悬浮形态变形而来。窗口已经在
+   hide/resize/center/show，内容再做 640–720ms 位移动画会叠出拖影和卡顿。 */
+.app-shell--native-resize .hero-copy,
+.app-shell--native-resize .chart-section,
+.app-shell--native-resize .breakdown-grid,
+.app-shell--native-resize .inspector-zone {
+  animation: none;
+}
+
 .dashboard {
   min-width: 0;
   height: 100dvh;
