@@ -13,6 +13,11 @@ change.
 - Manual refresh requests `usage_snapshot` with `force: true`, bypassing quota
   TTL caches. A failed refresh retains the last rows and marks them stale; it
   never clears them silently.
+- The data-source drawer is operational UI, not a parser report. It shows a
+  short source status by default. When local data is incomplete it offers a
+  visible rescan that rebuilds only Metrik's derived index and never changes
+  Agent logs; if the same adapter mismatch remains, the UI says that an app
+  update may still be required instead of claiming the rescan repaired it.
 - Metrik is local-first. Optional multi-device sync must not upload prompts,
   conversation text, credentials, or raw tool output.
 - The compact widget prioritizes per-agent official quota windows, including
@@ -106,6 +111,8 @@ change.
 - Compact, strip, and expanded forms are reachable from one another in one
   click. Each form remembers its own position and never overwrites another
   form's position.
+- The tray's "show expanded" action works from a fully hidden main window; it
+  must not require the user to reveal compact or strip first.
 - Pinning and position lock apply only to compact and strip. Entering expanded
   mode always drops always-on-top and provides no pin control.
 - Strip resizing preserves the screen edge it is flush to. Fully off-screen
@@ -125,6 +132,9 @@ change.
   window size and, when the platform exposes it, position. Linux pinned
   read-only hover behavior remains authoritative and never opens the detail
   bubble.
+- The horizontal strip stays glance-only. It shares the vertical strip's glass
+  surface and compact grouping, but does not use a native multiline tooltip or
+  grow into the vertical strip's detail-card berth.
 - Floating-form size uses the destination monitor's DPI. Compact and strip
   reassert size from native DPI-change payloads, and window mutations are
   serialized so stale resizes cannot overwrite corrections.

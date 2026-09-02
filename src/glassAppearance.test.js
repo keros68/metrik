@@ -89,6 +89,16 @@ test("compact and strip clear glass share one true-alpha appearance", () => {
   }
 });
 
+test("strip orientation is explicit so horizontal and vertical can share material without sharing layout", () => {
+  const horizontal = glassShellAppearance("strip", { transparent: true });
+  const vertical = glassShellAppearance("strip", { transparent: true, vertical: true });
+
+  assert.match(horizontal.className, /strip-shell--horizontal/);
+  assert.doesNotMatch(horizontal.className, /strip-shell--vertical/);
+  assert.match(vertical.className, /strip-shell--vertical/);
+  assert.doesNotMatch(vertical.className, /strip-shell--horizontal/);
+});
+
 test("the clear tint pairs each ink colour with the backdrop that can carry it", () => {
   for (const kind of ["widget", "strip"]) {
     const prefix = kind === "widget" ? "widget-shell" : "strip-shell";
