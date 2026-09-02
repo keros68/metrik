@@ -666,7 +666,7 @@ impl ClaudeHook {
         {
             let Some(command) = foreign_command(&settings) else {
                 bail!(
-                    "Claude Code 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖未安装。"
+                    "Claude Code 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。"
                 );
             };
             std::fs::write(self.backup_path(), serde_json::to_string_pretty(&existing)?)

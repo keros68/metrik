@@ -54,7 +54,7 @@ pub const SETTING_KEY: &str = "claude_oauth_quota_enabled";
 /// 存的是本模块自己生成的错误文案，不含 token、请求头或响应体。
 const LAST_ERROR_SETTING_KEY: &str = "claude_oauth_last_error";
 
-pub const SOURCE_LABEL: &str = "官方额度（OAuth）";
+pub const SOURCE_LABEL: &str = "官方配额（OAuth）";
 
 /// 直连的最近一次失败，供设置页与配额卡如实说明为什么没有数字。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -321,7 +321,7 @@ impl ClaudeOauth {
             .iter()
             .any(|scope| scope == REQUIRED_SCOPE)
         {
-            bail!("Claude 凭据缺少 user:profile 权限，无法查询用量。请重新运行 claude login");
+            bail!("Claude 凭据缺少 user:profile 权限，无法查询用量。重新运行 claude login");
         }
         let token = credentials.access_token.clone().unwrap_or_default();
 
@@ -336,7 +336,7 @@ impl ClaudeOauth {
             .map_err(|error| match error {
                 // 错误信息里绝不能带请求头（token）。
                 ureq::Error::Status(401, _) => {
-                    anyhow::anyhow!("Claude 凭据被拒（401），请重新运行 claude login")
+                    anyhow::anyhow!("Claude 凭据被拒（401），重新运行 claude login")
                 }
                 ureq::Error::Status(429, _) => {
                     anyhow::anyhow!("Claude 用量接口限流（429），稍后自动重试")
@@ -345,7 +345,7 @@ impl ClaudeOauth {
                     anyhow::anyhow!("Claude 用量接口返回 HTTP {code}")
                 }
                 ureq::Error::Transport(transport) => {
-                    anyhow::anyhow!("Claude 用量接口网络错误: {transport}")
+                    anyhow::anyhow!("Claude 用量接口网络错误：{transport}")
                 }
             })?;
 
@@ -559,13 +559,13 @@ mod tests {
 
         record_failure(
             &connection,
-            "Claude 凭据已失效（401），请重新运行 claude login",
+            "Claude 凭据已失效（401），重新运行 claude login",
         )
         .unwrap();
         let recorded = last_failure(&connection).unwrap().unwrap();
         assert_eq!(
             recorded.message,
-            "Claude 凭据已失效（401），请重新运行 claude login"
+            "Claude 凭据已失效（401），重新运行 claude login"
         );
         assert!(recorded.at_ms > 0);
 

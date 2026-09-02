@@ -16,8 +16,8 @@ struct MetrikFocusWidget: Widget {
         StaticConfiguration(kind: self.kind, provider: MetrikTimelineProvider()) { entry in
             MetrikFocusView(entry: entry)
         }
-        .configurationDisplayName("Metrik 额度")
-        .description("查看当前最重要的官方额度窗口与重置时间。")
+        .configurationDisplayName("Metrik 配额")
+        .description("查看当前最重要的官方配额窗口与重置时间。")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
