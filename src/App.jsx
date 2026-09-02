@@ -405,7 +405,7 @@ function formatQuotaAge(minutes) {
 function quotaProvenance(quota) {
   if (!quota.available) return "暂无可靠来源";
   if (quota.quality === "demo") return "演示数据";
-  if (quota.resetExpired) return "窗口已重置 · 等待刷新";
+    if (quota.resetExpired) return "已重置 · 等待刷新";
   if (quota.stale || quota.quality === "official_snapshot") {
     return `官方快照 · ${formatQuotaAge(quota.ageMinutes)}`;
   }
@@ -444,9 +444,9 @@ function quotaHasData(entry) {
 /// 缺 scope、限流……）；有原因就别再叫用户去开状态栏钩子——他多半已经开了
 /// 直连，而且不用 Claude Code 的人开了钩子也不会有数据。
 function quotaEmptyCopy(entry, agentId, short = false) {
-  if (entry?.note) return short ? "直连查询失败" : "直连查询失败 · 见设置";
+  if (entry?.note) return short ? "直连查询失败" : "直连查询失败 · 详见设置";
   if (agentId !== "claude") return short ? "官方配额不可用" : "暂无可靠来源";
-  return short ? "设置中开启配额钩子" : "在设置中开启配额钩子后显示";
+  return short ? "设置中开启状态栏钩子" : "在设置中开启状态栏钩子后显示";
 }
 
 function shortWindowLabel(key) {
@@ -670,9 +670,9 @@ function sourceStatusCopy(snapshot, loading, partial) {
   if (snapshot.loadError) {
     return {
       title: "读取失败",
-      hint: "点此排查",
+      hint: "点击排查",
       state: "读取失败",
-      detail: "本机日志读取失败。界面不会以演示数据替代，点此查看数据来源。",
+      detail: "本机日志读取失败。界面不会以演示数据替代，点击查看数据来源。",
     };
   }
   if (indexingPending > 0) {
@@ -687,9 +687,9 @@ function sourceStatusCopy(snapshot, loading, partial) {
   if (partial) {
     return {
       title: "数据不完整",
-      hint: "点此查看",
+      hint: "点击查看",
       state: "数据不完整",
-      detail: "部分日志未能解析，统计数字低于真实用量。点此查看受影响的来源。",
+      detail: "部分日志未能解析，统计数字低于真实用量。点击查看受影响的来源。",
     };
   }
   if (snapshot.isDemo) {
@@ -704,7 +704,7 @@ function sourceStatusCopy(snapshot, loading, partial) {
     title: "数据源正常",
     hint: loading ? "更新中" : formatClock(snapshot.generatedAt),
     state: loading ? "更新中" : `更新于 ${formatClock(snapshot.generatedAt)}`,
-    detail: `各项数据均可溯源。更新于 ${formatClock(snapshot.generatedAt)}。`,
+    detail: "各项数据均可溯源。",
   };
 }
 
@@ -894,7 +894,7 @@ function BreakdownSection({ snapshot, selectedAgent }) {
             ))}
           </ul>
           <p className="cost-note">
-            按公开 API 价格（{cost.pricingAsOf}）折算，非官方账单。
+            按公开 API 价格（{cost.pricingAsOf}）折算，非账单。
             {scopedUnpriced > 0 ? `另有 ${compactTokens(scopedUnpriced)} tokens 因无可靠定价未计入。` : ""}
           </p>
         </article>
@@ -1035,7 +1035,7 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources, widg
 
       <button className={`traceability ${snapshot.loadError ? "traceability--error" : ""} ${partial ? "traceability--warning" : ""}`} type="button" onClick={onOpenSources}>
         <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? "正在读取本机数据" : snapshot.loadError ? "数据暂不可用" : partial ? "部分数据可能不完整" : "数据源正常"}</span>
-        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "失败结果未以演示数据替代" : partial ? "打开统计说明查看受影响来源" : snapshot.isDemo ? "当前为演示模式" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
+        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "失败结果未以演示数据替代" : partial ? "打开数据来源查看受影响来源" : snapshot.isDemo ? "当前为演示数据" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
       </button>
     </aside>
   );
@@ -1098,7 +1098,7 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
         aria-label={`切换明暗，当前${label}`}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        title={`当前：${label}\n单击切换明暗 · 右键选择模式`}
+        title={`当前：${label}\n点击切换明暗 · 右键选择模式`}
       >
         {darkTheme ? (
           <Moon size={16} weight="light" aria-hidden="true" />
@@ -1144,8 +1144,8 @@ function WindowActions({ mode, pinned, transparent = false, glassTint = "dark", 
             type="button"
             className="window-action"
             onClick={() => onToggleMode("compact")}
-            aria-label="收起为桌面小插件"
-            title="收起为桌面小插件"
+            aria-label="收起为桌面小组件"
+            title="收起为桌面小组件"
           >
             <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
           </button>
@@ -1652,8 +1652,8 @@ function StripBar({
               type="button"
               className="strip-button"
               onClick={onRestore}
-              aria-label="展开为桌面小插件"
-              title="展开为桌面小插件"
+              aria-label="展开为桌面小组件"
+              title="展开为桌面小组件"
             >
               <ArrowsOutSimple size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -1828,7 +1828,7 @@ function CompactWidget({
       {...glassPointerProps(shellAppearance.edgeInteractive)}
       style={shellAppearance.style}
     >
-      <h1 className="sr-only">Metrik Agent 用量桌面小插件</h1>
+      <h1 className="sr-only">Metrik Agent 用量桌面小组件</h1>
       <header
         className="widget-titlebar"
         // 固定 = 置顶 + 锁定位置：去掉拖动区，窗口停在用户选定的位置。
@@ -1941,7 +1941,7 @@ function CompactWidget({
               {quotaView.quality === "demo"
                 ? quotaProvenance(quotaView)
                 : quotaView.resetExpired
-                  ? "窗口已重置，等待刷新"
+                  ? "已重置，等待刷新"
                   : quotaView.available
                     ? `${formatReset(quotaView.resetsInMinutes)}后重置`
                     : quotaEmptyCopy(quotaEntry, quotaAgent, true)}
@@ -2017,8 +2017,8 @@ function CompactWidget({
             className="widget-refresh"
             onClick={onRefresh}
             disabled={loading}
-            aria-label="强制刷新官方额度与本地统计"
-            title="强制刷新官方额度与本地统计"
+            aria-label="强制刷新官方配额与本地统计"
+            title="强制刷新官方配额与本地统计"
           >
             <ArrowsClockwise size={13} weight="light" aria-hidden="true" />
           </button>
@@ -2165,7 +2165,7 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
                       : rebuildState.status === "success"
                         ? rebuildState.message
                         : partial
-                          ? "可重新扫描本机日志；如果仍不完整，请更新 Metrik 后再试。"
+                          ? "可重新扫描本机日志；如果仍不完整，更新 Metrik 后再试。"
                           : rebuildState.message}
                   </p>
                 </div>
@@ -2247,7 +2247,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处即显示官方 5 小时与 7 天额度。"
+          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处即显示官方 5h/7d 剩余额度。"
           : "钩子已卸载，statusLine 设置已恢复。",
       });
       onSnapshotRefresh();
@@ -2262,7 +2262,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
     <div className="settings-card">
       <h2>Claude Code 官方配额</h2>
       <p className="settings-muted">
-        安装一个只提取 5h/7d 额度数字的 statusLine 钩子（不读对话内容、不碰登录凭据）。
+        安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。
         已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。
       </p>
       {status?.demo ? (
@@ -2284,7 +2284,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
               <dt>状态</dt>
               <dd>
                 {status.installed
-                  ? `已安装${status.chained ? " · 已串联你原有的状态栏" : ""} · ${
+                  ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
                       status.lastDataAtMs
                         ? `最近数据 ${formatSyncTime(status.lastDataAtMs)}`
                         : "等待 Claude Code 下次刷新状态栏"
@@ -2324,7 +2324,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
         if (!cancelled) setStatus(value);
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "官方额度来源状态读取失败。" });
+        if (!cancelled) setFeedback({ tone: "error", message: "官方配额来源状态读取失败。" });
       });
     return () => {
       cancelled = true;
@@ -2340,8 +2340,8 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "已开启。下次刷新起直接查询官方额度（约每 2 分钟一次）；查询失败时自动回落到状态栏钩子。"
-          : "已关闭。恢复只用状态栏钩子提供额度。",
+          ? "已开启。下次刷新起直接查询官方配额（约每 2 分钟一次）；查询失败时自动回落到状态栏钩子。"
+          : "已关闭。恢复为仅由状态栏钩子提供额度。",
       });
       onSnapshotRefresh();
     } catch (error) {
@@ -2355,9 +2355,9 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-subsection">
-      <h3>官方额度直连（OAuth）</h3>
+      <h3>官方配额直连（OAuth）</h3>
       <p className="settings-muted">
-        备选来源：用本机 Claude Code 已保存的凭据直接查询官方额度（账户级合并值，约两分钟一刷新），
+        备选来源：用本机 Claude Code 已保存的凭据直接查询官方配额（账户级合并值，约每 2 分钟一次），
         网页版与桌面客户端的消耗同样计入。凭据只在内存中读取，不存储、不上传。
         前提是最近使用过 Claude Code：凭据有效期仅数小时，且仅在 Claude Code 运行时刷新；
         过期后回落到状态栏钩子。
@@ -2365,7 +2365,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
       <p className="settings-muted">
         ⚠️ 条款风险须知：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的
         OAuth 凭据。目前公开的封禁与拦截集中在借订阅做推理的第三方工具，未见只读用量查询被封号的案例，
-        但按条款字面本功能同样属于违规范围。若不愿承担此风险，请保持关闭，使用零凭据的状态栏钩子。
+        但按条款字面本功能同样属于违规范围。若不愿承担此风险，可保持关闭，使用零凭据的状态栏钩子。
       </p>
       {status && (
         <>
@@ -2384,7 +2384,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
               <dt>状态</dt>
               <dd>
                 {!status.credentialsPresent
-                  ? "本机未找到 Claude Code 登录凭据（请先在终端运行 claude 登录）"
+                  ? "本机未找到 Claude Code 登录凭据（先在终端运行 claude login）"
                   : !status.scopeOk
                     ? "凭据缺少 user:profile 权限，开启后可能查询失败（可运行 claude login 重新登录）"
                     : status.expired
@@ -2456,7 +2456,7 @@ function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
         位置会被记住，下次启动时恢复；超出屏幕范围时自动居中。
       </p>
       {enabled === null ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置开机启动。</p>
+        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
       ) : (
         <div className="settings-directory-row">
           <button
@@ -2530,7 +2530,7 @@ function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
       <h3>更新</h3>
       <p className="settings-muted">
         当前版本 {__APP_VERSION__}。自动检查开启后，启动时检查一次，持续运行时每天检查一次；
-        下载与安装由你确认，更新包经签名校验。
+        下载与安装需手动确认，更新包经签名校验。
       </p>
       <label className="update-autocheck">
         <input
@@ -2684,7 +2684,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
     <div className="settings-card">
       <h2>外观与缩放</h2>
       <p className="settings-muted">
-        大窗口的明暗主题，“自动”跟随系统；小插件不受影响。
+        大窗口的明暗主题，「自动」跟随系统；小组件不受影响。
       </p>
       <div className="theme-toggle" role="group" aria-label="完整视图主题">
         {THEME_OPTIONS.map((option) => (
@@ -2783,7 +2783,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         <div className="settings-subsection">
           <h3>置顶展示</h3>
           <p className="settings-muted">
-            置顶后卡片和胶囊的全部控件、拖动与点击都会失活；只能回到此设置取消。
+            置顶后卡片和胶囊的全部控件、拖动与点击均不可用；只能回到此设置取消。
           </p>
           <div className="theme-toggle" role="group" aria-label="置顶展示模式">
             <button
@@ -2809,7 +2809,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         <div className="settings-subsection">
           <h3>置顶悬停行为</h3>
           <p className="settings-muted">
-            鼠标进入置顶卡片或胶囊时立即生效，移开后立即恢复。
+            鼠标进入置顶卡片或胶囊时生效，移开后恢复。
           </p>
           <div className="theme-toggle" role="group" aria-label="置顶悬停行为">
             {PINNED_HOVER_OPTIONS.map((option) => (
@@ -2850,7 +2850,7 @@ function NativeMacWidgetCard() {
         <span className="desktop-widget-setting-kicker">macOS</span>
         <h2>桌面小组件</h2>
         <p className="settings-muted">
-          在桌面空白处右键“编辑小组件”，搜索 Metrik 后添加。透明材质、圆角和摆放由 macOS 管理。
+          在桌面空白处右键「编辑小组件」，搜索 Metrik 后添加。透明材质、圆角和摆放由 macOS 管理。
         </p>
       </div>
       <span className="desktop-widget-native-badge">系统原生</span>
@@ -2918,12 +2918,12 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
     <div className="settings-card">
       <h2>显示的 Agent</h2>
       <p className="settings-muted">
-        勾选即展示（至少保留一个），顺序即显示顺序，↑ 上移。
+        勾选即展示（至少保留一个），勾选顺序即显示顺序，↑ 上移。
       </p>
       <div className="settings-agent-columns">
         <AgentListColumn
           title={IS_MAC ? "菜单栏、小组件与侧栏" : "小组件与侧栏"}
-          hint="完整视图侧栏还会自动加入本周期内有用量的 Agent。"
+          hint="完整视图侧栏还会自动加入本周期内产生用量的 Agent。"
           agents={widgetAgents}
           detected={detectedAgents}
           onToggle={onToggleWidgetAgent}
@@ -2932,7 +2932,7 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
         {!IS_MAC && (
           <AgentListColumn
             title="胶囊条"
-            hint={'无配额来源的以 "--" 占格。'}
+            hint={'无配额来源的以 "--" 占位。'}
             agents={stripAgents}
             detected={detectedAgents}
             onToggle={onToggleStripAgent}
@@ -3003,13 +3003,13 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-card">
-      <h2>Qoder 官方额度</h2>
+      <h2>Qoder 官方配额</h2>
       <p className="settings-muted">
         Qoder、QoderWork 与 Qoder CLI 共用账户级 Credits；本地客户端不提供可被可靠解析的 token 用量，只能读取官网 Credits 额度，需要提供一次
-        登录 cookie。cookie 仅明文保存在本机（不入账本、不进同步导出），可随时清除。
+        登录 Cookie。Cookie 仅明文保存在本机（不入账本、不进同步导出），可清除。
       </p>
       <details className="settings-guide">
-        <summary>如何获取 cookie</summary>
+        <summary>如何获取 Cookie</summary>
         <ol>
           <li>浏览器登录 qoder.com.cn（国际版 qoder.com），进入「用量明细」页；</li>
           <li>按 F12 打开开发者工具 → 网络（Network）标签，点击过滤器中的 Fetch/XHR；</li>
@@ -3028,7 +3028,7 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               placeholder="粘贴 Cookie 值 / 整段请求标头 / cURL 命令"
               spellCheck={false}
               disabled={busy}
-              aria-label="Qoder cookie"
+              aria-label="Qoder Cookie"
               onChange={(event) => setCookieInput(event.target.value)}
             />
             <button
@@ -3047,7 +3047,7 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               disabled={busy}
               onClick={() => apply(null)}
             >
-              清除已保存的 cookie
+              清除已保存的 Cookie
             </button>
           )}
           {feedback && (
@@ -3091,13 +3091,13 @@ const SETTINGS_TABS = [
     id: "display",
     label: "Agent 选择",
     title: "小组件展示的 Agent",
-    blurb: "选择小组件与胶囊条展示哪些 Agent、以什么顺序。",
+    blurb: "选择小组件与胶囊条展示的 Agent 及其顺序。",
   },
   {
     id: "sources",
     label: "数据来源",
-    title: "官方额度来源",
-    blurb: "配置各 Agent 的官方配额读取方式。官方额度、本地解析用量与估算成本是三类不同事实，界面上始终分开呈现。",
+    title: "官方配额来源",
+    blurb: "配置各 Agent 的官方配额读取方式。官方配额、本地解析用量与估算成本是三类不同事实，界面上始终分开呈现。",
   },
   {
     id: "sync",
@@ -3123,7 +3123,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         setDirectoryInput(value.directory || "");
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "同步设置读取失败，请稍后重试。" });
+        if (!cancelled) setFeedback({ tone: "error", message: "同步设置读取失败，稍后重试。" });
       });
     return () => {
       cancelled = true;
@@ -3155,7 +3155,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
     try {
       const next = await removeSyncDevice(deviceId);
       setSettings(next);
-      setFeedback({ tone: "success", message: "设备已删除，已清除它的同步事件与导出文件。" });
+      setFeedback({ tone: "success", message: "设备已删除，已清除该设备的同步事件与导出文件。" });
       onSnapshotRefresh();
     } catch (error) {
       setFeedback({ tone: "error", message: `未能删除设备：${error}` });
@@ -3191,7 +3191,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       </div>
 
       {settings?.demo && activeTab.id === "sync" && (
-        <p className="settings-demo-note">浏览器演示模式：同步配置仅在桌面应用中可用。</p>
+        <p className="settings-demo-note">浏览器演示模式：仅桌面应用可配置。</p>
       )}
 
       <div className="settings-grid">
@@ -3313,7 +3313,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                 <div className="settings-subsection">
                   <h3>已发现的设备</h3>
                   {settings.devices.length === 0 ? (
-                    <p className="settings-muted">尚未发现其他设备的导出文件。其他电脑指向同一文件夹后即会显示。</p>
+                    <p className="settings-muted">暂无其他设备的导出文件。其他电脑指向同一文件夹后即会显示。</p>
                   ) : (
                     <ul className="settings-device-list">
                       {settings.devices.map((device) => (
@@ -3339,7 +3339,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                           {removingDeviceId === device.id && (
                             <div className="ledger-confirmation" role="group" aria-labelledby={`device-confirm-title-${device.id}`}>
                               <strong id={`device-confirm-title-${device.id}`}>删除该设备？</strong>
-                              <p>将移除它的同步事件与共享文件夹中的导出文件。若该设备仍在线，会在下次同步后重新出现。</p>
+                              <p>将移除该设备的同步事件与共享文件夹中的导出文件。若该设备仍在线，会在下次同步后重新出现。</p>
                               <div className="ledger-confirm-actions">
                                 <button
                                   type="button"
@@ -3488,7 +3488,7 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
         <>
           {rules.roots.length > 0 && (
             <div className="rules-group">
-              <h3>项目根 · 子目录归并到这里</h3>
+              <h3>项目根 · 子目录归并至此</h3>
               <ul>
                 {rules.roots.map((path) => (
                   <li key={path}>
@@ -3519,7 +3519,7 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
             </div>
           )}
           {rules.roots.length === 0 && rules.hidden.length === 0 && (
-            <p className="settings-muted">尚无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。</p>
+            <p className="settings-muted">暂无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。</p>
           )}
         </>
       )}
@@ -3740,7 +3740,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
       <main className="usage-section">
         <header className="settings-header">
           <h1>用量</h1>
-          <p>本地账本读取失败，明细暂不可用；未以演示数据替代。请稍后重试。</p>
+          <p>本地账本读取失败，明细暂不可用；未以演示数据替代。稍后重试。</p>
         </header>
       </main>
     );
@@ -3778,7 +3778,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
               <small>
                 {compactTokens(session.tokens)} tokens
                 {session.usd != null ? ` · ≈${formatUsd(session.usd)}` : " · 未计价"}
-                {` · ${session.eventCount} 次记录`}
+                {` · ${session.eventCount} 条记录`}
                 {` · 缓存读 ${session.tokens ? Math.round((session.cacheRead / session.tokens) * 100) : 0}%`}
               </small>
             </div>
@@ -3874,7 +3874,7 @@ ${session.sessionId}`}
           )}
         </p>
       )}
-        {groups.length === 0 && <p className="settings-muted">本周期内没有可显示的会话。</p>}
+        {groups.length === 0 && <p className="settings-muted">本周期内暂无可显示的会话。</p>}
         {groups.length > 0 && <div className="report-card session-board">{renderSessionRows(groups)}</div>}
       </main>
     );
@@ -3992,7 +3992,7 @@ ${session.sessionId}`}
                 <small>
                   {projects.unattributedTokens > 0 && (
                     <button type="button" onClick={() => openDetail({ type: "unattributed" })}>
-                      读不到目录 {compactTokens(projects.unattributedTokens)}{unattributedLabel ? `（${unattributedLabel}）` : ""}
+                      未记录目录 {compactTokens(projects.unattributedTokens)}{unattributedLabel ? `（${unattributedLabel}）` : ""}
                     </button>
                   )}
                   {projects.hiddenTokens > 0 && (
@@ -4011,8 +4011,8 @@ ${session.sessionId}`}
         {visibleProjects.length === 0 && (
           <p className="settings-muted">
             {projects.totalProjects === 0
-              ? "本周期内没有带项目归属的用量。"
-              : "当前筛选条件下没有项目。"}
+              ? "本周期内暂无带项目归属的用量。"
+              : "当前筛选条件下暂无项目。"}
           </p>
         )}
         {visibleProjects.map((project) => (
@@ -4062,10 +4062,10 @@ ${session.sessionId}`}
                 aria-pressed={project.pinned}
                 title={project.pinned
                   ? `取消登记：${project.path} 下的子目录恢复各自成行`
-                  : `登记为项目根：${project.path} 下的子目录都归并到这一行`}
+                  : `登记为项目根：${project.path} 下的子目录一并归并到这一行`}
                 aria-label={project.pinned
                   ? `取消登记项目根 ${project.label}`
-                  : `把 ${project.label} 登记为项目根`}
+                  : `将 ${project.label} 登记为项目根`}
                 onClick={() => togglePin(project)}
               >
                 <PushPinSimple size={13} weight={project.pinned ? "fill" : "regular"} aria-hidden="true" />
@@ -4073,7 +4073,7 @@ ${session.sessionId}`}
               <button
                 type="button"
                 disabled={rulesBusy}
-                title={`隐藏 ${project.path}：其用量不再作为项目展示，可在项目归类里恢复`}
+                title={`隐藏 ${project.path}：其用量不再作为项目展示，可在项目归类中恢复`}
                 aria-label={`隐藏项目 ${project.label}`}
                 onClick={() => hideProject(project)}
               >
@@ -4225,7 +4225,7 @@ function ReportTrendChart({ weeks }) {
 
   const agents = AGENT_ORDER.filter((id) => weeks.some((week) => (week.byAgent[id] || 0) > 0));
   if (!agents.length) {
-    return <p className="settings-muted" ref={hostRef}>所选时间段内没有已索引的用量。</p>;
+    return <p className="settings-muted" ref={hostRef}>所选时间段内暂无已索引的用量。</p>;
   }
   const max = Math.max(1, ...weeks.flatMap((week) => agents.map((id) => week.byAgent[id] || 0)));
   const height = 210;
@@ -4299,7 +4299,7 @@ function ReportTrendChart({ weeks }) {
 function ReportShareDonut({ agents, totalTokens, weeksCount }) {
   const rows = agents.filter((agent) => agent.tokens > 0);
   if (!rows.length) {
-    return <p className="settings-muted">所选时间段内没有已索引的用量。</p>;
+    return <p className="settings-muted">所选时间段内暂无已索引的用量。</p>;
   }
   const total = rows.reduce((sum, agent) => sum + agent.tokens, 0) || 1;
   const radius = 74;
@@ -4412,7 +4412,7 @@ function ReportsSection({ report }) {
       <main className="reports-section">
         <header className="settings-header">
           <h1>报告</h1>
-          <p>本地账本读取失败，报告暂不可用；未以演示数据替代。请稍后重试。</p>
+          <p>本地账本读取失败，报告暂不可用；未以演示数据替代。稍后重试。</p>
         </header>
       </main>
     );
@@ -4452,7 +4452,7 @@ function ReportsSection({ report }) {
       <header className="settings-header">
         <h1 id="reports-title">报告</h1>
         <p>
-          <strong>近 26 周活动</strong> · 只统计本地账本中已索引的数据（processed token 口径，非账单）。
+          <strong>近 26 周活动</strong> · 只统计本地账本中已索引的数据（已解析 token 口径，非账单）。
           {coverageStart ? `账本数据自 ${coverageStart} 起。` : ""}
           {data.isDemo ? " 当前为浏览器演示数据。" : ""}
         </p>
@@ -4461,7 +4461,7 @@ function ReportsSection({ report }) {
       <div className="report-stats">
         <div><strong>{compactTokens(data.totalTokens)}</strong><span>26 周总量</span></div>
         <div><strong>{activeDayCount}</strong><span>活跃天数</span></div>
-        <div><strong>{data.streakDays}</strong><span>连续活跃天</span></div>
+        <div><strong>{data.streakDays}</strong><span>连续活跃天数</span></div>
       </div>
 
       <section className="report-card" aria-label="活动可视化">
@@ -4549,7 +4549,7 @@ function ReportsSection({ report }) {
                   <i
                     key={cell.key}
                     className={`heat-${heatLevel(cell.tokens, thresholds)}`}
-                    title={`${cell.key} · ${cell.tokens ? `${compactTokens(cell.tokens)} tokens` : "无用量"}`}
+                    title={`${cell.key} · ${cell.tokens ? `${compactTokens(cell.tokens)} tokens` : "暂无用量"}`}
                   />
                 ) : (
                   <i key={`pad-${weekIndex}-${dayIndex}`} className="heat-pad" aria-hidden="true" />
@@ -4624,7 +4624,7 @@ function EmptySection({ section, onReturn }) {
     <main className="empty-section">
       <span><Icon size={30} weight="light" /></span>
       <h1>{item?.label || "功能"}</h1>
-      <p>该功能将在统计内核稳定后提供，首版优先实现概览与数据可信度。</p>
+      <p>该功能将在后续版本提供。</p>
       <button type="button" onClick={onReturn}>返回概览</button>
     </main>
   );
@@ -5520,14 +5520,14 @@ export function App() {
         message: next.isDemo
           ? "演示扫描完成。"
           : snapshotIsPartial(next)
-            ? "扫描完成，仍有记录无法解析。请更新 Metrik 后再试。"
+            ? "扫描完成，仍有记录无法解析。更新 Metrik 后再试。"
             : `扫描完成 · ${formatClock(next.generatedAt)}`,
       });
     } catch (error) {
       console.warn("Unable to rebuild the local ledger.", error);
       setRebuildState({
         status: "error",
-        message: "扫描失败，请稍后重试。Agent 日志未受影响。",
+        message: "扫描失败，稍后重试。Agent 日志未受影响。",
       });
     } finally {
       rebuildInFlight.current = false;
@@ -5629,8 +5629,8 @@ export function App() {
           className={`expanded-refresh ${IS_MAC ? "expanded-refresh--mac" : ""}`}
           onClick={handleForceRefresh}
           disabled={appBusy}
-          aria-label="强制刷新官方额度与本地统计"
-          title="强制刷新官方额度与本地统计"
+          aria-label="强制刷新官方配额与本地统计"
+          title="强制刷新官方配额与本地统计"
         >
           <ArrowsClockwise size={15} weight="light" aria-hidden="true" />
         </button>

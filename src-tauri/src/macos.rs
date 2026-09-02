@@ -258,7 +258,7 @@ fn status_item_segments(
                 .ok_or_else(|| format!("Metrik 未知 Agent {agent}"))?;
             let title = status_item_title(remaining[index], stale[index]);
             let availability = match normalized_percent(remaining[index]) {
-                Some(percent) => format!("{percent}% 剩余"),
+                Some(percent) => format!("剩余 {percent}%"),
                 None => "配额不可用".to_owned(),
             };
             let freshness = if stale[index] {
@@ -788,7 +788,7 @@ mod tests {
         );
         assert_eq!(
             status_item_accessibility_label(&segments),
-            "Metrik：Kimi 80% 剩余，数据可能已过期；ChatGPT 77% 剩余；GLM 98% 剩余"
+            "Metrik：Kimi 剩余 80%，数据可能已过期；ChatGPT 剩余 77%；GLM 剩余 98%"
         );
     }
 }

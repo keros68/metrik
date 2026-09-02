@@ -1377,7 +1377,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             id: "codex-quota".into(),
             kind: "official".into(),
             label: "ChatGPT / Codex 官方配额".into(),
-            detail: "采集主、次官方滚动窗口；桌面小插件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。".into(),
+            detail: "采集主、次官方滚动窗口；桌面小组件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。".into(),
             quality: "official".into(),
             quality_label: "官方".into(),
         },
@@ -1492,7 +1492,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         SourceView {
             id: "qoder-quota".into(),
             kind: "official".into(),
-            label: "Qoder 官方 Credits".into(),
+            label: "Qoder 官方配额".into(),
             detail: "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。".into(),
             quality: "official".into(),
             quality_label: "官方".into(),
@@ -1563,7 +1563,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             label: "多设备同步".into(),
             detail: match (&sync_status.last_error, device_count) {
                 (Some(error), _) => format!("上次同步未完全成功：{error}。合并数字可能滞后，本机统计不受影响。"),
-                (None, 0) => "已开启文件夹同步，尚未发现其他设备的导出。其他电脑指向同一文件夹后会自动合并。".into(),
+                (None, 0) => "已开启文件夹同步，暂无其他设备的导出文件。其他电脑指向同一文件夹后会自动合并。".into(),
                 (None, count) => format!(
                     "已合并 {count} 台其他设备的 {remote_events} 条统计事件；导出只含事件标识、Agent、时间与 token 数，不含任何对话内容。"
                 ),
@@ -1585,7 +1585,7 @@ fn coverage_detail(diagnostics: &AdapterDiagnostics, errors: usize) -> String {
     // 后者只是少算。两句分开写，不能混成一句"可能不完整"糊过去。
     let mismatched = (diagnostics.total_mismatches > 0).then(|| {
         format!(
-            "⚠️ {} 条读数与来源自报的总量对不上，说明本版本对该来源的字段口径可能有误，显示的数字请勿采信，已记录待修正；",
+            "⚠️ {} 条读数与来源自报的总量不一致，说明本版本对该来源的字段口径可能有误，显示的数字请勿采信，已记录待修正；",
             diagnostics.total_mismatches
         )
     });
@@ -3117,7 +3117,7 @@ mod tests {
         for source in &snapshot.sources {
             println!("  source {:<18} {}", source.id, source.quality_label);
             assert!(
-                !source.detail.contains("与来源自报的总量对不上"),
+                !source.detail.contains("与来源自报的总量不一致"),
                 "口径自检在真机数据上误报：{} / {}",
                 source.id,
                 source.detail

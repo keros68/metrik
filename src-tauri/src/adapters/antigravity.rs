@@ -465,7 +465,7 @@ fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
         .set("Connect-Protocol-Version", "1")
         .set("X-Codeium-Csrf-Token", &endpoint.csrf)
         .send_string(&body.to_string())
-        .map_err(|error| anyhow!("Antigravity RPC {method} 失败: {error}"))?;
+        .map_err(|error| anyhow!("Antigravity RPC {method} 失败：{error}"))?;
     let text = response
         .into_string()
         .context("读取 Antigravity 响应失败")?;

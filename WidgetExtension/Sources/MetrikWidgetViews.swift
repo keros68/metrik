@@ -150,7 +150,7 @@ struct MetrikFocusView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(agent.label)
                     .font(.subheadline.weight(.semibold))
-                Text(agent.bindingWindow?.label ?? "额度暂不可用")
+                Text(agent.bindingWindow?.label ?? "配额不可用")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -206,7 +206,7 @@ struct MetrikFocusView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text("打开 Metrik")
                 .font(.body.weight(.semibold))
-            Text("刷新后会在这里显示官方额度。")
+            Text("刷新后此处显示官方额度。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -336,7 +336,7 @@ private struct MetrikQuotaDial: View {
                 Text(agent.label)
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
-                Text(quota.map { "\($0.label) · 剩余" } ?? "额度暂不可用")
+                Text(quota.map { "\($0.label) · 剩余" } ?? "配额不可用")
                     .font(.system(size: 8.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -365,7 +365,7 @@ private struct MetrikQuotaDial: View {
         .frame(width: 128, height: 128)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(agent.label) \(quota?.label ?? "")")
-        .accessibilityValue(quota.map { "剩余 \($0.roundedRemaining) 百分比" } ?? "额度暂不可用")
+        .accessibilityValue(quota.map { "剩余 \($0.roundedRemaining) 百分比" } ?? "配额不可用")
     }
 
     private func tint(_ quota: MetrikWidgetQuotaWindow?) -> Color {
@@ -518,7 +518,7 @@ private struct MetrikOverviewRow: View {
                     ProgressView(value: quota.remainingPercent, total: 100)
                         .tint(quota.remainingPercent <= 15 ? .orange : .blue)
                 } else {
-                    Text("等待官方额度")
+                    Text("等待官方配额")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

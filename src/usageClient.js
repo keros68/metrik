@@ -211,7 +211,7 @@ function demoSnapshot(period = "today") {
       { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
       { id: "antigravity-live", kind: "local", label: "Antigravity 用量", detail: "来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。", quality: "exact", qualityLabel: "精确解析" },
       { id: "workbuddy-local", kind: "local", label: "WorkBuddy 本地 Token", detail: "读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "qoder-quota", kind: "official", label: "Qoder 官方 Credits", detail: "覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。", quality: "official", qualityLabel: "官方" },
+      { id: "qoder-quota", kind: "official", label: "Qoder 官方配额", detail: "覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。", quality: "official", qualityLabel: "官方" },
       { id: "kimi-quota", kind: "official", label: "Kimi 官方配额", detail: "合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。", quality: "official", qualityLabel: "官方" },
       { id: "grok-local", kind: "local", label: "Grok Build 本地 Token", detail: "读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。", quality: "exact", qualityLabel: "精确解析" },
       { id: "grok-quota", kind: "official", label: "Grok Build 官方配额", detail: "读取 CLI 统一日志中的 credits 快照。", quality: "official", qualityLabel: "官方" },
@@ -243,7 +243,7 @@ function pendingSnapshot(period = "today") {
       {
         id: "pending",
         kind: "local",
-        label: "正在建立本地统计索引",
+        label: "正在建立本地索引",
         detail: "首次升级或大型日志库可能需要几分钟；窗口操作不会被阻塞，也不会显示演示数字。",
         quality: "unavailable",
         qualityLabel: "读取中",
@@ -277,7 +277,7 @@ function unavailableSnapshot(period = "today") {
         id: "load-error",
         kind: "local",
         label: "本地统计暂不可用",
-        detail: "Metrik 不以演示数据替代失败结果。请稍后重试；原始 Agent 日志不会因此被修改。",
+        detail: "Metrik 不以演示数据替代失败结果。稍后重试；原始 Agent 日志不会因此被修改。",
         quality: "unavailable",
         qualityLabel: "未载入",
       },
@@ -636,7 +636,7 @@ async function getQoderCookieStatus() {
 
 async function configureQoderCookie(cookie) {
   if (!isTauriRuntime()) {
-    throw new Error("浏览器演示模式不能配置 cookie");
+    throw new Error("浏览器演示模式不能配置 Cookie");
   }
   return invoke("configure_qoder_cookie", { cookie });
 }
@@ -656,7 +656,7 @@ async function getClaudeOauthStatus() {
 
 async function setClaudeOauth(enabled) {
   if (!isTauriRuntime()) {
-    throw new Error("浏览器演示模式不能配置官方额度来源");
+    throw new Error("浏览器演示模式不能配置官方配额来源");
   }
   return invoke("set_claude_oauth", { enabled });
 }

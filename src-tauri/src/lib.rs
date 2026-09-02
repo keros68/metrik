@@ -657,7 +657,7 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
             counter += 1;
         }
         std::fs::write(&target, content.as_bytes())
-            .map_err(|error| format!("写入 CSV 失败: {error}"))?;
+            .map_err(|error| format!("写入 CSV 失败：{error}"))?;
         Ok(target.to_string_lossy().into_owned())
     })
     .await
@@ -789,7 +789,7 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
             return Ok(QoderCookieView {
                 configured: source.is_some(),
                 source,
-                message: Some("已清除本地保存的 cookie。".to_owned()),
+                message: Some("已清除本地保存的 Cookie。".to_owned()),
             });
         }
         let message = match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
@@ -1369,7 +1369,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     use tauri::Emitter;
 
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
-    let expanded = MenuItem::with_id(app, "expanded", "显示完整视图", true, None::<&str>)?;
+    let expanded = MenuItem::with_id(app, "expanded", "完整视图", true, None::<&str>)?;
     #[cfg(target_os = "linux")]
     let pinned = MenuItem::with_id(app, "pinned", "置顶", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;

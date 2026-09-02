@@ -133,7 +133,7 @@ fn glm_business_error(json: &Value) -> Option<String> {
         .get("msg")
         .and_then(Value::as_str)
         .unwrap_or("未知错误");
-    Some(format!("GLM 配额接口返回业务错误 code {code}: {msg}"))
+    Some(format!("GLM 配额接口返回业务错误（code {code}）：{msg}"))
 }
 
 // Qoder 官网 Credits 接口（cookie 鉴权的 dashboard 内部接口，非公开 API）。
@@ -142,7 +142,7 @@ const QODER_ORIGIN_CN: &str = "https://qoder.com.cn";
 
 pub fn fetch_qoder_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     let cookie = resolve_qoder_cookie()
-        .context("未找到 Qoder 的 cookie（设置 QODER_COOKIE 环境变量后可用）")?;
+        .context("未找到 Qoder 的 Cookie（设置 QODER_COOKIE 环境变量后可用）")?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     let mut last_error = None;
     for origin in qoder_origin_candidates() {
@@ -304,14 +304,14 @@ pub fn write_provider_cookie_file(name: &str, cookie: Option<&str>) -> Result<bo
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).context("创建数据目录失败")?;
             }
-            std::fs::write(&path, value).context("写入 cookie 文件失败")?;
+            std::fs::write(&path, value).context("写入 Cookie 文件失败")?;
             Ok(true)
         }
         None => {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("删除 cookie 文件失败"),
+                Err(error) => return Err(error).context("删除 Cookie 文件失败"),
             }
             Ok(false)
         }
@@ -379,7 +379,7 @@ fn parse_qoder_quota(value: &Value) -> Vec<QuotaSample> {
         remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
         resets_at_ms,
         collected_at_ms: chrono::Utc::now().timestamp_millis(),
-        source_label: "Qoder 官方 Credits".into(),
+        source_label: "Qoder 官方配额".into(),
         quality: "official_live",
     }]
 }
@@ -454,7 +454,7 @@ pub fn fetch_kimiwork_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
 // 每个套餐有 CycleCapacitySize/Remain，跨套餐求和得总额度/剩余。
 pub fn fetch_workbuddy_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     let cred = resolve_workbuddy_credential()
-        .context("未找到 WorkBuddy/CodeBuddy 的登录凭据（请在客户端登录）")?;
+        .context("未找到 WorkBuddy/CodeBuddy 的登录凭据（先在客户端登录）")?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     let now = chrono::Utc::now();
     let body = serde_json::json!({
@@ -568,7 +568,7 @@ fn parse_workbuddy_quota(json: &Value) -> Vec<QuotaSample> {
         remaining_percent,
         resets_at_ms: earliest_reset,
         collected_at_ms: chrono::Utc::now().timestamp_millis(),
-        source_label: "CodeBuddy 官方 Credits".into(),
+        source_label: "WorkBuddy 官方配额".into(),
         quality: "official_live",
     }]
 }
@@ -702,12 +702,12 @@ fn workbuddy_auth_dirs() -> Vec<PathBuf> {
 fn map_ureq_error(provider: &str, error: ureq::Error) -> anyhow::Error {
     match error {
         ureq::Error::Status(401, _) | ureq::Error::Status(403, _) => {
-            anyhow!("{provider} 配额凭据已失效（认证被拒），请重新登录对应 CLI")
+            anyhow!("{provider} 配额凭据已失效（认证被拒），重新登录对应 CLI")
         }
         ureq::Error::Status(429, _) => anyhow!("{provider} 配额接口限流（429），稍后自动重试"),
         ureq::Error::Status(code, _) => anyhow!("{provider} 配额接口返回 HTTP {code}"),
         ureq::Error::Transport(transport) => {
-            anyhow!("{provider} 配额接口网络错误: {transport}")
+            anyhow!("{provider} 配额接口网络错误：{transport}")
         }
     }
 }
