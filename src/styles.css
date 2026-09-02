@@ -1359,6 +1359,40 @@ html:has(.strip-shell) #root {
   gap: 4px;
 }
 
+/* 横条保留一眼扫完的优势，不复制竖条的扩窗详情。旧版原生 title 已移除，
+   这里只把信息组做成与新版竖条相同的轻量玻璃分组。 */
+.strip-shell--horizontal {
+  padding-inline: 6px 5px;
+  gap: 4px;
+}
+
+.strip-shell--horizontal .strip-rail { gap: 3px; }
+
+.strip-shell--horizontal .strip-cell {
+  position: relative;
+  flex: none;
+  min-height: 24px;
+  padding: 4px 6px 4px 4px;
+}
+
+.strip-shell--horizontal .strip-cell + .strip-cell::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: -2px;
+  width: 1px;
+  background: currentColor;
+  opacity: 0.09;
+  pointer-events: none;
+}
+
+.strip-shell--horizontal .strip-controls {
+  margin-left: 1px;
+  padding-left: 3px;
+  box-shadow: -1px 0 color-mix(in srgb, currentColor 9%, transparent);
+}
+
 /* Windows 竖条悬停详情：透明主窗口只提供承载区，原条身和气泡各自画表面。
    条身按原坐标留在屏幕上，详情从指向当前 Agent 的尖角位置展开。 */
 .strip-shell--vertical.strip-shell--detail-open {
@@ -3497,6 +3531,12 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 
 .source-drawer header { display: flex; align-items: center; justify-content: space-between; }
 
+.source-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .source-drawer h2 {
   margin: 0;
   color: #202124;
@@ -3522,8 +3562,89 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 
 .icon-button:hover { background: rgba(31, 33, 36, 0.09); }
 
+.source-rescan-button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  color: #55575b;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 540;
+  background: rgba(31, 33, 36, 0.05);
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: color 180ms var(--motion), background-color 180ms var(--motion), transform 180ms var(--motion);
+}
+
+.source-rescan-button:hover:not(:disabled) {
+  color: #222428;
+  background: rgba(31, 33, 36, 0.09);
+}
+
+.source-rescan-button:active:not(:disabled) { transform: scale(0.97); }
+.source-rescan-button:disabled { cursor: wait; opacity: 0.6; }
+
+.source-repair {
+  margin-top: 20px;
+  padding: 14px 15px;
+  background: rgba(36, 107, 219, 0.055);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px rgba(36, 107, 219, 0.07);
+}
+
+.source-repair--warning {
+  background: rgba(199, 147, 50, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(199, 147, 50, 0.11);
+}
+
+.source-repair-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.source-repair-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #8f681f;
+  background: rgba(255, 255, 255, 0.62);
+  border-radius: 10px;
+}
+
+.source-repair strong {
+  display: block;
+  color: #303236;
+  font-size: 12.5px;
+  font-weight: 580;
+}
+
+.source-repair p {
+  margin: 3px 0 0;
+  color: #74767a;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.source-repair-confirmation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.source-repair-actions { display: flex; gap: 8px; }
+.source-repair-actions .ledger-button { min-height: 34px; padding: 0 13px; }
+.source-repair-error { color: #a1573d !important; }
+
 .source-list {
-  margin-top: 38px;
+  margin-top: 24px;
   box-shadow: 0 -1px rgba(31, 33, 36, 0.09), 0 1px rgba(31, 33, 36, 0.09);
 }
 
@@ -3579,8 +3700,8 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 .privacy-note {
   display: flex;
   gap: 13px;
-  margin-top: 28px;
-  padding: 18px;
+  margin-top: 20px;
+  padding: 14px 16px;
   color: #686a6e;
   background: rgba(31, 33, 36, 0.035);
   border-radius: 17px;
@@ -5140,6 +5261,13 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   .source-drawer h2 { font-size: 23px; }
   .source-list { margin-top: 24px; }
 
+  .source-repair-row,
+  .source-repair-confirmation { grid-template-columns: 1fr; }
+
+  .source-repair-icon { display: none; }
+  .source-repair-row .source-rescan-button { width: 100%; }
+  .source-repair-actions { display: grid; grid-template-columns: 1fr 1fr; }
+
   .source-item {
     grid-template-columns: 42px minmax(0, 1fr);
     gap: 12px;
@@ -5480,6 +5608,28 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   background: rgba(255, 255, 255, 0.06);
 }
 :root[data-theme="dark"] .icon-button:hover { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .source-rescan-button {
+  color: var(--d-ink-3);
+  background: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .source-rescan-button:hover:not(:disabled) {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme="dark"] .source-repair {
+  background: rgba(111, 155, 240, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(111, 155, 240, 0.1);
+}
+:root[data-theme="dark"] .source-repair--warning {
+  background: rgba(220, 166, 72, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(220, 166, 72, 0.13);
+}
+:root[data-theme="dark"] .source-repair-icon {
+  color: var(--warn);
+  background: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .source-repair strong { color: var(--d-ink-2); }
+:root[data-theme="dark"] .source-repair p { color: var(--d-muted); }
 :root[data-theme="dark"] .source-list {
   box-shadow: 0 -1px rgba(255, 255, 255, 0.08), 0 1px rgba(255, 255, 255, 0.08);
 }

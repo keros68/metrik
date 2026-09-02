@@ -58,7 +58,9 @@ export function glassShellAppearance(
 
   const prefix = kind === "widget" ? "widget-shell" : "strip-shell";
   const classes = [prefix];
-  if (kind === "strip" && vertical) classes.push(`${prefix}--vertical`);
+  if (kind === "strip") {
+    classes.push(`${prefix}--${vertical ? "vertical" : "horizontal"}`);
+  }
   if (transparent) {
     classes.push(`${prefix}--transparent`);
     if (glassMode === GLASS_MODES.css) classes.push(`${prefix}--glass-css`);

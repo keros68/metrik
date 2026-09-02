@@ -516,21 +516,27 @@ function stripCellData(entry) {
   return { tightest: bindingWindow(windows) || windows[0], windows };
 }
 
-// 原生 title tooltip：列出全部窗口的剩余与重置倒计时；快照数据标注更新时间。
-function stripTooltip(agentId, windows) {
-  const lines = windows.map((window) => {
-    const view = window.view;
-    const reset = Number.isFinite(view.resetsInMinutes)
-      ? ` · ${formatReset(view.resetsInMinutes)}后重置`
-      : "";
-    return `${window.label || shortWindowLabel(window.key)}：剩余 ${Math.round(view.remainingPercent)}%${reset}`;
-  });
-  const first = windows[0].view;
-  const head =
-    first.stale || first.quality === "official_snapshot"
-      ? `${AGENT_META[agentId].label}（官方快照 · ${formatQuotaAge(first.ageMinutes)}）`
-      : AGENT_META[agentId].label;
-  return [head, ...lines].join("\n");
+function conciseSourceDetail(source) {
+  if (source.kind === "official") {
+    return "显示官方额度和重置时间。";
+  }
+  if (source.kind === "sync") {
+    return source.quality === "partial"
+      ? "同步未完成，本机统计不受影响。"
+      : "已合并其他设备的统计数据。";
+  }
+
+  const scanSummary = source.detail?.match(/^发现[^。]+。/)?.[0] || "";
+  if (source.quality === "partial") {
+    return `${scanSummary}部分记录未计入。`;
+  }
+  return scanSummary || "本机数据已更新。";
+}
+
+function conciseQualityLabel(source) {
+  if (source.quality === "exact") return "正常";
+  if (source.quality === "partial") return "不完整";
+  return source.qualityLabel;
 }
 
 function quotaUsedPercent(view) {
@@ -1543,7 +1549,7 @@ function StripBar({
               <div
                 key={agentId}
                 className="strip-cell strip-cell--unavailable"
-                title={`${meta.label}：官方配额不可用`}
+                aria-label={`${meta.label}：官方配额不可用`}
                 onPointerEnter={(event) => showDetail(event, agentId)}
               >
                 <img
@@ -1564,7 +1570,7 @@ function StripBar({
             <div
               key={agentId}
               className={`strip-cell ${severity ? `strip-cell--${severity}` : ""}`}
-              title={detailEnabled ? undefined : stripTooltip(agentId, cell.windows)}
+              aria-label={`${meta.label}：剩余 ${Math.round(view.remainingPercent)}%${Number.isFinite(view.resetsInMinutes) ? `，${formatReset(view.resetsInMinutes)}后重置` : ""}`}
               onPointerEnter={(event) => showDetail(event, agentId)}
             >
               <img
@@ -2066,6 +2072,7 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
 
   const rebuildBusy = rebuildState.status === "busy";
   const rebuildStatusRole = rebuildState.status === "error" ? "alert" : "status";
+  const partial = snapshotIsPartial(snapshot);
 
   const confirmRebuild = () => {
     setConfirmingRebuild(false);
@@ -2083,20 +2090,96 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
-          <h2 id="source-title">统计说明</h2>
-          <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label="关闭">
-            <X size={21} weight="light" />
-          </button>
+          <h2 id="source-title">数据来源</h2>
+          <div className="source-header-actions">
+            {!partial && !confirmingRebuild && rebuildState.status === "idle" && (
+              <button
+                type="button"
+                className="source-rescan-button"
+                disabled={rebuildBusy}
+                onClick={() => setConfirmingRebuild(true)}
+              >
+                <ClockCounterClockwise size={15} weight="light" aria-hidden="true" />
+                {rebuildBusy ? "扫描中…" : "重新扫描"}
+              </button>
+            )}
+            <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label="关闭">
+              <X size={21} weight="light" />
+            </button>
+          </div>
         </header>
 
         {(snapshot.indexing?.pending || 0) > 0 && (
           <div className="indexing-note" role="status">
             <ClockCounterClockwise size={20} weight="light" aria-hidden="true" />
             <p>
-              正在补齐历史索引，还剩 <strong>{snapshot.indexing.pending}</strong> 个日志文件。
-              历史周期的数字尚不完整，会随补齐自动更新。
+              正在补齐历史，还剩 <strong>{snapshot.indexing.pending}</strong> 个文件。完成后会自动更新。
             </p>
           </div>
+        )}
+
+        {(partial || confirmingRebuild || rebuildState.status !== "idle") && (
+          <section className={`source-repair ${partial ? "source-repair--warning" : ""}`} aria-labelledby="source-repair-title">
+            {confirmingRebuild ? (
+              <div className="source-repair-confirmation" role="group" aria-labelledby="source-repair-title">
+                <div>
+                  <strong id="source-repair-title">重新扫描本机数据？</strong>
+                  <p>只重建 Metrik 的统计索引，不会修改 Agent 日志。</p>
+                </div>
+                <div className="source-repair-actions">
+                  <button
+                    ref={cancelRebuildRef}
+                    type="button"
+                    className="ledger-button ledger-button--secondary"
+                    onClick={() => setConfirmingRebuild(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="ledger-button ledger-button--primary"
+                    onClick={confirmRebuild}
+                  >
+                    重新扫描
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="source-repair-row">
+                <span className="source-repair-icon" aria-hidden="true">
+                  <ClockCounterClockwise size={18} weight="light" />
+                </span>
+                <div>
+                  <strong id="source-repair-title">
+                    {rebuildBusy
+                      ? "正在重新扫描"
+                      : partial && rebuildState.status === "success"
+                        ? "扫描完成，仍不完整"
+                        : partial
+                          ? "部分数据未计入"
+                          : "扫描完成"}
+                  </strong>
+                  <p>
+                    {rebuildBusy
+                      ? "正在重建统计索引，可能需要几分钟。"
+                      : rebuildState.status === "success"
+                        ? rebuildState.message
+                        : partial
+                          ? "可重新扫描本机日志；如果仍不完整，请更新 Metrik 后再试。"
+                          : rebuildState.message}
+                  </p>
+                </div>
+                {partial && !rebuildBusy && (
+                  <button type="button" className="source-rescan-button" onClick={() => setConfirmingRebuild(true)}>
+                    重新扫描
+                  </button>
+                )}
+              </div>
+            )}
+            {!confirmingRebuild && rebuildState.status === "error" && (
+              <p className="source-repair-error" role={rebuildStatusRole}>{rebuildState.message}</p>
+            )}
+          </section>
         )}
 
         <div className="source-list">
@@ -2113,81 +2196,17 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
               </span>
               <div>
                 <strong>{source.label}</strong>
-                <p>{source.detail}</p>
+                <p>{conciseSourceDetail(source)}</p>
               </div>
-              <span className={`quality-badge quality-badge--${source.quality}`}>{source.qualityLabel}</span>
+              <span className={`quality-badge quality-badge--${source.quality}`}>{conciseQualityLabel(source)}</span>
             </article>
           ))}
         </div>
 
         <div className="privacy-note">
           <ShieldCheck size={20} weight="light" />
-          <p>本机会顺序扫描日志，但只解析并保存统计字段；不会提取、保存或上传正文、提示词、工具输出或凭据。SQLite 会保留用量时间、Agent、模型、会话标识与本机源路径。</p>
+          <p>只保存用量和来源信息，不读取或上传对话正文与凭据。</p>
         </div>
-
-        <section className="ledger-recovery" aria-labelledby="ledger-recovery-title">
-          <div className="ledger-recovery-heading">
-            <span className="ledger-recovery-icon" aria-hidden="true">
-              <ClockCounterClockwise size={21} weight="light" />
-            </span>
-            <div>
-              <h3 id="ledger-recovery-title">重建本地账本</h3>
-              <p id="ledger-recovery-description">只清理 Metrik 的派生统计索引，再从本机 Agent 日志重建当前周期。</p>
-            </div>
-          </div>
-
-          {snapshot.isDemo && (
-            <p className="ledger-demo-note">
-              浏览器演示：这里仅模拟重建流程，不会访问或删除任何本机文件。
-            </p>
-          )}
-
-          {confirmingRebuild ? (
-            <div className="ledger-confirmation" role="group" aria-labelledby="ledger-confirm-title">
-              <strong id="ledger-confirm-title">确认只重建统计索引？</strong>
-              <p>原始 Agent 日志、提示词、工具输出与登录凭据都不会被删除或改写。重建可能需要几分钟。</p>
-              <div className="ledger-confirm-actions">
-                <button
-                  ref={cancelRebuildRef}
-                  type="button"
-                  className="ledger-button ledger-button--secondary"
-                  onClick={() => setConfirmingRebuild(false)}
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  className="ledger-button ledger-button--primary"
-                  onClick={confirmRebuild}
-                >
-                  确认重建
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className={`ledger-button ledger-button--rebuild ${rebuildBusy ? "ledger-button--busy" : ""}`}
-              aria-describedby="ledger-recovery-description"
-              aria-busy={rebuildBusy}
-              disabled={rebuildBusy}
-              onClick={() => setConfirmingRebuild(true)}
-            >
-              <ClockCounterClockwise size={17} weight="light" aria-hidden="true" />
-              {rebuildBusy ? "正在重建…" : "重建本地账本"}
-            </button>
-          )}
-
-          {rebuildState.status !== "idle" && (
-            <p
-              className={`ledger-rebuild-status ledger-rebuild-status--${rebuildState.status}`}
-              role={rebuildStatusRole}
-              aria-live={rebuildState.status === "error" ? "assertive" : "polite"}
-            >
-              {rebuildState.message}
-            </p>
-          )}
-        </section>
       </section>
     </div>
   );
@@ -5489,14 +5508,16 @@ export function App() {
       setRebuildState({
         status: "success",
         message: next.isDemo
-          ? "演示流程已完成；没有访问或删除任何本机文件。"
-          : `重建完成 · 更新于 ${formatClock(next.generatedAt)}`,
+          ? "演示扫描完成。"
+          : snapshotIsPartial(next)
+            ? "扫描完成，仍有记录无法解析。请更新 Metrik 后再试。"
+            : `扫描完成 · ${formatClock(next.generatedAt)}`,
       });
     } catch (error) {
       console.warn("Unable to rebuild the local ledger.", error);
       setRebuildState({
         status: "error",
-        message: "重建未完成。原始 Agent 日志与凭据未受影响，请稍后重试。",
+        message: "扫描失败，请稍后重试。Agent 日志未受影响。",
       });
     } finally {
       rebuildInFlight.current = false;

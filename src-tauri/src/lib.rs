@@ -1391,9 +1391,18 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => toggle_main_window(app),
             // 胶囊/卡片直达完整视图，省掉"先弹卡片再点展开"这一步。窗口形态归
-            // 前端所有（Windows 是单窗口变形），所以这里只发意图：前端切到
-            // expanded 时自己会 show + focus，托盘再动窗口只会抢出闪帧。
+            // 前端所有（Windows 是单窗口变形）。隐藏的 WebView 在部分 Windows
+            // 机器上不会及时处理事件，因此先只唤醒窗口（不抢焦点），再让前端完成
+            // hide/resize/show 事务；可见窗口不做额外 show，避免重复绘制。
             "expanded" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let hidden = !window.is_visible().unwrap_or(false);
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    if hidden || minimized {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                    }
+                }
                 let _ = app.emit(TRAY_SHOW_EXPANDED, ());
             }
             #[cfg(target_os = "linux")]
