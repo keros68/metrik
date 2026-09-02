@@ -10,6 +10,7 @@ import {
   trayBadgeKey,
 } from "./trayBadge.js";
 import {
+  isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
@@ -1478,6 +1479,7 @@ async function startEdgeDock({ getMode, getPinned }) {
   let outsideSinceMs = null;
   let checkTimer;
   let pollTimer;
+  let alwaysOnTopQueue = Promise.resolve();
 
   const canDock = () => isStableFloatingMode(
     getMode(),
@@ -1499,10 +1501,29 @@ async function startEdgeDock({ getMode, getPinned }) {
     if (!dock) return;
     await win.setPosition(new api.PhysicalPosition(position.x, position.y)).catch(() => {});
   };
+  const setDockAlwaysOnTop = (enabled) => {
+    const requested = Boolean(enabled);
+    // 释放旧挂靠与重新贴边可能前后紧邻；原生调用必须按请求顺序落地，
+    // 否则迟到的 false 会覆盖新挂靠刚写入的 true。
+    alwaysOnTopQueue = alwaysOnTopQueue
+      .catch(() => {})
+      .then(() => win.setAlwaysOnTop(requested).catch(() => {}));
+    return alwaysOnTopQueue;
+  };
 
   const stopPoll = () => {
     window.clearInterval(pollTimer);
     pollTimer = undefined;
+  };
+
+  // 用户从已挂靠的边缘开始拖动时只清理旧状态，不把窗口“恢复”回旧锚点。
+  // 否则仍在运行的轮询会把拖动中的光标判为离开旧窗口，900ms 后强制拉回。
+  const releaseDockForDrag = () => {
+    dock = null;
+    hidden = false;
+    outsideSinceMs = null;
+    stopPoll();
+    setDockAlwaysOnTop(getPinned());
   };
 
   const undock = async () => {
@@ -1511,7 +1532,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     hidden = false;
     outsideSinceMs = null;
     stopPoll();
-    await win.setAlwaysOnTop(Boolean(getPinned())).catch(() => {});
+    await setDockAlwaysOnTop(getPinned());
   };
 
   const poll = async () => {
@@ -1521,7 +1542,7 @@ async function startEdgeDock({ getMode, getPinned }) {
       return;
     }
     const cursor = await api.cursorPosition().catch(() => null);
-    if (!cursor) return;
+    if (!cursor || !dock) return;
     if (hidden) {
       const visible = peek();
       const onStrip = dock.edge === "bottom"
@@ -1601,11 +1622,15 @@ async function startEdgeDock({ getMode, getPinned }) {
     hidden = false;
     outsideSinceMs = null;
     await slideTo(exposedPosition());
-    await win.setAlwaysOnTop(true).catch(() => {});
+    await setDockAlwaysOnTop(true);
     if (!pollTimer) pollTimer = window.setInterval(poll, DOCK_POLL_MS);
   };
 
-  const onMove = () => {
+  const onMove = (event) => {
+    if (dock) {
+      const anchor = hidden ? hiddenPosition() : exposedPosition();
+      if (!isDockAnchorPosition(event?.payload, anchor)) releaseDockForDrag();
+    }
     window.clearTimeout(checkTimer);
     checkTimer = window.setTimeout(check, 220);
   };
@@ -1619,6 +1644,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     const unlisten = await unlistenPromise.catch(() => null);
     unlisten?.();
     if (dock) await undock();
+    await alwaysOnTopQueue.catch(() => {});
   };
 }
 
@@ -1636,6 +1662,15 @@ async function setWindowPinned(pinned) {
   // 悬停监视器与原生置顶状态共用同一条已串行化的窗口动作链，避免 React
   // effect 的严格模式清理晚到一步、把已经置顶的监视器再次关掉。
   if (isLinuxPlatform()) await setPinnedHoverBehavior(pinned);
+}
+
+/// 胶囊条用显式原生拖动代替 data-tauri-drag-region：开始拖动前必须先让详情
+/// 扩窗完整收回，否则它保存的旧坐标会在拖动结束后把窗口搬回原位。
+async function startWindowDragging() {
+  if (isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  await api.getCurrentWindow().startDragging();
 }
 
 /// Linux 托盘菜单的“置顶/取消置顶”请求。其 payload 是后端已经切换过的目标值，
@@ -1762,6 +1797,7 @@ export {
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  startWindowDragging,
   syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,
