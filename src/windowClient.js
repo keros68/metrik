@@ -1653,6 +1653,15 @@ async function setWindowPinned(pinned) {
   if (isLinuxPlatform()) await setPinnedHoverBehavior(pinned);
 }
 
+/// 胶囊条用显式原生拖动代替 data-tauri-drag-region：开始拖动前必须先让详情
+/// 扩窗完整收回，否则它保存的旧坐标会在拖动结束后把窗口搬回原位。
+async function startWindowDragging() {
+  if (isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  await api.getCurrentWindow().startDragging();
+}
+
 /// Linux 托盘菜单的“置顶/取消置顶”请求。其 payload 是后端已经切换过的目标值，
 /// 前端只负责把窗口与持久化状态同步到该值。
 async function onTrayPinnedChange(handler) {
@@ -1777,6 +1786,7 @@ export {
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  startWindowDragging,
   syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,

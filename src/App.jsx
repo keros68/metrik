@@ -110,6 +110,7 @@ import {
   setWindowUiScale,
   startEdgeDock,
   startPositionMemory,
+  startWindowDragging,
   syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,
@@ -1275,7 +1276,6 @@ function StripBar({
     agentId,
     cell: stripCellData(agentQuotaFor(snapshot, agentId)),
   }));
-  const dragProps = pinned || IS_MAC ? {} : { "data-tauri-drag-region": true };
   const vertical = orientation === "vertical";
   // 透明档的真实桌面背景变化很大，控制图标加粗以稳定识别。
   const buttonWeight = transparent && glassTint === "clear" ? "bold" : "regular";
@@ -1474,6 +1474,29 @@ function StripBar({
       setControlsOpen(false);
     }, STRIP_DETAIL_LEAVE_DELAY);
   };
+  const handleDragPointerDown = (event) => {
+    if (
+      event.button !== 0
+      || pinned
+      || IS_MAC
+      || !isDesktop()
+      || event.target.closest?.("button, a, input, select, textarea, [role='button']")
+    ) {
+      return;
+    }
+    // 原生拖动必须排在详情扩窗收回之后。直接依赖 data-tauri-drag-region 会让
+    // Windows 先进入系统拖动循环，详情卡随后才收回并用旧坐标覆盖拖动结果。
+    event.preventDefault();
+    event.stopPropagation();
+    cancelPointerLeave();
+    latestWindowCorrection += 1;
+    setHoveredDetail(null);
+    runWindowAction(async () => {
+      await collapseVerticalStripHover();
+      await startWindowDragging();
+    });
+  };
+  const dragProps = pinned || IS_MAC ? {} : { onPointerDown: handleDragPointerDown };
   const showDetail = (event, agentId) => {
     if (!detailEnabled || controlsOpen) return;
     cancelPointerLeave();
@@ -1497,7 +1520,6 @@ function StripBar({
       data-glass-surface={shellAppearance.trueAlpha ? "true-alpha" : undefined}
       data-pinned={pinned && IS_LINUX ? "true" : undefined}
       inert={pinned && IS_LINUX ? true : undefined}
-      {...dragProps}
       {...glassProps}
       onPointerEnter={cancelPointerLeave}
       onPointerLeave={handlePointerLeave}
@@ -1512,7 +1534,7 @@ function StripBar({
       }}
     >
       <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
-      <div ref={railRef} className="strip-rail">
+      <div ref={railRef} className="strip-rail" {...dragProps}>
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
           const meta = AGENT_META[agentId];
@@ -1523,7 +1545,6 @@ function StripBar({
                 className="strip-cell strip-cell--unavailable"
                 title={`${meta.label}：官方配额不可用`}
                 onPointerEnter={(event) => showDetail(event, agentId)}
-                {...dragProps}
               >
                 <img
                   className={`strip-cell-icon ${meta.iconClass || ""}`}
@@ -1545,7 +1566,6 @@ function StripBar({
               className={`strip-cell ${severity ? `strip-cell--${severity}` : ""}`}
               title={detailEnabled ? undefined : stripTooltip(agentId, cell.windows)}
               onPointerEnter={(event) => showDetail(event, agentId)}
-              {...dragProps}
             >
               <img
                 className={`strip-cell-icon ${meta.iconClass || ""}`}
@@ -1560,7 +1580,7 @@ function StripBar({
           );
         })
       ) : (
-        <span className="strip-empty" {...dragProps}>
+        <span className="strip-empty">
           配额不可用
         </span>
       )}
