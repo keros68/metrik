@@ -1479,6 +1479,7 @@ async function startEdgeDock({ getMode, getPinned }) {
   let outsideSinceMs = null;
   let checkTimer;
   let pollTimer;
+  let alwaysOnTopQueue = Promise.resolve();
 
   const canDock = () => isStableFloatingMode(
     getMode(),
@@ -1500,6 +1501,15 @@ async function startEdgeDock({ getMode, getPinned }) {
     if (!dock) return;
     await win.setPosition(new api.PhysicalPosition(position.x, position.y)).catch(() => {});
   };
+  const setDockAlwaysOnTop = (enabled) => {
+    const requested = Boolean(enabled);
+    // 释放旧挂靠与重新贴边可能前后紧邻；原生调用必须按请求顺序落地，
+    // 否则迟到的 false 会覆盖新挂靠刚写入的 true。
+    alwaysOnTopQueue = alwaysOnTopQueue
+      .catch(() => {})
+      .then(() => win.setAlwaysOnTop(requested).catch(() => {}));
+    return alwaysOnTopQueue;
+  };
 
   const stopPoll = () => {
     window.clearInterval(pollTimer);
@@ -1513,7 +1523,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     hidden = false;
     outsideSinceMs = null;
     stopPoll();
-    win.setAlwaysOnTop(Boolean(getPinned())).catch(() => {});
+    setDockAlwaysOnTop(getPinned());
   };
 
   const undock = async () => {
@@ -1522,7 +1532,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     hidden = false;
     outsideSinceMs = null;
     stopPoll();
-    await win.setAlwaysOnTop(Boolean(getPinned())).catch(() => {});
+    await setDockAlwaysOnTop(getPinned());
   };
 
   const poll = async () => {
@@ -1612,7 +1622,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     hidden = false;
     outsideSinceMs = null;
     await slideTo(exposedPosition());
-    await win.setAlwaysOnTop(true).catch(() => {});
+    await setDockAlwaysOnTop(true);
     if (!pollTimer) pollTimer = window.setInterval(poll, DOCK_POLL_MS);
   };
 
@@ -1634,6 +1644,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     const unlisten = await unlistenPromise.catch(() => null);
     unlisten?.();
     if (dock) await undock();
+    await alwaysOnTopQueue.catch(() => {});
   };
 }
 
