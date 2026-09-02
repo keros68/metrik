@@ -4306,6 +4306,14 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   margin-top: 22px;
 }
 
+.usage-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #74767a;
+  font-size: 12px;
+}
+
 .usage-toolbar select {
   min-height: 38px;
   padding: 0 12px;
@@ -5867,6 +5875,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 :root[data-theme="dark"] .session-id-chip--copied { color: #83c471; background: rgba(124, 192, 105, 0.16); }
 :root[data-theme="dark"] .session-copy small { color: var(--d-muted); }
 :root[data-theme="dark"] .session-row > em { color: var(--d-ink-2); }
+:root[data-theme="dark"] .usage-filter { color: var(--d-muted); }
 :root[data-theme="dark"] .usage-toolbar select {
   color: var(--d-ink);
   background: var(--d-input);
