@@ -3883,6 +3883,7 @@ ${session.sessionId}`}
   // ── 项目列表视图 ──
   const filteredProjects = projects.projects.filter((project) =>
     agentFilter === "all" || project.agents.includes(agentFilter));
+  const selectedAgentLabel = agentFilter === "all" ? null : AGENT_META[agentFilter]?.label || agentFilter;
   const visibleProjects = showAllProjects
     ? filteredProjects
     : filteredProjects.slice(0, PROJECT_PREVIEW_COUNT);
@@ -3896,16 +3897,25 @@ ${session.sessionId}`}
       <header className="settings-header">
         <h1 id="usage-title">用量</h1>
         <p>
-          <strong>项目</strong> · {PERIODS.find((item) => item.id === period)?.label}内 {projects.totalProjects} 个项目、{sessionsData.totalSessions} 个会话，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。
+          <strong>项目</strong> · {PERIODS.find((item) => item.id === period)?.label}内 {selectedAgentLabel
+            ? `${filteredProjects.length} 个包含 ${selectedAgentLabel} 用量的项目`
+            : `${projects.totalProjects} 个项目、${sessionsData.totalSessions} 个会话`}，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。
           {sessionsData.isDemo ? " 当前为浏览器演示数据。" : ""}
         </p>
       </header>
 
       <div className="usage-toolbar">
-        <select value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} aria-label="按 Agent 筛选">
-          <option value="all">全部 Agent</option>
-          {AGENT_ORDER.map((id) => <option key={id} value={id}>{AGENT_META[id].label}</option>)}
-        </select>
+        <label className="usage-filter">
+          <span>包含 Agent</span>
+          <select
+            value={agentFilter}
+            onChange={(event) => setAgentFilter(event.target.value)}
+            aria-label="按 Agent 筛选项目"
+          >
+            <option value="all">全部 Agent</option>
+            {AGENT_ORDER.map((id) => <option key={id} value={id}>{AGENT_META[id].label}</option>)}
+          </select>
+        </label>
         <button
           type="button"
           className={`ledger-button rules-toggle ${rulesOpen ? "rules-toggle--open" : ""}`}
@@ -3952,21 +3962,21 @@ ${session.sessionId}`}
       )}
 
       <section className="report-card project-board" aria-label="项目汇总">
-        {projects.projects.length > 0 && (
+        {filteredProjects.length > 0 && (
           <div className="project-overview">
             <ProjectShareDonut
-              projects={projects.projects}
+              projects={filteredProjects}
               colorByPath={colorByPath}
               onOpen={(path) => openDetail({ type: "project", path })}
             />
             <div className="project-overview-figures">
               {/* token 总量在环心；这里放成本这另一维度，同一个数不出现两次。 */}
               {(() => {
-                const priced = projects.projects.filter((project) => project.usd != null);
+                const priced = filteredProjects.filter((project) => project.usd != null);
                 if (!priced.length) {
                   return (
                     <>
-                      <strong>{projects.totalProjects}</strong>
+                      <strong>{filteredProjects.length}</strong>
                       <span>个项目 · 未计价</span>
                     </>
                   );
@@ -3974,11 +3984,11 @@ ${session.sessionId}`}
                 return (
                   <>
                     <strong>≈{formatUsd(priced.reduce((sum, project) => sum + project.usd, 0))}</strong>
-                    <span>{projects.totalProjects} 个项目 · 估算成本</span>
+                    <span>{filteredProjects.length} 个项目 · 估算成本</span>
                   </>
                 );
               })()}
-              {(projects.unattributedTokens > 0 || projects.hiddenTokens > 0) && (
+              {agentFilter === "all" && (projects.unattributedTokens > 0 || projects.hiddenTokens > 0) && (
                 <small>
                   {projects.unattributedTokens > 0 && (
                     <button type="button" onClick={() => openDetail({ type: "unattributed" })}>
