@@ -9,9 +9,10 @@
 // 没有官方按 token 价目，宁可 unpriced 也不借 Bedrock/Azure/Cloudflare 等
 // 第三方转售价冒充官方价。
 // 注意：LiteLLM 未收录的新模型官方价手动补在 pricing.rs 的 MANUAL_PRICING
-// （如 kimi-k3），本脚本只生成 pricing_table.rs，不会覆盖它。
+// （如 deepseek-v4-pro），本脚本只生成 pricing_table.rs，不会覆盖它。
 //
 // 用法：npm run pricing:update   （改完提交生成的 .rs 文件）
+// .github/workflows/pricing-refresh.yml 每周替你跑一次，有变化就开 PR 等人核对。
 // 也可离线：node scripts/update-pricing.mjs <本地 json 路径>
 
 import { readFileSync, writeFileSync } from "node:fs";

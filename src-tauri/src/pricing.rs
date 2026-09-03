@@ -4,6 +4,7 @@
 //! 只取 openai / anthropic / moonshot / zai / gemini / xai 六个官方第一方 API 的
 //! provider，构建期由 `scripts/update-pricing.mjs` 生成 `pricing_table.rs`
 //! （`npm run pricing:update`）。运行时不联网——价格随发版更新，留在 git 里可审计。
+//! `.github/workflows/pricing-refresh.yml` 每周跑一次并开 PR，人工核对 diff 后合并。
 //!
 //! ## 匹配规则：精确匹配，绝不前缀猜测
 //!
@@ -81,26 +82,17 @@ impl Pricing {
 }
 
 /// 手动补充的官方第一方价目（生成表之外）：模型太新、LiteLLM 尚未收录时
-/// 按官方定价页临时补齐，收录后即可删。查找时先于生成表命中。
+/// 按官方定价页临时补齐，**收录后即删**——两处都留会让手工值一直压过生成值，
+/// 官方调价后刷新生成表也不生效。查找时先于生成表命中。
+///
+/// glm-5.2 / glm-5.3 / glm-5.3-flash / kimi-k3 / kimi-k2.7-code 已在 2026-09-03
+/// 的刷新里被 LiteLLM 收录，数值与手工值一致，故从这里删掉；下面的测试仍按
+/// 各自官方定价页的数值断言，钉的是价格本身，不是它存在哪张表里。
+///
 /// 来源：
-/// - kimi-k3：Moonshot 官方定价页（2026-07-18 核对，经多方转载交叉验证）：
-///   输入 $3.00/M、缓存命中 $0.30/M、输出 $15.00/M（1M 上下文旗舰）。
-/// - glm-5.2 / glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
+/// - glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
 ///   （2026-07-20 核对；同页 glm-5/glm-5.1 数值与 LiteLLM 生成表完全一致，
 ///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
-/// - glm-5.3：同页（2026-08-20 核对），官方定价与 glm-5.2 相同：输入 $1.4/M、
-///   缓存命中 $0.26/M、输出 $4.4/M。同价是官方定价如此，不是沿用旧价。
-/// - glm-5.3-flash：同页（2026-08-31 核对）：输入 $0.15/M、缓存命中 $0.03/M、
-///   输出 $0.50/M（约为 GLM-5.3 的 1/10）。页面上有 2026-09-09 截止的限时五折
-///   （$0.075/$0.015/$0.25），按「存官方标价」的口径存标准价，折扣不进表；
-///   缓存写入官方标注限时免费 → 记 0。
-/// - kimi-k2.7-code：Kimi 开放平台定价页
-///   platform.kimi.com/docs/pricing/chat-k27-code（2026-08-31 核对）。页面只标
-///   人民币：缓存命中 ¥1.30、未命中 ¥6.50、输出 ¥27.00，并注明输入/输出与
-///   K2.6 同价、仅缓存命中由 ¥1.10 调至 ¥1.30——故美元价取生成表 kimi-k2.6
-///   的输入 $0.95 / 输出 $4.0，缓存按 ¥1.30/¥1.10 等比得 $0.19。缓存写入
-///   未列出 → 记 0。官方文档另明确订阅 ID kimi-for-coding 就是 K2.7 Code
-///   （见 SUBSCRIPTION_ALIASES）。
 /// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
 ///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
 ///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
@@ -132,51 +124,6 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
         Pricing {
             input: 1.2,
             cache_read: 0.24,
-            cache_write: 0.0,
-            output: 4.0,
-        },
-    ),
-    (
-        "glm-5.2",
-        Pricing {
-            input: 1.4,
-            cache_read: 0.26,
-            cache_write: 0.0,
-            output: 4.4,
-        },
-    ),
-    (
-        "glm-5.3",
-        Pricing {
-            input: 1.4,
-            cache_read: 0.26,
-            cache_write: 0.0,
-            output: 4.4,
-        },
-    ),
-    (
-        "glm-5.3-flash",
-        Pricing {
-            input: 0.15,
-            cache_read: 0.03,
-            cache_write: 0.0,
-            output: 0.5,
-        },
-    ),
-    (
-        "kimi-k3",
-        Pricing {
-            input: 3.0,
-            cache_read: 0.3,
-            cache_write: 0.0,
-            output: 15.0,
-        },
-    ),
-    (
-        "kimi-k2.7-code",
-        Pricing {
-            input: 0.95,
-            cache_read: 0.19,
             cache_write: 0.0,
             output: 4.0,
         },
@@ -373,6 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn claude_fable_5_1_keeps_its_own_cache_read_rate() {
+        // 官方定价：输入 $10、输出 $50 与 Fable 5 同价，但缓存命中是 $0.25，
+        // 不是 Fable 5 的 $1.0。两代同价容易让人以为整行都能沿用，缓存命中
+        // 占实际用量的大头，这一栏抄错成本就系统性高估四倍。
+        let fable_5_1 = price_for("claude-fable-5-1", ANY_TIME_MS).expect("priced");
+        assert_eq!(fable_5_1.input, 10.0);
+        assert_eq!(fable_5_1.cache_read, 0.25);
+        assert_eq!(fable_5_1.output, 50.0);
+        let fable_5 = price_for("claude-fable-5", ANY_TIME_MS).expect("priced");
+        assert_eq!(fable_5.cache_read, 1.0);
+    }
+
+    #[test]
     fn subscription_only_model_ids_stay_unpriced() {
         // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
         // 转售价或同系模型的价格蒙混（Kimi Code 订阅等）。
@@ -421,8 +381,8 @@ mod tests {
 
     #[test]
     fn kimi_k3_priced_from_official_rates_including_subscription_alias() {
-        // 手动补充的官方价（LiteLLM 未收录时临时补齐）：K3 输入 $3、
-        // 缓存 $0.3、输出 $15（2026-07-18 官方定价页核对）。
+        // Moonshot 官方定价页（2026-07-18 核对）：K3 输入 $3、
+        // 缓存 $0.3、输出 $15。
         let direct = price_for("kimi-k3", ANY_TIME_MS).expect("kimi-k3 priced");
         assert_eq!(direct.input, 3.0);
         assert_eq!(direct.cache_read, 0.3);

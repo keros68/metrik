@@ -46,6 +46,7 @@ import qwenAppIcon from "./assets/qwen-app-icon.png";
 import workbuddyAppIcon from "./assets/workbuddy-app-icon.png";
 import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAppearance.js";
+import { modelDisplayName } from "./modelNames.js";
 import { QUOTA_LOW_REMAINING, bindingWindow } from "./quotaWindows.js";
 import { horizontalStripTargetWidth } from "./windowGeometry";
 import {
@@ -472,15 +473,6 @@ function compactQuotaWindows(entry) {
     rows.push(placeholders.shift());
   }
   return rows;
-}
-
-// 模型名展示：本地确实缺模型名的记 "unknown"（未标注模型）；
-// "synced-remote" 是同步事件（导出本就不含模型名，见 sync 架构约束），
-// 不是某个叫这个名字的模型，必须说人话。
-function modelDisplayName(model) {
-  if (model === "synced-remote") return "其他设备同步（无模型名）";
-  if (model === "unknown") return "未标注模型";
-  return model;
 }
 
 // 每行 Agent 的 tooltip 列出全部有来源的窗口（已过期窗口也算有来源，单独走
@@ -3773,7 +3765,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
             <div className="session-copy">
               <strong>
                 {timeRange(session)} · {meta?.label || session.agent}
-                {session.model ? ` · ${session.model}` : ""}
+                {session.model ? ` · ${modelDisplayName(session.model)}` : ""}
               </strong>
               <small>
                 {compactTokens(session.tokens)} tokens
@@ -3848,7 +3840,8 @@ ${session.sessionId}`}
         <div className="usage-toolbar">
           <select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} aria-label="按模型筛选">
             <option value="all">全部模型</option>
-            {models.map((model) => <option key={model} value={model}>{model}</option>)}
+            {/* 值必须是原始 ID：筛选按它比对 session.model，展示才走点号写法。 */}
+            {models.map((model) => <option key={model} value={model}>{modelDisplayName(model)}</option>)}
           </select>
           <button
             type="button"
