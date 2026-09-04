@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 // working directory their adapters now report.
 // Version 6 rebuilds every source so pi events re-attribute to their provider's
 // metering card (GLM/Qwen/Pi) instead of all landing under pi.
-pub const PARSER_VERSION: i64 = 6;
+// Version 7 rebuilds every source so Codex context-window placeholder readings
+// stop marking their session as partial. Unchanged files are never re-parsed,
+// so without the bump the stale "incomplete" marker would survive the upgrade.
+pub const PARSER_VERSION: i64 = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReplaceSourceOutcome {
