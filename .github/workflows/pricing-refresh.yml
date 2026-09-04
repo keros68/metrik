@@ -1,0 +1,112 @@
+name: Pricing refresh
+
+# 每周一 03:00 UTC 重新生成价格表，有变化就开 PR。
+#
+# 不自动合并：LiteLLM 偶尔会成批改写某个 provider 的价目（一次刷新就把整个
+# grok 系列从 $3/$15 改到 $1.25/$2.5），未经核对合进去等于把「猜价格」搬进
+# 仓库，正面违反 docs/PRODUCT-CONSTRAINTS.md 的数据真实性约束。人工看一眼
+# diff 再合。
+#
+# 也不改运行时：Metrik 仍然是构建期生成、价格留在 git 里可审计，这个工作流
+# 只是替掉「记得每隔一阵手动跑一次 npm run pricing:update」。
+#
+# 分支保护要求 CI 通过时：GITHUB_TOKEN 推出的分支不会触发 CI。要么在这里
+# 直接跑完同样的检查（下面已经跑了 cargo test），要么换成有 workflow 权限的
+# PAT 来推分支。
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: pricing-refresh
+
+      - name: Regenerate the pricing table
+        run: npm run pricing:update
+
+      - name: Detect changes
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src-tauri/src/pricing_table.rs; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "价格表无变化，本次不开 PR。"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 生成表被 cargo test 直接断言：必须有序非空，且钉住的官方价目还在表里。
+      # LiteLLM 掉条目会让计价静默退化成 unpriced，测试是唯一的拦截点。
+      - name: Install Linux desktop dependencies
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+
+      - name: Pricing tests
+        if: steps.diff.outputs.changed == 'true'
+        run: "cargo test pricing::"
+        working-directory: src-tauri
+
+      - name: Open a pull request
+        if: steps.diff.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch=chore/pricing-refresh
+          as_of=$(sed -n 's/^pub const PRICING_AS_OF: &str = "\(.*\)";$/\1/p' \
+            src-tauri/src/pricing_table.rs)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/pricing_table.rs
+          git commit -m "chore: 刷新价格表至 ${as_of}"
+          # 固定分支名 + 强推：上一次没合的刷新直接被这一次取代，不攒一堆 PR。
+          git push -f origin HEAD:"$branch"
+
+          if [ -n "$(gh pr list --head "$branch" --state open --json number -q '.[].number')" ]; then
+            echo "已有开着的 PR，强推即更新，不重复创建。"
+            exit 0
+          fi
+
+          {
+            echo "由 \`.github/workflows/pricing-refresh.yml\` 从 LiteLLM 重新生成，估算截至 ${as_of}。"
+            echo
+            echo "合之前请逐条看 diff：LiteLLM 偶尔会成批改写某个 provider 的价目，"
+            echo "改动过大或方向可疑的条目要回官方定价页核对。已被单测钉住的价目"
+            echo "如果消失，上一步的 cargo test 会先红。"
+            echo
+            echo "生成表已覆盖的模型可以从 \`pricing.rs\` 的 MANUAL_PRICING 里删掉，"
+            echo "两处都留会让手工值一直压过生成值。"
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          gh pr create --base main --head "$branch" \
+            --title "chore: 刷新价格表至 ${as_of}" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
