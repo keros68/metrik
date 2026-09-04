@@ -44,6 +44,8 @@ struct PendingEvent {
 #[derive(Deserialize, Default)]
 struct TokenInfo {
     total_token_usage: Option<RawTokenUsage>,
+    #[serde(default)]
+    model_context_window: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -61,6 +63,25 @@ struct RawTokenUsage {
     /// 恒等于 input + output——reasoning 与缓存读都已含在里面，不另加。
     #[serde(default)]
     total_tokens: i64,
+}
+
+impl RawTokenUsage {
+    /// `codex exec` 一轮没拿到用量时，Codex 0.147 会写一条四个分量全 0、
+    /// `total_tokens` 却等于 `model_context_window` 的读数（本机 2026-08-13
+    /// 两个会话实拍：0/0/0/0/258400，上下文窗口正是 258400）。它不是用量，
+    /// 是占位：没有任何分量可计，也不能当成口径不一致把整个来源标成
+    /// 「不完整」——重新扫描只会再读到同一行，用户永远修不掉。
+    ///
+    /// 只认这一种签名。分量全 0 但 total 不等于窗口时仍按不一致报警：那
+    /// 可能是字段改名让我们全读成了 0，正是自检要抓的情况。
+    fn is_context_window_placeholder(&self, model_context_window: Option<i64>) -> bool {
+        self.input_tokens == 0
+            && self.cached_input_tokens == 0
+            && self.output_tokens == 0
+            && self.reasoning_output_tokens == 0
+            && self.total_tokens > 0
+            && model_context_window == Some(self.total_tokens)
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -183,10 +204,12 @@ impl AgentAdapter for CodexAdapter {
                     // events before the first turn_context stay honestly unknown.
                     let event_model = non_empty(payload.model);
                     let occurred_at_ms = timestamp_str_ms(record.timestamp.as_deref());
-                    if let (Some(timestamp), Some(total)) = (
-                        occurred_at_ms,
-                        payload.info.and_then(|info| info.total_token_usage),
-                    ) {
+                    let info = payload.info.unwrap_or_default();
+                    let context_window = info.model_context_window;
+                    let usage = info
+                        .total_token_usage
+                        .filter(|total| !total.is_context_window_placeholder(context_window));
+                    if let (Some(timestamp), Some(total)) = (occurred_at_ms, usage) {
                         let input = total.input_tokens.max(0);
                         let cached = total.cached_input_tokens.max(0).min(input);
                         let current = TokenVector {
@@ -392,6 +415,56 @@ mod tests {
         );
         assert_eq!(disagreeing.diagnostics.total_mismatches, 1);
         assert!(disagreeing.diagnostics.is_partial());
+    }
+
+    #[test]
+    fn context_window_placeholder_is_neither_usage_nor_a_mismatch() {
+        let parse = |name: &str, body: &str| {
+            let temp = std::env::temp_dir().join(format!(
+                "metrik-codex-placeholder-{name}-{}.jsonl",
+                std::process::id()
+            ));
+            std::fs::write(&temp, body).unwrap();
+            let metadata = temp.metadata().unwrap();
+            let candidate = SourceCandidate {
+                source_id: "source".into(),
+                path: temp.clone(),
+                size: metadata.len(),
+                mtime_ns: 1,
+            };
+            let parsed = CodexAdapter::with_roots(vec![])
+                .parse(&candidate, i64::MIN)
+                .unwrap();
+            std::fs::remove_file(temp).ok();
+            parsed
+        };
+
+        // 本机实拍（codex exec，Codex 0.147）：分量全 0、total 等于上下文窗口。
+        // 后面跟一条正常读数，确认占位不影响真实用量的入账，也不改基线。
+        let placeholder = parse(
+            "skip",
+            concat!(
+                r#"{"timestamp":"2026-08-13T14:32:27.986Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":258400},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":258400},"model_context_window":258400},"rate_limits":{"primary":{"used_percent":12.0}}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-13T14:33:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":8,"total_tokens":120},"model_context_window":258400}}}"#,
+                "\n",
+            ),
+        );
+        assert_eq!(placeholder.diagnostics.total_mismatches, 0);
+        assert!(!placeholder.diagnostics.is_partial());
+        assert_eq!(placeholder.source.events.len(), 1);
+        assert_eq!(placeholder.source.events[0].tokens.processed(), 120);
+        // 占位行上的配额快照仍然要收：那是官方额度，与用量无关。
+        assert_eq!(placeholder.source.quotas.len(), 1);
+
+        // 分量全 0 但 total 不等于窗口：不是已知占位，仍按口径不一致报警——
+        // 这可能是字段改名让我们全读成了 0。
+        let renamed = parse(
+            "warn",
+            r#"{"timestamp":"2026-08-13T14:32:27.986Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":5000},"model_context_window":258400}}}"#,
+        );
+        assert_eq!(renamed.diagnostics.total_mismatches, 1);
+        assert!(renamed.diagnostics.is_partial());
     }
 
     #[test]
