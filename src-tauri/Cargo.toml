@@ -1,6 +1,6 @@
 [package]
 name = "metrik"
-version = "0.19.1"
+version = "0.19.2"
 description = "Local-first AI agent usage monitor"
 authors = ["keros68 <keros68@gmail.com>"]
 edition = "2021"
