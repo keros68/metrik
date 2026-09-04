@@ -175,6 +175,10 @@ async function scaledPhysicalSize(
   return new api.PhysicalSize(physical.width, physical.height);
 }
 
+// 最近一次成功下发给 WebView 的 zoom。视口校正（reconcileFloatingSizeAfterShow）
+// 必须以它为基数，而不是本形态的目标系数：两者只在没校正过的时候相等。
+let appliedZoom = null;
+
 /// 内容缩放用 WebView 原生 zoom（等同浏览器 Ctrl+缩放）：视口单位、媒体查询
 /// 全部自洽。CSS zoom 做不到——100vw 元素在 zoom 下会溢出视口（实测）。
 async function applyWebviewZoom(factor) {
@@ -183,6 +187,9 @@ async function applyWebviewZoom(factor) {
   await api
     .getCurrentWebview()
     .setZoom(factor)
+    .then(() => {
+      appliedZoom = factor;
+    })
     .catch((error) => {
       // zoom 失败会让视口与物理尺寸失配（320 内容被裁），不能静默吞掉。
       console.warn("Unable to apply the webview zoom.", error);
@@ -417,36 +424,59 @@ async function reconcileFloatingSizeAfterShow(
     current = await appWindow.innerSize().catch(() => null);
   }
 
-  const initialViewportWidth = window.innerWidth;
-  const initialViewportHeight = window.innerHeight;
-  if (
-    Math.abs(initialViewportWidth - width) <= 1 &&
-    Math.abs(initialViewportHeight - height) <= 1
-  ) {
+  const viewportMatches = () =>
+    Math.abs(window.innerWidth - width) <= 1 &&
+    Math.abs(window.innerHeight - height) <= 1;
+  if (viewportMatches()) {
     await clampIntoWorkArea(api, appWindow, current || appliedPhysical);
     return current || appliedPhysical;
   }
 
   // 外框已经是设计尺寸 × 应用比例 × DPI，但视口仍偏小时，优先抵消 WebView2
   // 额外保留的 zoom。这样不会为了显示完整内容而把整个卡片无端放大。
-  const correctedZoom = viewportCorrectedZoom({
-    contentScale,
-    viewportWidth: initialViewportWidth,
-    viewportHeight: initialViewportHeight,
-    expectedWidth: width,
-    expectedHeight: height,
-  });
-  if (correctedZoom) {
-    await applyWebviewZoom(correctedZoom);
+  //
+  // 基数是上一次真正下发的 zoom，不是本形态的目标系数。一旦某轮校正改过
+  // zoom，再拿目标系数乘比例就是在错的基数上二次修正：上一轮缩到 0.67 倍，
+  // 这一轮量到 1.5 倍的视口，按目标系数算出 1.5 倍，实际该回到 1 倍——两轮
+  // 之间永远差一个因子，卡片在大小之间来回跳。
+  //
+  // 量到的比例出了 0.5–2 或两轴不一致时，不能就此放弃：用户实拍过胶囊条
+  // 内容缩到不足一半、窗口不变、再也不恢复的卡死态——zoom 已经错了，两条
+  // 校正又都因超界拒绝，没有任何路径把它拨回来。先把 zoom 拨回目标系数再量
+  // 一次；若那本来就是目标系数，重设是空操作，不会闪。
+  let zoomBase = appliedZoom ?? contentScale;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const correctedZoom = viewportCorrectedZoom({
+      contentScale: zoomBase,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      expectedWidth: width,
+      expectedHeight: height,
+    });
+    if (correctedZoom) {
+      await applyWebviewZoom(correctedZoom);
+      await settleWebviewLayout();
+      current = await appWindow.innerSize().catch(() => current);
+      if (viewportMatches()) {
+        await clampIntoWorkArea(api, appWindow, current || appliedPhysical);
+        return current || appliedPhysical;
+      }
+      // 没收敛说明量到的是瞬时视口（DPI 切换、resize 未落地），不是真实的
+      // 残留 zoom：撤回，别把一个错的 zoom 留给下面的物理尺寸校正当前提。
+      await applyWebviewZoom(zoomBase);
+      await settleWebviewLayout();
+      current = await appWindow.innerSize().catch(() => current);
+      break;
+    }
+    if (attempt > 0) break;
+    await applyWebviewZoom(contentScale);
     await settleWebviewLayout();
     current = await appWindow.innerSize().catch(() => current);
-    if (
-      Math.abs(window.innerWidth - width) <= 1 &&
-      Math.abs(window.innerHeight - height) <= 1
-    ) {
+    if (viewportMatches()) {
       await clampIntoWorkArea(api, appWindow, current || appliedPhysical);
       return current || appliedPhysical;
     }
+    zoomBase = contentScale;
   }
 
   for (let pass = 0; pass < 2; pass += 1) {
