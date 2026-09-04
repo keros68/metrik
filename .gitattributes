@@ -1,0 +1,3 @@
+# 仓库统一 LF。Windows 开发机曾在 autocrlf=true 下检出，工作树全是 CRLF 而
+# git 存的是 LF，改任何文件都会让整文件变成 diff。显式声明后与本机配置无关。
+* text=auto eol=lf
