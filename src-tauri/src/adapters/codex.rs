@@ -490,6 +490,58 @@ mod tests {
             assert_eq!(a.tokens, b.tokens);
         }
         assert!(!adapter.has_pending(&candidate));
+        // An active rollout can grow between slices. Complete the captured
+        // prefix, then let the next source revision ingest the append.
+        assert!(adapter
+            .parse_until(&candidate, 0, Instant::now())
+            .unwrap()
+            .is_none());
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, r#"{{"timestamp":"2026-09-05T00:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":300030,"total_tokens":300030}}}}}}}}"#).unwrap();
+        drop(file);
+        let grown = SourceCandidate {
+            size: path.metadata().unwrap().len(),
+            mtime_ns: 2,
+            ..candidate.clone()
+        };
+        let prefix = adapter
+            .parse_until(
+                &grown,
+                1,
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(prefix.source.events.len(), 10_000);
+        assert_eq!(prefix.source.size, candidate.size);
+        let appended = adapter.parse(&grown, 1).unwrap();
+        assert_eq!(appended.source.events.len(), 10_001);
+        assert_eq!(
+            appended.source.events.last().unwrap().tokens.processed(),
+            30
+        );
+        assert!(adapter
+            .parse_until(&grown, 1, Instant::now())
+            .unwrap()
+            .is_none());
+        std::fs::write(&path, "\n").unwrap();
+        let truncated = SourceCandidate {
+            size: 1,
+            mtime_ns: 3,
+            ..grown
+        };
+        let scan = adapter
+            .parse_until(
+                &truncated,
+                1,
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(scan.source.events.is_empty());
         std::fs::remove_file(path).unwrap();
     }
 
