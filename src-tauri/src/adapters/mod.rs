@@ -107,6 +107,18 @@ pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate>;
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan>;
+    fn has_pending(&self, _candidate: &SourceCandidate) -> bool {
+        false
+    }
+    /// Return None when the parsing budget expires; the adapter retains progress.
+    fn parse_until(
+        &self,
+        candidate: &SourceCandidate,
+        cutoff_ms: i64,
+        _deadline: std::time::Instant,
+    ) -> Result<Option<ParsedScan>> {
+        self.parse(candidate, cutoff_ms).map(Some)
+    }
     /// 已知存在、但当前版本读不了的存储形态（例：OpenCode 1.2+ 改用 SQLite）。
     /// 非空时该 Agent 的覆盖必须标为"部分"并把原因展示给用户——此时显示的 0
     /// 是"读不到"，不是"没用过"，静默显示 0 违反诚实约束。默认没有。

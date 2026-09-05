@@ -12,7 +12,19 @@ change.
   numbers. Missing and stale data must be labeled explicitly.
 - Manual refresh requests `usage_snapshot` with `force: true`, bypassing quota
   TTL caches. A failed refresh retains the last rows and marks them stale; it
-  never clears them silently.
+  never clears them silently within the same account. An observed account
+  change clears the previous account’s quota until current data is available.
+- Low-quota system notifications are opt-in and use the existing 15% remaining
+  threshold. Only fresh, available official windows are eligible. Each agent and account's
+  continuous low-quota episode produces one notification; after recovery,
+  notifications remain at least six hours apart. Notification state is local
+  and persists across windows and restarts. Checks follow existing snapshot
+  refreshes, including existing tray-badge refreshes when enabled; notifications
+  introduce no additional background quota polling.
+- Codex reset credits are queried manually through the local app-server's
+  read-only rate-limit method. Missing counts remain unavailable, and an
+  incomplete detail list never replaces the official available count. Displayed
+  expiry is the earliest known expiry, not a guarantee of complete coverage.
 - The data-source drawer is operational UI, not a parser report. It shows a
   short source status by default. When local data is incomplete it offers a
   visible rescan that rebuilds only Metrik's derived index and never changes
@@ -139,8 +151,11 @@ change.
   reassert size from native DPI-change payloads, and window mutations are
   serialized so stale resizes cannot overwrite corrections.
 - The rendered CSS viewport is the final sizing authority for Windows floating
-  forms. After native resize, compact and strip must compensate WebView zoom
-  drift and verify the full design viewport rather than trusting HWND size alone.
+  forms. After native resize, compact and strip restore their configured zoom
+  and verify the viewport. Transient resize measurements must never redefine
+  that zoom, and hover expansion only changes native size and position.
+  Floating dimensions are bounded by the monitor work area; overflowing strip
+  content remains scrollable at the selected scale.
 - Strip window size is measured from rendered content. Constants may seed the
   first frame but are not the source of truth.
 - The notification-area icon can become a quota badge: while the setting is on,

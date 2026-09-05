@@ -5,11 +5,29 @@ use crate::domain::{ParsedSource, QuotaSample, TokenVector, UsageEvent};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Take};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct CodexAdapter {
     roots: Vec<PathBuf>,
+}
+
+static CHECKPOINT: Mutex<Option<Checkpoint>> = Mutex::new(None);
+
+struct Checkpoint {
+    candidate: SourceCandidate,
+    cutoff_ms: i64,
+    reader: BufReader<Take<File>>,
+    session_id: String,
+    current_model: Option<String>,
+    current_cwd: Option<String>,
+    previous: Option<TokenVector>,
+    in_fork_replay: bool,
+    pending_events: Vec<PendingEvent>,
+    quotas: Vec<QuotaSample>,
+    diagnostics: ScanDiagnostics,
 }
 
 #[derive(Deserialize, Default)]
@@ -39,11 +57,13 @@ struct PendingEvent {
     model: Option<String>,
     tokens: TokenVector,
     cwd: Option<String>,
+    request_input_tokens: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
 struct TokenInfo {
     total_token_usage: Option<RawTokenUsage>,
+    last_token_usage: Option<RawTokenUsage>,
     #[serde(default)]
     model_context_window: Option<i64>,
 }
@@ -124,34 +144,111 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let file = File::open(&candidate.path)
-            .with_context(|| format!("failed to open {}", candidate.path.display()))?;
-        let reader = BufReader::with_capacity(256 * 1024, file);
+        self.parse_slice(candidate, cutoff_ms, None)
+            .map(|scan| scan.expect("unbounded scan completes"))
+    }
 
-        let fallback_session = candidate
-            .path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("unknown-session")
-            .to_owned();
-        let mut session_id = fallback_session;
-        let mut current_model: Option<String> = None;
-        // `session_meta.cwd` 是会话起始目录，`turn_context.cwd` 是当轮实际目录
-        // （用户中途换目录时只有后者会变）。按事件发生时的值记录。
-        let mut current_cwd: Option<String> = None;
-        let mut previous: Option<TokenVector> = None;
-        // Codex Desktop fork/subagent files replay the parent thread's history
-        // (including its cumulative token_count events) before the first live
-        // turn. Those replayed counters are already ledgered under the parent
-        // session, so counting them again would double-count. The replay never
-        // contains turn_context lines, so the first turn_context marks live data.
-        let mut in_fork_replay = false;
-        let mut pending_events: Vec<PendingEvent> = Vec::new();
-        let mut quotas = Vec::new();
-        let mut diagnostics = ScanDiagnostics::default();
+    fn has_pending(&self, candidate: &SourceCandidate) -> bool {
+        CHECKPOINT.lock().ok().is_some_and(|state| {
+            state
+                .as_ref()
+                .is_some_and(|state| state.candidate.source_id == candidate.source_id)
+        })
+    }
+
+    fn parse_until(
+        &self,
+        candidate: &SourceCandidate,
+        cutoff_ms: i64,
+        deadline: Instant,
+    ) -> Result<Option<ParsedScan>> {
+        self.parse_slice(candidate, cutoff_ms, Some(deadline))
+    }
+}
+
+impl CodexAdapter {
+    fn parse_slice(
+        &self,
+        candidate: &SourceCandidate,
+        cutoff_ms: i64,
+        deadline: Option<Instant>,
+    ) -> Result<Option<ParsedScan>> {
+        let local = Mutex::new(None);
+        let checkpoint_store = if deadline.is_some() {
+            &CHECKPOINT
+        } else {
+            &local
+        };
+        let mut checkpoint = checkpoint_store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Codex scan lock poisoned"))?;
+        // Keep one interrupted source in memory. Growing append-only rollouts
+        // finish their captured prefix before a later refresh reads new bytes.
+        let resumed = checkpoint.take().filter(|state| {
+            state.candidate.source_id == candidate.source_id
+                && state.cutoff_ms <= cutoff_ms
+                && (candidate.size > state.candidate.size
+                    || (candidate.size == state.candidate.size
+                        && candidate.mtime_ns == state.candidate.mtime_ns))
+        });
+        let Checkpoint {
+            candidate,
+            cutoff_ms,
+            mut reader,
+            mut session_id,
+            mut current_model,
+            mut current_cwd,
+            mut previous,
+            mut in_fork_replay,
+            mut pending_events,
+            mut quotas,
+            mut diagnostics,
+        } = match resumed {
+            Some(state) => state,
+            None => {
+                let file = File::open(&candidate.path)
+                    .with_context(|| format!("failed to open {}", candidate.path.display()))?;
+                Checkpoint {
+                    candidate: candidate.clone(),
+                    cutoff_ms,
+                    reader: BufReader::with_capacity(256 * 1024, file.take(candidate.size)),
+                    session_id: candidate
+                        .path
+                        .file_stem()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("unknown-session")
+                        .to_owned(),
+                    current_model: None,
+                    current_cwd: None,
+                    previous: None,
+                    in_fork_replay: false,
+                    pending_events: Vec::new(),
+                    quotas: Vec::new(),
+                    diagnostics: ScanDiagnostics::default(),
+                }
+            }
+        };
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
-
-        for line in reader.lines() {
+        loop {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                *checkpoint = Some(Checkpoint {
+                    candidate,
+                    cutoff_ms,
+                    reader,
+                    session_id,
+                    current_model,
+                    current_cwd,
+                    previous,
+                    in_fork_replay,
+                    pending_events,
+                    quotas,
+                    diagnostics,
+                });
+                return Ok(None);
+            }
+            let Some(line) = reader.by_ref().lines().next() else {
+                break;
+            };
             let line = match line {
                 Ok(line) => line,
                 Err(_) => {
@@ -224,6 +321,15 @@ impl AgentAdapter for CodexAdapter {
                             diagnostics.total_mismatches += 1;
                         }
                         let delta = current.positive_delta(previous.as_ref());
+                        // A missed group of requests cannot select one pricing tier.
+                        let request_input_tokens =
+                            info.last_token_usage.as_ref().and_then(|last| {
+                                (last.input_tokens == delta.input_uncached + delta.cache_read
+                                    && last.cached_input_tokens == delta.cache_read
+                                    && last.output_tokens == delta.output
+                                    && last.input_tokens >= 0)
+                                    .then_some(last.input_tokens)
+                            });
                         // Replayed counters still advance the baseline so the first
                         // live delta only counts the fork's own increment.
                         previous = Some(current.clone());
@@ -243,6 +349,7 @@ impl AgentAdapter for CodexAdapter {
                                 model,
                                 tokens: delta,
                                 cwd: current_cwd.clone(),
+                                request_input_tokens,
                             });
                         }
                     }
@@ -268,7 +375,7 @@ impl AgentAdapter for CodexAdapter {
             .into_iter()
             .map(|pending| {
                 let event_key = format!("{session_id}:{}", pending.fingerprint);
-                UsageEvent::new(
+                let mut event = UsageEvent::new(
                     self.id(),
                     event_key,
                     pending.timestamp,
@@ -277,11 +384,13 @@ impl AgentAdapter for CodexAdapter {
                     pending.tokens,
                     "cumulative_delta",
                 )
-                .with_project(pending.cwd)
+                .with_project(pending.cwd);
+                event.request_input_tokens = pending.request_input_tokens;
+                event
             })
             .collect();
 
-        Ok(ParsedScan {
+        Ok(Some(ParsedScan {
             source: ParsedSource {
                 source_id: candidate.source_id.clone(),
                 adapter_id: self.id(),
@@ -293,7 +402,7 @@ impl AgentAdapter for CodexAdapter {
                 quotas,
             },
             diagnostics,
-        })
+        }))
     }
 }
 
@@ -328,6 +437,113 @@ fn parse_quota_windows(rate_limits: RateLimits, timestamp: i64, source: &str) ->
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn bounded_scan_resumes_and_pricing_requires_matching_request_evidence() {
+        let path = std::env::temp_dir().join(format!("metrik-resume-{}.jsonl", std::process::id()));
+        let mut file = File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"session_meta","payload":{{"id":"resume"}}}}"#
+        )
+        .unwrap();
+        for index in 1..=10_000 {
+            writeln!(file, "").unwrap();
+            let last = if index == 2 { 1 } else { 30 };
+            writeln!(file, r#"{{"timestamp":"2026-09-05T00:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"total_tokens":{}}},"last_token_usage":{{"input_tokens":{last}}}}}}}}}"#, index * 30, index * 30).unwrap();
+        }
+        drop(file);
+        let candidate = SourceCandidate {
+            source_id: path.display().to_string(),
+            path: path.clone(),
+            size: path.metadata().unwrap().len(),
+            mtime_ns: 1,
+        };
+        let adapter = CodexAdapter::with_roots(vec![]);
+        let full = adapter.parse(&candidate, 0).unwrap();
+        assert_eq!(full.source.events[0].request_input_tokens, Some(30));
+        assert_eq!(full.source.events[1].request_input_tokens, None);
+        assert!(adapter
+            .parse_until(&candidate, 0, Instant::now())
+            .unwrap()
+            .is_none());
+        assert!(adapter.has_pending(&candidate));
+        let mut slices = 0;
+        let resumed = loop {
+            slices += 1;
+            assert!(slices < 2000, "scan must make progress");
+            if let Some(scan) = adapter
+                .parse_until(
+                    &candidate,
+                    1,
+                    Instant::now() + std::time::Duration::from_millis(1),
+                )
+                .unwrap()
+            {
+                break scan;
+            }
+        };
+        assert!(slices > 1);
+        assert_eq!(resumed.source.events.len(), full.source.events.len());
+        for (a, b) in resumed.source.events.iter().zip(&full.source.events) {
+            assert_eq!(a.event_id, b.event_id);
+            assert_eq!(a.tokens, b.tokens);
+        }
+        assert!(!adapter.has_pending(&candidate));
+        // An active rollout can grow between slices. Complete the captured
+        // prefix, then let the next source revision ingest the append.
+        assert!(adapter
+            .parse_until(&candidate, 0, Instant::now())
+            .unwrap()
+            .is_none());
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, r#"{{"timestamp":"2026-09-05T00:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":300030,"total_tokens":300030}}}}}}}}"#).unwrap();
+        drop(file);
+        let grown = SourceCandidate {
+            size: path.metadata().unwrap().len(),
+            mtime_ns: 2,
+            ..candidate.clone()
+        };
+        let prefix = adapter
+            .parse_until(
+                &grown,
+                1,
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(prefix.source.events.len(), 10_000);
+        assert_eq!(prefix.source.size, candidate.size);
+        let appended = adapter.parse(&grown, 1).unwrap();
+        assert_eq!(appended.source.events.len(), 10_001);
+        assert_eq!(
+            appended.source.events.last().unwrap().tokens.processed(),
+            30
+        );
+        assert!(adapter
+            .parse_until(&grown, 1, Instant::now())
+            .unwrap()
+            .is_none());
+        std::fs::write(&path, "\n").unwrap();
+        let truncated = SourceCandidate {
+            size: 1,
+            mtime_ns: 3,
+            ..grown
+        };
+        let scan = adapter
+            .parse_until(
+                &truncated,
+                1,
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(scan.source.events.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn cumulative_snapshots_become_positive_deltas_without_double_counting() {

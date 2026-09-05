@@ -102,6 +102,21 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   cleaned up by the unmanaged-row prune.
 - A window whose reset time has passed without fresh data renders as `--`, not as its last known percentage.
 
+Claude OAuth usage parsing accepts both flat windows and `limits[]`. Explicit
+session/weekly classifications supply total windows; model scopes supply model
+windows. An inactive array entry removes its matching flat window. Percentages
+retain their reported 0–100 unit, including fractional values below 1; invalid
+or missing values never become zero usage. Unknown surface scopes are skipped.
+
+Low-quota notifications run after `usage_snapshot` produces its official window
+views, under the shared scan lock. A local `app_setting` switch defaults to off;
+per-agent and account notification state persists in the same local settings table. Stale,
+expired, unavailable, and estimated windows cannot trigger notifications. The
+native notification plugin delivers messages without adding another polling loop.
+Codex reset-credit queries reuse `account/rateLimits/read` and expose only the
+reported count and earliest known available-credit expiry; credit IDs and raw
+responses stay out of presentation and storage.
+
 ## Storage
 
 - `scan_source`: local locator, file state, parser version, and covered time horizon
@@ -109,7 +124,7 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
 - `event_observation`: relation between logical facts and local files
 - `quota_snapshot`: latest official quota per rolling window
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. `PARSER_VERSION` is currently 5; version changes force retained-history reconciliation.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of `payload_hash` — it is attribution, not a measured quantity, and hashing it would make the same event hash differently after a parser upgrade, which non-mergeable adapters reject as an identity collision. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 
@@ -155,7 +170,7 @@ Where a source reports its own total, `TokenVector::disagrees_with_reported_tota
 - Compact mode refreshes every five minutes while visible; expanded mode refreshes every minute. While `indexing.pending > 0` the UI polls every 400 ms instead, so each snapshot spends another `PARSE_BUDGET` on the backlog until it is drained. Returning to the window triggers a refresh. A hidden window also keeps the five-minute cadence while the Windows tray quota badge is enabled, because the taskbar number must not freeze.
 - One in-flight request is allowed from the UI; duplicate period requests are coalesced. The Rust scan remains serialized by one lock.
 - A desktop single-instance guard focuses the existing window instead of starting a second scanner.
-- Unchanged files are cheap metadata checks. A changed file is still reparsed from the beginning, so very large active logs remain the main CPU and disk bottleneck until an append cursor with durable parser state is implemented. The budget bounds a snapshot between files, not within one, so a single very large file can still overrun it.
+- Unchanged files are cheap metadata checks. Codex JSONL files can now pause between records and resume the same file on the next snapshot, using a bounded reader so append-only growth is ingested after the captured prefix completes. Truncation or same-size rewrite restarts parsing. Other adapters still budget between files, so a single very large non-Codex source can overrun one snapshot.
 - Tauri does not remove the platform webview cost: WebView2/WebKit/WebKitGTK dominates resident memory relative to the Rust process.
 
 ## Planned device sync
@@ -168,3 +183,24 @@ Sync is deliberately outside the first release. The planned boundary is:
 - deterministic strong event IDs for cross-device deduplication;
 - paths, prompts, output, and credentials excluded;
 - local application remains fully useful while offline.
+
+## Request pricing and bounded Codex scans
+
+Codex stores nullable request input counts only when `last_token_usage` agrees
+with the cumulative delta. This metadata does not change event identity or token
+totals. Astra requests above 272,000 input tokens use the published long-context
+multipliers; absent request evidence retains the base estimate. Fast pricing is
+not inferred from model names or arbitrary log text. Synced events currently
+lack request-size metadata and retain base pricing.
+
+Codex parsing checks the refresh deadline between JSONL records and retains one
+in-memory checkpoint, including the cumulative baseline and fork state. A pending
+source is prioritized on the next refresh. Only a complete captured file prefix
+is committed; append-only growth is handled on a later refresh. Truncation or a
+same-size rewrite restarts parsing. Other adapters retain per-file budgeting.
+Codex parser version 8 enriches existing events once; other adapters stay at 7.
+
+Codex and Claude quota caches and notification episodes include the local account
+identity digest. Results arriving after an observed account or settings change
+are discarded. An account change clears prior account quota rows; older local
+fallback samples cannot restore them. Quota replacement is transactional.

@@ -10,6 +10,7 @@ import {
   trayBadgeKey,
 } from "./trayBadge.js";
 import {
+  floatingViewportSize,
   isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
@@ -17,7 +18,6 @@ import {
   verticalStripHoverLocalLayout,
   verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
-  viewportCorrectedZoom,
 } from "./windowGeometry";
 
 const WINDOW_SIZES = {
@@ -127,12 +127,12 @@ function saneSize(value, minW, minH, maxW, maxH) {
 let stripSizeCache = readJson(STRIP_SIZE_CACHE_KEY) || {};
 let compactHeightCache = saneSize(
   { width: 320, height: Number(readJson(COMPACT_HEIGHT_CACHE_KEY)?.height) },
-  320, 320, 320, 2000,
+  320, WINDOW_SIZES.compact.minHeight, 320, 2000,
 )?.height || null;
 
 /// 胶囊条变形时的首帧尺寸：优先上次测量缓存，没有就用常量估计。
 function stripContentSize(orientation, fallback) {
-  const cached = saneSize(stripSizeCache[orientation], 40, 40, 2000, 2000);
+  const cached = saneSize(stripSizeCache[orientation], 28, 28, 2000, 2000);
   return cached || fallback;
 }
 
@@ -175,10 +175,6 @@ async function scaledPhysicalSize(
   return new api.PhysicalSize(physical.width, physical.height);
 }
 
-// 最近一次成功下发给 WebView 的 zoom。视口校正（reconcileFloatingSizeAfterShow）
-// 必须以它为基数，而不是本形态的目标系数：两者只在没校正过的时候相等。
-let appliedZoom = null;
-
 /// 内容缩放用 WebView 原生 zoom（等同浏览器 Ctrl+缩放）：视口单位、媒体查询
 /// 全部自洽。CSS zoom 做不到——100vw 元素在 zoom 下会溢出视口（实测）。
 async function applyWebviewZoom(factor) {
@@ -187,9 +183,6 @@ async function applyWebviewZoom(factor) {
   await api
     .getCurrentWebview()
     .setZoom(factor)
-    .then(() => {
-      appliedZoom = factor;
-    })
     .catch((error) => {
       // zoom 失败会让视口与物理尺寸失配（320 内容被裁），不能静默吞掉。
       console.warn("Unable to apply the webview zoom.", error);
@@ -199,11 +192,10 @@ async function applyWebviewZoom(factor) {
 /// 启动时就地应用缩放系数（不走 applyWindowMode 的 hide/show，避免闪烁）。
 /// strip 的启动尺寸由 strip 专属 effect 走 applyWindowMode，这里只管 compact。
 async function applyStartupUiScale(mode) {
-  if (isMacPlatform()) return;
+  if (isMacPlatform() || mode !== "compact") return;
   const api = await windowApi();
   if (!api) return;
   await applyWebviewZoom(uiScale);
-  if (mode !== "compact") return;
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES.compact;
   const height = compactContentHeight(size.height);
@@ -285,8 +277,8 @@ async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
     }
   });
   if (!best) return false;
-  const x = Math.min(Math.max(pos.x, best.x), best.x + best.width - outer.width);
-  const y = Math.min(Math.max(pos.y, best.y), best.y + best.height - outer.height);
+  const x = Math.min(Math.max(pos.x, best.x), Math.max(best.x, best.x + best.width - outer.width));
+  const y = Math.min(Math.max(pos.y, best.y), Math.max(best.y, best.y + best.height - outer.height));
   if (x !== pos.x || y !== pos.y) {
     await appWindow.setPosition(new api.PhysicalPosition(Math.round(x), Math.round(y))).catch(() => {});
   }
@@ -400,6 +392,10 @@ async function reconcileFloatingSizeAfterShow(
   await settleWebviewLayout();
   const factor = await appWindow.scaleFactor().catch(() => null);
   if (!Number.isFinite(factor) || factor <= 0) return previousPhysical;
+  const monitor = await api.currentMonitor().catch(() => null);
+  ({ width, height } = floatingViewportSize(
+    width, height, contentScale, factor, monitor?.workArea?.size,
+  ));
   const formulaPhysical = await scaledPhysicalSize(
     api,
     appWindow,
@@ -432,52 +428,11 @@ async function reconcileFloatingSizeAfterShow(
     return current || appliedPhysical;
   }
 
-  // 外框已经是设计尺寸 × 应用比例 × DPI，但视口仍偏小时，优先抵消 WebView2
-  // 额外保留的 zoom。这样不会为了显示完整内容而把整个卡片无端放大。
-  //
-  // 基数是上一次真正下发的 zoom，不是本形态的目标系数。一旦某轮校正改过
-  // zoom，再拿目标系数乘比例就是在错的基数上二次修正：上一轮缩到 0.67 倍，
-  // 这一轮量到 1.5 倍的视口，按目标系数算出 1.5 倍，实际该回到 1 倍——两轮
-  // 之间永远差一个因子，卡片在大小之间来回跳。
-  //
-  // 量到的比例出了 0.5–2 或两轴不一致时，不能就此放弃：用户实拍过胶囊条
-  // 内容缩到不足一半、窗口不变、再也不恢复的卡死态——zoom 已经错了，两条
-  // 校正又都因超界拒绝，没有任何路径把它拨回来。先把 zoom 拨回目标系数再量
-  // 一次；若那本来就是目标系数，重设是空操作，不会闪。
-  let zoomBase = appliedZoom ?? contentScale;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const correctedZoom = viewportCorrectedZoom({
-      contentScale: zoomBase,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      expectedWidth: width,
-      expectedHeight: height,
-    });
-    if (correctedZoom) {
-      await applyWebviewZoom(correctedZoom);
-      await settleWebviewLayout();
-      current = await appWindow.innerSize().catch(() => current);
-      if (viewportMatches()) {
-        await clampIntoWorkArea(api, appWindow, current || appliedPhysical);
-        return current || appliedPhysical;
-      }
-      // 没收敛说明量到的是瞬时视口（DPI 切换、resize 未落地），不是真实的
-      // 残留 zoom：撤回，别把一个错的 zoom 留给下面的物理尺寸校正当前提。
-      await applyWebviewZoom(zoomBase);
-      await settleWebviewLayout();
-      current = await appWindow.innerSize().catch(() => current);
-      break;
-    }
-    if (attempt > 0) break;
-    await applyWebviewZoom(contentScale);
-    await settleWebviewLayout();
-    current = await appWindow.innerSize().catch(() => current);
-    if (viewportMatches()) {
-      await clampIntoWorkArea(api, appWindow, current || appliedPhysical);
-      return current || appliedPhysical;
-    }
-    zoomBase = contentScale;
-  }
+  // resize/show 的旧视口不能作为缩放依据。只恢复用户选择的比例，
+  // 剩余误差交给物理尺寸校正，避免一次临时尺寸被永久写成 WebView zoom。
+  await applyWebviewZoom(contentScale);
+  await settleWebviewLayout();
+  current = await appWindow.innerSize().catch(() => current);
 
   for (let pass = 0; pass < 2; pass += 1) {
     const viewportWidth = window.innerWidth;
@@ -501,7 +456,10 @@ async function reconcileFloatingSizeAfterShow(
         })
       : null;
     appliedPhysical = corrected
-      ? new api.PhysicalSize(corrected.width, corrected.height)
+      ? new api.PhysicalSize(
+          Math.min(corrected.width, monitor?.workArea?.size.width ?? corrected.width),
+          Math.min(corrected.height, monitor?.workArea?.size.height ?? corrected.height),
+        )
       : formulaPhysical;
     await appWindow.setSize(appliedPhysical).catch((error) => {
       console.warn("Unable to reconcile the floating window size.", error);
@@ -1121,6 +1079,7 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   }
   const base = stripHoverRestore;
   const scale = stripScale * factor;
+  ({ width, height } = floatingViewportSize(width, height, stripScale, factor, workArea?.size));
   let physical = await scaledPhysicalSize(api, appWindow, width, height, stripScale, factor);
   const hoverLayoutFor = (targetSize) => verticalStripHoverLayout({
     railPosition: base.position,
@@ -1154,16 +1113,11 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
     );
   }
   // Windows 会在 resize 与随后的 move 之间绘制中间帧；胶囊先跳出鼠标命中区
-  // 就会触发收回。两项原生变更同时下发，随后再按实际视口做一次最终校正。
+  // 就会触发收回。两项原生变更同时下发，随后只核对原生尺寸和位置。
   await Promise.all(mutations);
-  physical = await reconcileFloatingSizeAfterShow(
-    api,
-    appWindow,
-    width,
-    height,
-    stripScale,
-    physical,
-  );
+  // 悬停画布是临时几何，不能反算 zoom，也不能经过通用钳位再次移动条身。
+  await settleWebviewLayout();
+  physical = await appWindow.innerSize().catch(() => physical);
   if (!coordinateAware) {
     const local = verticalStripHoverLocalLayout({
       targetHeight: physical.height / scale,
@@ -1208,6 +1162,7 @@ async function collapseVerticalStripHover() {
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();
+  await applyWebviewZoom(stripScale);
   const mutations = [appWindow.setSize(restore.size).catch(() => {})];
   if (restore.position) mutations.push(appWindow.setPosition(restore.position).catch(() => {}));
   await Promise.all(mutations);
@@ -1294,6 +1249,7 @@ async function reassertCompactSize(scaleFactor = null) {
 /// 完整，真正被裁的是外层 HWND。DPI 事件必须像 compact 一样直接重断言。
 async function reassertStripSize({ width, height, scaleFactor = null }) {
   if (isMacPlatform()) return;
+  await collapseVerticalStripHover();
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();

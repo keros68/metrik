@@ -19,6 +19,14 @@ use std::path::{Path, PathBuf};
 // so without the bump the stale "incomplete" marker would survive the upgrade.
 pub const PARSER_VERSION: i64 = 7;
 
+pub fn parser_version_for(adapter: &str) -> i64 {
+    if adapter == "codex" {
+        8
+    } else {
+        PARSER_VERSION
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReplaceSourceOutcome {
     pub rejected_events: usize,
@@ -129,7 +137,7 @@ pub fn source_is_current(
 ) -> Result<bool> {
     let state = connection
         .query_row(
-            "SELECT observed_size, mtime_ns, parser_version, coverage_start_ms
+            "SELECT observed_size, mtime_ns, parser_version, coverage_start_ms, adapter_id
              FROM scan_source WHERE source_id = ?1",
             [source_id],
             |row| {
@@ -138,16 +146,17 @@ pub fn source_is_current(
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )
         .optional()?;
     Ok(matches!(
         state,
-        Some((stored_size, stored_mtime, parser_version, coverage_start_ms))
+        Some((stored_size, stored_mtime, parser_version, coverage_start_ms, adapter))
             if stored_size == size as i64
                 && stored_mtime == mtime_ns
-                && parser_version == PARSER_VERSION
+                && parser_version == parser_version_for(&adapter)
                 && coverage_start_ms <= requested_coverage_start_ms
     ))
 }
@@ -184,7 +193,7 @@ pub fn replace_source(
             source.size as i64,
             source.mtime_ns,
             coverage_start_ms,
-            PARSER_VERSION,
+            parser_version_for(source.adapter_id),
             now,
         ],
     )?;
@@ -273,8 +282,8 @@ fn insert_or_merge_usage_event(
                 event_id, adapter_id, event_key, occurred_at_ms, session_id, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens,
                 output_tokens, reasoning_tokens, processed_tokens, quality, payload_hash,
-                project_path
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                project_path, request_input_tokens
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 event.event_id,
                 event.adapter_id,
@@ -291,6 +300,7 @@ fn insert_or_merge_usage_event(
                 event.quality,
                 event.payload_hash,
                 event.project_path,
+                event.request_input_tokens,
             ],
         )?;
         return Ok(EventWriteOutcome::Accepted);
@@ -355,6 +365,10 @@ fn insert_or_merge_usage_event(
         )?;
     }
     if stored.payload_hash == event.payload_hash && !fills_missing_model {
+        transaction.execute(
+            "UPDATE usage_event SET request_input_tokens = COALESCE(?2, request_input_tokens) WHERE event_id = ?1",
+            params![event.event_id, event.request_input_tokens],
+        )?;
         return Ok(EventWriteOutcome::Accepted);
     }
     if !mergeable {

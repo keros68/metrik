@@ -97,7 +97,10 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
 /// 进了兼容性判定就会把所有老账本判为不兼容而整库重建；这些列缺失时旧数据
 /// 依然可用（该列读出 NULL），随下一次重扫补齐即可。
 fn ensure_optional_columns(connection: &Connection) -> Result<()> {
-    for (table, column, definition) in [("usage_event", "project_path", "TEXT")] {
+    for (table, column, definition) in [
+        ("usage_event", "project_path", "TEXT"),
+        ("usage_event", "request_input_tokens", "INTEGER"),
+    ] {
         if !table_has_column(connection, table, column)? {
             connection
                 .execute_batch(&format!(
@@ -221,6 +224,7 @@ mod tests {
         connection
             .execute_batch(
                 "ALTER TABLE usage_event DROP COLUMN project_path;
+                 ALTER TABLE usage_event DROP COLUMN request_input_tokens;
                  INSERT INTO usage_event VALUES (
                      'keep', 'codex', 'key', 1, 'session', 'gpt-5.2',
                      1, 0, 0, 1, 0, 2, 'exact', 'hash'

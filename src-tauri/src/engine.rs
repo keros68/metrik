@@ -71,6 +71,7 @@ struct StoredEvent {
     cache_read: i64,
     cache_write: i64,
     output: i64,
+    request_input_tokens: Option<i64>,
 }
 
 /// 一个 Agent 在周期内的 processed token 分量拆解。远端同步事件不带分量，
@@ -106,6 +107,7 @@ struct StoredSessionEvent {
     cache_write: i64,
     output: i64,
     project: Option<String>,
+    request_input_tokens: Option<i64>,
 }
 
 #[derive(Default)]
@@ -156,8 +158,16 @@ struct CostAccrual {
 }
 
 impl CostAccrual {
-    fn add(&mut self, model: Option<&str>, occurred_at_ms: i64, comps: &TokenComponents) {
-        match model.and_then(|model| pricing::price_for(model, occurred_at_ms)) {
+    fn add(
+        &mut self,
+        model: Option<&str>,
+        occurred_at_ms: i64,
+        comps: &TokenComponents,
+        request_input_tokens: Option<i64>,
+    ) {
+        match model.and_then(|model| {
+            pricing::price_for_request(model, occurred_at_ms, request_input_tokens)
+        }) {
             Some(price) => {
                 self.priced_any = true;
                 self.usd += comps.input_uncached as f64 * price.input / 1_000_000.0
@@ -475,7 +485,8 @@ fn sessions_at(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        agg.cost.add(model, event.timestamp, &comps);
+        agg.cost
+            .add(model, event.timestamp, &comps, event.request_input_tokens);
         if let Some(model) = model {
             agg.model_components
                 .entry(model.to_owned())
@@ -552,7 +563,7 @@ fn load_session_events(
     let mut statement = connection.prepare(
         "SELECT adapter_id, session_id, occurred_at_ms, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
-                project_path
+                project_path, request_input_tokens
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          ORDER BY occurred_at_ms",
@@ -568,6 +579,7 @@ fn load_session_events(
             cache_write: row.get(6)?,
             output: row.get(7)?,
             project: row.get(8)?,
+            request_input_tokens: row.get(9)?,
         })
     })?;
     Ok(rows.filter_map(Result::ok).collect())
@@ -649,7 +661,8 @@ fn projects_at(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        agg.cost.add(model, event.timestamp, &comps);
+        agg.cost
+            .add(model, event.timestamp, &comps, event.request_input_tokens);
         if let Some(model) = model {
             agg.model_components
                 .entry(model.to_owned())
@@ -785,7 +798,12 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
     }
 
     // 最近改动的先解析：当前周期的数字最先变准，历史从近端往回填。
-    queue.sort_by_key(|(_, candidate)| Reverse(candidate.mtime_ns));
+    queue.sort_by_key(|(index, candidate)| {
+        (
+            !adapters[*index].has_pending(candidate),
+            Reverse(candidate.mtime_ns),
+        )
+    });
     let deadline = Instant::now() + PARSE_BUDGET;
     for (index, candidate) in &queue {
         if Instant::now() >= deadline {
@@ -798,6 +816,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
             candidate,
             horizon_ms,
             &mut report,
+            deadline,
         )?;
     }
 
@@ -810,9 +829,11 @@ fn ingest_candidate(
     candidate: &SourceCandidate,
     horizon_ms: i64,
     report: &mut ScanReport,
+    deadline: Instant,
 ) -> Result<()> {
-    match adapter.parse(candidate, horizon_ms) {
-        Ok(scan) => {
+    match adapter.parse_until(candidate, horizon_ms, deadline) {
+        Ok(None) => report.backfill_pending += 1,
+        Ok(Some(scan)) => {
             let mut diagnostics = scan.diagnostics;
             if let Ok(outcome) = storage::replace_source(connection, &scan.source, horizon_ms) {
                 diagnostics.rejected_events += outcome.rejected_events;
@@ -958,6 +979,7 @@ fn query_snapshot_at(
             model,
             event.timestamp,
             &event_comps,
+            event.request_input_tokens,
         );
     }
 
@@ -1140,12 +1162,12 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
     // 的 "unknown" 区分开，而不是混在一起被误读成一个叫"未标注"的模型。
     let mut statement = connection.prepare(
         "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
-                input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens
+                input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, request_input_tokens
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          UNION ALL
          SELECT adapter_id, occurred_at_ms, processed_tokens, 'synced-remote' AS model,
-                0, 0, 0, 0
+                0, 0, 0, 0, NULL
          FROM remote_usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          ORDER BY occurred_at_ms",
@@ -1160,6 +1182,7 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
             cache_read: row.get(5)?,
             cache_write: row.get(6)?,
             output: row.get(7)?,
+            request_input_tokens: row.get(8)?,
         })
     })?;
     Ok(rows.filter_map(Result::ok).collect())
@@ -2555,7 +2578,11 @@ mod tests {
                      source_id, adapter_id, logical_key, locator, observed_size,
                      mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
                  ) VALUES ('source', 'codex', 'source', 'rollout.jsonl', 10, 1, ?1, ?2, ?3, NULL)",
-                params![horizon_at_parse, storage::PARSER_VERSION, parsed_at],
+                params![
+                    horizon_at_parse,
+                    storage::parser_version_for("codex"),
+                    parsed_at
+                ],
             )
             .unwrap();
 
