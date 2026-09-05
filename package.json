@@ -1,6 +1,6 @@
 {
   "name": "metrik",
-  "version": "0.19.4",
+  "version": "0.19.5",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
