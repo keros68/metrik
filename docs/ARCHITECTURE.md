@@ -124,7 +124,7 @@ responses stay out of presentation and storage.
 - `event_observation`: relation between logical facts and local files
 - `quota_snapshot`: latest official quota per rolling window
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. `PARSER_VERSION` is currently 5; version changes force retained-history reconciliation.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of `payload_hash` — it is attribution, not a measured quantity, and hashing it would make the same event hash differently after a parser upgrade, which non-mergeable adapters reject as an identity collision. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 
@@ -170,7 +170,7 @@ Where a source reports its own total, `TokenVector::disagrees_with_reported_tota
 - Compact mode refreshes every five minutes while visible; expanded mode refreshes every minute. While `indexing.pending > 0` the UI polls every 400 ms instead, so each snapshot spends another `PARSE_BUDGET` on the backlog until it is drained. Returning to the window triggers a refresh. A hidden window also keeps the five-minute cadence while the Windows tray quota badge is enabled, because the taskbar number must not freeze.
 - One in-flight request is allowed from the UI; duplicate period requests are coalesced. The Rust scan remains serialized by one lock.
 - A desktop single-instance guard focuses the existing window instead of starting a second scanner.
-- Unchanged files are cheap metadata checks. A changed file is still reparsed from the beginning, so very large active logs remain the main CPU and disk bottleneck until an append cursor with durable parser state is implemented. The budget bounds a snapshot between files, not within one, so a single very large file can still overrun it.
+- Unchanged files are cheap metadata checks. Codex JSONL files can now pause between records and resume the same file on the next snapshot, using a bounded reader so append-only growth is ingested after the captured prefix completes. Truncation or same-size rewrite restarts parsing. Other adapters still budget between files, so a single very large non-Codex source can overrun one snapshot.
 - Tauri does not remove the platform webview cost: WebView2/WebKit/WebKitGTK dominates resident memory relative to the Rust process.
 
 ## Planned device sync
