@@ -115,7 +115,77 @@ pub trait QuotaProvider: Send + Sync {
 }
 
 /// adapter 每次快照都重建，故缓存不能放 provider 里，必须由调用方跨快照持有。
-pub type QuotaCache = Mutex<HashMap<&'static str, (Instant, Vec<QuotaSample>)>>;
+pub type QuotaCache = Mutex<HashMap<&'static str, (Instant, String, Vec<QuotaSample>)>>;
+
+// Only a digest is stored locally; raw account identifiers stay in their source.
+fn account_scope(adapter: &str) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    let (path, pointers) = match adapter {
+        "codex" => (
+            std::env::var_os("CODEX_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("auth.json"),
+            vec!["/tokens/account_id", "/OPENAI_API_KEY"],
+        ),
+        "claude" => {
+            if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+                if !token.trim().is_empty() {
+                    return crate::domain::stable_hash(&token);
+                }
+            }
+            let path = std::env::var_os("CLAUDE_CONFIG_DIR")
+                .map(|dir| std::path::PathBuf::from(dir).join(".claude.json"))
+                .unwrap_or_else(|| home.join(".claude.json"));
+            (
+                path,
+                vec![
+                    "/oauthAccount/accountUuid",
+                    "/oauthAccount/organizationUuid",
+                ],
+            )
+        }
+        _ => return "default".into(),
+    };
+    let value = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let identity: Vec<_> = pointers
+        .iter()
+        .filter_map(|pointer| {
+            value
+                .as_ref()?
+                .pointer(pointer)?
+                .as_str()
+                .filter(|s| !s.is_empty())
+        })
+        .collect();
+    crate::domain::stable_hash(&serde_json::to_string(&identity).unwrap_or_default())
+}
+
+fn accept_scope(connection: &Connection, adapter: &str, scope: &str) -> Result<i64> {
+    let key = format!("quota_scope_{adapter}");
+    let since_key = format!("quota_scope_since_{adapter}");
+    let previous = storage::get_app_setting(connection, &key)?;
+    if previous.as_deref() != Some(scope) {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
+            [adapter],
+        )?;
+        storage::set_app_setting(&tx, &key, scope)?;
+        let since = if previous.is_some() {
+            chrono::Utc::now().timestamp_millis()
+        } else {
+            0
+        };
+        storage::set_app_setting(&tx, &since_key, &since.to_string())?;
+        tx.commit()?;
+    }
+    Ok(storage::get_app_setting(connection, &since_key)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
 
 pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
     let mut providers: Vec<Box<dyn QuotaProvider>> = vec![
@@ -164,36 +234,61 @@ impl QuotaProvider for GrokQuota {
 
 /// 取数并落库。engine 只调这一个。
 pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> Result<()> {
-    let env = ProviderEnv::load(connection)?;
     for provider in registry() {
         let provider = provider.as_ref();
-        let mut samples = Vec::new();
-        if provider.is_available(&env) {
-            let outcome = cached_fetch(cache, provider, force);
-            match &outcome.failure {
-                Some(message) => provider.record_failure(connection, message)?,
-                // 缓存命中失败时返回的是"空且无错误"：既不留档也不清除，
-                // 上一条记录继续有效。
-                None if !outcome.samples.is_empty() => provider.clear_failure(connection)?,
-                None => {}
+        let scope = account_scope(provider.adapter_id());
+        let since = if matches!(provider.adapter_id(), "codex" | "claude") {
+            accept_scope(connection, provider.adapter_id(), &scope)?
+        } else {
+            0
+        };
+        let env = ProviderEnv::load(connection)?;
+        connection.execute(
+            "DELETE FROM quota_snapshot WHERE adapter_id = ?1 AND collected_at_ms < ?2",
+            rusqlite::params![provider.adapter_id(), since],
+        )?;
+        let cache_scope = format!("{scope}:{}", provider.is_available(&env));
+        let outcome = if provider.is_available(&env) {
+            cached_fetch(cache, provider, force, &cache_scope)
+        } else {
+            QuotaOutcome {
+                samples: Vec::new(),
+                failure: None,
             }
-            samples = outcome.samples;
-        }
+        };
+        let mut samples = outcome.samples;
         if samples.is_empty() {
             samples = provider.fallback();
+        }
+        samples.retain(|sample| sample.collected_at_ms >= since);
+        // Reject a request that outlived an account switch or settings edit.
+        let current_scope = account_scope(provider.adapter_id());
+        if current_scope != scope || ProviderEnv::load(connection)?.settings != env.settings {
+            if current_scope != scope {
+                accept_scope(connection, provider.adapter_id(), &current_scope)?;
+            }
+            if let Ok(mut guard) = cache.lock() {
+                guard.remove(provider.adapter_id());
+            }
+            continue;
+        }
+        match &outcome.failure {
+            Some(message) => provider.record_failure(connection, message)?,
+            None if !samples.is_empty() => provider.clear_failure(connection)?,
+            None => {}
         }
         if samples.is_empty() {
             continue;
         }
-        connection
-            .execute(
-                "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
-                [provider.adapter_id()],
-            )
-            .with_context(|| format!("failed to clear {} quota rows", provider.adapter_id()))?;
+        let tx = connection.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
+            [provider.adapter_id()],
+        )?;
         for sample in &samples {
-            storage::upsert_quota(connection, sample)?;
+            storage::upsert_quota(&tx, sample)?;
         }
+        tx.commit()?;
     }
     prune_unmanaged_quota_rows(connection)?;
     Ok(())
@@ -214,7 +309,12 @@ pub fn prune_unmanaged_quota_rows(connection: &Connection) -> Result<()> {
 
 /// 按 provider 的节奏取数并跨快照缓存。`force`（手动刷新）跳过新鲜缓存立即
 /// 重拉；失败路径与常规一致——写入空哨兵、保留库中旧行，绝不因强制刷新而删数据。
-fn cached_fetch(cache: &QuotaCache, provider: &dyn QuotaProvider, force: bool) -> QuotaOutcome {
+fn cached_fetch(
+    cache: &QuotaCache,
+    provider: &dyn QuotaProvider,
+    force: bool,
+    scope: &str,
+) -> QuotaOutcome {
     let policy = provider.policy();
     let Ok(mut guard) = cache.lock() else {
         // 锁中毒只可能来自别处的 panic，此时当作"这次没数据"：保留库中旧行，
@@ -225,13 +325,13 @@ fn cached_fetch(cache: &QuotaCache, provider: &dyn QuotaProvider, force: bool) -
         };
     };
     if !force {
-        if let Some((captured, cached)) = guard.get(provider.adapter_id()) {
+        if let Some((captured, cached_scope, cached)) = guard.get(provider.adapter_id()) {
             let ttl = if cached.is_empty() {
                 policy.empty_ttl
             } else {
                 policy.fresh_ttl
             };
-            if captured.elapsed() < ttl {
+            if cached_scope == scope && captured.elapsed() < ttl {
                 return QuotaOutcome {
                     samples: cached.clone(),
                     failure: None,
@@ -241,7 +341,10 @@ fn cached_fetch(cache: &QuotaCache, provider: &dyn QuotaProvider, force: bool) -
     }
     match provider.fetch(policy.timeout) {
         Ok(samples) => {
-            guard.insert(provider.adapter_id(), (Instant::now(), samples.clone()));
+            guard.insert(
+                provider.adapter_id(),
+                (Instant::now(), scope.to_owned(), samples.clone()),
+            );
             QuotaOutcome {
                 samples,
                 failure: None,
@@ -249,7 +352,10 @@ fn cached_fetch(cache: &QuotaCache, provider: &dyn QuotaProvider, force: bool) -
         }
         Err(error) => {
             // 来源不可用时不该让每次周期性刷新都付一次完整超时，空哨兵用更长的 TTL。
-            guard.insert(provider.adapter_id(), (Instant::now(), Vec::new()));
+            guard.insert(
+                provider.adapter_id(),
+                (Instant::now(), scope.to_owned(), Vec::new()),
+            );
             QuotaOutcome {
                 samples: Vec::new(),
                 failure: Some(error.to_string()),
@@ -341,6 +447,32 @@ mod tests {
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
         connection
+    }
+
+    #[test]
+    fn account_switch_removes_only_that_accounts_quota_rows() {
+        let db = memory_ledger();
+        accept_scope(&db, "codex", "a").unwrap();
+        db.execute(
+            "INSERT INTO quota_snapshot VALUES ('codex','primary',5,NULL,1,'official_live','test')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO quota_snapshot VALUES ('claude','primary',50,NULL,1,'official_live','test')", []).unwrap();
+        accept_scope(&db, "codex", "a").unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM quota_snapshot", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(accept_scope(&db, "codex", "b").unwrap() > 0);
+        assert_eq!(
+            db.query_row("SELECT adapter_id FROM quota_snapshot", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "claude"
+        );
     }
 
     #[test]
@@ -464,18 +596,20 @@ mod tests {
         let cache: QuotaCache = Mutex::new(HashMap::new());
 
         // 第一次真的去拉，失败原因如实带回。
-        let first = cached_fetch(&cache, &provider, false);
+        let first = cached_fetch(&cache, &provider, false, "account-a");
         assert!(first.samples.is_empty());
         assert_eq!(first.failure.as_deref(), Some("来源不可用"));
 
         // 空哨兵在 TTL 内挡住重拉，且不再报错——上一条记录继续有效。
-        let second = cached_fetch(&cache, &provider, false);
+        let second = cached_fetch(&cache, &provider, false, "account-a");
         assert!(second.failure.is_none());
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         // force 跳过缓存，立即重试。
-        let third = cached_fetch(&cache, &provider, true);
+        let third = cached_fetch(&cache, &provider, true, "account-a");
         assert_eq!(third.failure.as_deref(), Some("来源不可用"));
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        cached_fetch(&cache, &provider, false, "account-b");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

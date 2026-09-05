@@ -163,16 +163,18 @@ struct UsageResponse {
 #[derive(Deserialize)]
 struct UsageWindow {
     /// 已用百分比（0–100）。
-    utilization: Option<f64>,
-    /// ISO-8601 重置时刻。
-    resets_at: Option<String>,
+    utilization: Option<serde_json::Value>,
+    /// ISO-8601 或 Unix 秒/毫秒重置时刻。
+    resets_at: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 struct LimitEntry {
+    kind: Option<String>,
+    group: Option<String>,
     /// 已用百分比（0–100），与 UsageWindow.utilization 同义。
-    percent: Option<f64>,
-    resets_at: Option<String>,
+    percent: Option<serde_json::Value>,
+    resets_at: Option<serde_json::Value>,
     scope: Option<LimitScope>,
     is_active: Option<bool>,
 }
@@ -180,6 +182,7 @@ struct LimitEntry {
 #[derive(Deserialize)]
 struct LimitScope {
     model: Option<LimitScopeModel>,
+    surface: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -191,24 +194,33 @@ struct LimitScopeModel {
 struct ExtraUsage {
     is_enabled: Option<bool>,
     /// 已用超额预算的百分比（0–100）。
-    utilization: Option<f64>,
+    utilization: Option<serde_json::Value>,
 }
 
 impl LimitEntry {
-    /// 归一成与平铺字段一致的窗口键：`seven_day_<模型名小写>`。
-    /// 只认带模型 scope 的条目——不带 scope 的总量窗口平铺字段已经覆盖，
-    /// 而 limits[] 里的分类键（kind/group）尚不稳定，不猜。
+    /// 按明确的周期和模型分类；未知或限定使用入口的窗口不能当作账户总量。
     fn window_key(&self) -> Option<String> {
-        if self.is_active == Some(false) {
+        let kind = self.kind.as_deref().unwrap_or_default();
+        let group = self.group.as_deref().unwrap_or_default();
+        let scope = self.scope.as_ref();
+        if scope.is_some_and(|scope| scope.surface.is_some()) {
             return None;
         }
-        let name = self
-            .scope
-            .as_ref()?
-            .model
-            .as_ref()?
-            .display_name
-            .as_deref()?;
+        let model = scope.and_then(|scope| scope.model.as_ref());
+        if kind == "session" && (group.is_empty() || group == "session") && model.is_none() {
+            return Some("five_hour".into());
+        }
+        let legacy_model_scope = kind.is_empty() && group.is_empty() && model.is_some();
+        if !legacy_model_scope
+            && (group != "weekly" || !matches!(kind, "weekly" | "weekly_all" | "weekly_scoped"))
+        {
+            return None;
+        }
+        let Some(model) = model else {
+            return matches!(kind, "weekly" | "weekly_all").then(|| "seven_day".into());
+        };
+        let name = model.display_name.as_deref()?.trim();
+        let name = name.strip_prefix("Claude ").unwrap_or(name);
         let slug = name
             .trim()
             .to_lowercase()
@@ -485,6 +497,10 @@ fn samples_from_usage(usage: UsageResponse, now: i64) -> Vec<QuotaSample> {
         let Some(key) = entry.window_key() else {
             continue;
         };
+        if entry.is_active == Some(false) {
+            windows.retain(|(existing_key, _)| *existing_key != key);
+            continue;
+        }
         let window = UsageWindow {
             utilization: entry.percent,
             resets_at: entry.resets_at,
@@ -515,15 +531,18 @@ fn samples_from_usage(usage: UsageResponse, now: i64) -> Vec<QuotaSample> {
     windows
         .into_iter()
         .filter_map(|(key, window)| {
-            let used = window.utilization?;
+            let used = quota_number(window.utilization.as_ref()?)?;
+            if !(0.0..=100.0).contains(&used) {
+                return None;
+            }
             Some(QuotaSample {
                 adapter_id: "claude",
                 window_key: key.clone(),
                 remaining_percent: (100.0 - used).clamp(0.0, 100.0),
                 resets_at_ms: window
                     .resets_at
-                    .as_deref()
-                    .and_then(parse_iso8601_ms)
+                    .as_ref()
+                    .and_then(parse_reset_ms)
                     .and_then(|value| sane_resets_at_ms(&key, value, now)),
                 collected_at_ms: now,
                 source_label: SOURCE_LABEL.to_owned(),
@@ -531,6 +550,26 @@ fn samples_from_usage(usage: UsageResponse, now: i64) -> Vec<QuotaSample> {
             })
         })
         .collect()
+}
+
+fn quota_number(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|value| value.is_finite())
+}
+
+fn parse_reset_ms(value: &serde_json::Value) -> Option<i64> {
+    if let Some(parsed) = value.as_str().and_then(parse_iso8601_ms) {
+        return Some(parsed);
+    }
+    let timestamp = quota_number(value)?;
+    let millis = if timestamp.abs() < 100_000_000_000.0 {
+        timestamp * 1000.0
+    } else {
+        timestamp
+    };
+    (millis > 0.0 && millis < i64::MAX as f64).then_some(millis as i64)
 }
 
 fn parse_iso8601_ms(value: &str) -> Option<i64> {
@@ -815,20 +854,88 @@ attributes:
             .map(|sample| sample.window_key.as_str())
             .collect::<Vec<_>>();
         // 同键覆盖（opus 用 limits 值）、新增 scoped 模型（fable）、
-        // 跳过 is_active=false（haiku）与不带模型 scope 的条目、追加超额付费。
+        // 跳过 is_active=false（haiku）、识别总周限、追加超额付费。
         assert_eq!(
             keys,
             vec![
                 "five_hour",
                 "seven_day_opus",
                 "seven_day_fable",
+                "seven_day",
                 "extra_usage"
             ],
         );
         let opus = &samples[1];
         assert_eq!(opus.remaining_percent, 70.0);
         assert_eq!(opus.resets_at_ms, parse_iso8601_ms("2026-07-18T21:00:00Z"));
-        assert_eq!(samples[3].remaining_percent, 92.5);
+        assert_eq!(samples[4].remaining_percent, 92.5);
+    }
+
+    #[test]
+    fn array_only_windows_keep_percentage_units_and_parse_reset_formats() {
+        let usage = serde_json::from_value(serde_json::json!({"limits": [
+            {"kind":"session", "group":"session", "percent":0.5, "resets_at":1784007000},
+            {"kind":"weekly_all", "group":"weekly", "percent":"18", "resets_at":"1784322000000"},
+            {"kind":"weekly_scoped", "group":"weekly", "percent":9,
+             "scope":{"model":{"display_name":"Claude Sonnet"},"surface":null}}
+        ]}))
+        .unwrap();
+        let samples = samples_from_usage(usage, 1_783_987_200_000);
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[0].remaining_percent, 99.5);
+        assert_eq!(samples[0].resets_at_ms, Some(1_784_007_000_000));
+        assert_eq!(samples[1].window_key, "seven_day");
+        assert_eq!(samples[1].remaining_percent, 82.0);
+        assert_eq!(samples[1].resets_at_ms, Some(1_784_322_000_000));
+        assert_eq!(samples[2].window_key, "seven_day_sonnet");
+    }
+
+    #[test]
+    fn inactive_windows_remove_flat_fallback_and_unknown_scopes_do_not_become_totals() {
+        let usage = serde_json::from_value(serde_json::json!({
+            "five_hour":{"utilization":10}, "seven_day":{"utilization":20},
+            "seven_day_sonnet":{"utilization":30},
+            "limits":[
+                {"kind":"weekly_all","group":"weekly","percent":0,"is_active":false},
+                {"kind":"weekly_scoped","group":"weekly","is_active":false,
+                 "scope":{"model":{"display_name":"Sonnet"}}},
+                {"kind":"weekly_scoped","group":"weekly","percent":90},
+                {"kind":"weekly_all","group":"weekly","percent":90,
+                 "scope":{"surface":{"display_name":"Cowork"}}},
+                {"kind":"future_kind","group":"weekly","percent":90}
+            ]
+        }))
+        .unwrap();
+        let samples = samples_from_usage(usage, 1_783_987_200_000);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "five_hour");
+    }
+
+    #[test]
+    fn invalid_or_missing_percentages_do_not_become_zero_usage() {
+        for percent in [
+            serde_json::Value::Null,
+            serde_json::json!("bad"),
+            serde_json::json!(-1),
+            serde_json::json!(101),
+        ] {
+            let usage = serde_json::from_value(serde_json::json!({"limits":[
+                {"kind":"session","group":"session","percent":percent}
+            ]}))
+            .unwrap();
+            assert!(samples_from_usage(usage, 1_783_987_200_000).is_empty());
+        }
+    }
+
+    #[test]
+    fn model_only_legacy_entry_remains_supported() {
+        let usage = serde_json::from_value(serde_json::json!({"limits":[
+            {"percent":25,"scope":{"model":{"display_name":"Fable"}}}
+        ]}))
+        .unwrap();
+        let samples = samples_from_usage(usage, 1_783_987_200_000);
+        assert_eq!(samples[0].window_key, "seven_day_fable");
+        assert_eq!(samples[0].remaining_percent, 75.0);
     }
 
     #[test]

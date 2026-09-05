@@ -200,6 +200,21 @@ button:focus-visible {
   transition-timing-function: var(--motion);
 }
 
+/* 极小工作区保留卡片的最低可读尺寸，整卡滚动以便仍可触达底栏。 */
+@media (max-width: 319px), (max-height: 259px) {
+  html:has(.widget-shell),
+  html:has(.widget-shell) body {
+    min-width: 0;
+  }
+  html:has(.widget-shell) #root {
+    min-width: 0;
+    min-height: 0;
+    height: 100dvh;
+    place-items: start;
+    overflow: auto !important;
+  }
+}
+
 /* ============ 玻璃材质：默认深色 HUD，可选透亮白 ============
    浅色玻璃曾在浅壁纸上"透了等于没透"且洗平层次（多轮迭代验证失败），
    故默认不跟随系统主题：深色半透在任何壁纸上对比度都成立。
@@ -1343,7 +1358,12 @@ html:has(.strip-shell) #root {
   min-width: 0;
   align-items: center;
   gap: 2px;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
 }
+
+.strip-rail::-webkit-scrollbar { display: none; }
 
 .strip-shell--vertical {
   flex-direction: column;
@@ -1412,6 +1432,7 @@ html:has(.strip-shell) #root {
   flex: none;
   width: 42px;
   height: max-content;
+  max-height: calc(100dvh - var(--strip-rail-offset-y, 0px));
   padding: 6px 3px 4px;
   gap: 4px;
   border-radius: 8px;
@@ -1427,6 +1448,7 @@ html:has(.strip-shell) #root {
   z-index: 4;
   top: var(--strip-detail-card-center-y, 50%);
   width: 232px;
+  max-width: calc(100vw - 70px);
   padding: 12px;
   color: var(--strip-detail-ink);
   background: var(--strip-detail-background);

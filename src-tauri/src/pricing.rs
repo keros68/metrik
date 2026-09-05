@@ -199,6 +199,26 @@ pub fn price_for(model: &str, occurred_at_ms: i64) -> Option<Pricing> {
     })
 }
 
+/// https://developers.openai.com/api/docs/models/gpt-6-astra (2026-09-05).
+/// Only validated request sizes select the long-context tier; missing evidence
+/// retains the base estimate rather than using cumulative session counters.
+pub fn price_for_request(
+    model: &str,
+    occurred_at_ms: i64,
+    request_input_tokens: Option<i64>,
+) -> Option<Pricing> {
+    let mut price = price_for(model, occurred_at_ms)?;
+    if resolve(model)?.0 == "gpt-6-astra"
+        && request_input_tokens.is_some_and(|input| input > 272_000)
+    {
+        price.input *= 2.0;
+        price.cache_read *= 2.0;
+        price.cache_write *= 2.0;
+        price.output *= 1.5;
+    }
+    Some(price)
+}
+
 /// 归一到表里的规范名，连同标准价一起返回。规范名（而不是调用方传进来的
 /// 别名）才是查分时定价的依据。
 fn resolve(model: &str) -> Option<(&str, Pricing)> {
@@ -274,6 +294,37 @@ fn strip_date_suffix(model: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_request_boundary_and_missing_evidence() {
+        for input in [None, Some(272_000), Some(-1)] {
+            let price = price_for_request("gpt-6-astra", 0, input).unwrap();
+            assert_eq!(
+                (
+                    price.input,
+                    price.cache_read,
+                    price.cache_write,
+                    price.output
+                ),
+                (10.0, 1.0, 12.5, 50.0)
+            );
+        }
+        let price = price_for_request("gpt-6-astra", 0, Some(272_001)).unwrap();
+        assert_eq!(
+            (
+                price.input,
+                price.cache_read,
+                price.cache_write,
+                price.output
+            ),
+            (20.0, 2.0, 25.0, 75.0)
+        );
+        assert!(price_for_request("other/gpt-6-astra", 0, Some(300_000)).is_none());
+        assert_eq!(
+            price_for_request("gpt-5", 0, Some(300_000)).unwrap().input,
+            price_for("gpt-5", 0).unwrap().input
+        );
+    }
 
     /// 峰谷之外的模型全天一价，用哪个时刻都一样；固定一个（2026-08-20 12:30
     /// UTC）省得每条断言各写各的。

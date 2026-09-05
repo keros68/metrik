@@ -55,6 +55,14 @@ function physicalWindowSize(width, height, contentScale = 1, monitorScale = 1) {
   };
 }
 
+function floatingViewportSize(width, height, contentScale, monitorScale, workArea) {
+  const scale = normalizedScale(contentScale) * normalizedScale(monitorScale);
+  return {
+    width: workArea?.width > 0 ? Math.min(width, Math.floor(workArea.width / scale)) : width,
+    height: workArea?.height > 0 ? Math.min(height, Math.floor(workArea.height / scale)) : height,
+  };
+}
+
 /// WebView2 偶尔在混合 DPI 环境保留一层额外 zoom，导致原生窗口物理尺寸正确，
 /// 但 CSS 视口仍偏小。以当前“物理像素 / CSS 视口”的实测比例反算目标尺寸，
 /// 不再假设系统 DPI 与 setZoom 就是完整缩放链。
@@ -92,44 +100,6 @@ function viewportCorrectedPhysicalSize({
     width: Math.max(1, Math.round(currentPhysicalWidth * widthRatio)),
     height: Math.max(1, Math.round(currentPhysicalHeight * heightRatio)),
   };
-}
-
-function viewportCorrectedZoom({
-  contentScale,
-  viewportWidth,
-  viewportHeight,
-  expectedWidth,
-  expectedHeight,
-}) {
-  const values = [
-    contentScale,
-    viewportWidth,
-    viewportHeight,
-    expectedWidth,
-    expectedHeight,
-  ];
-  if (values.some((value) => !Number.isFinite(value) || value <= 0)) return null;
-
-  const widthRatio = viewportWidth / expectedWidth;
-  const heightRatio = viewportHeight / expectedHeight;
-  // 真实 zoom 应在两条轴上给出近似相同的比例；差异过大说明布局/尺寸仍在变化，
-  // 此时交给物理窗口兜底，不贸然改变内容缩放。
-  if (
-    widthRatio < 0.5 ||
-    widthRatio > 2 ||
-    heightRatio < 0.5 ||
-    heightRatio > 2 ||
-    Math.abs(widthRatio - heightRatio) > 0.08
-  ) {
-    return null;
-  }
-  // 只取长轴的比例，短轴仅用于上面的一致性校验。取平均会把短轴的取整残差
-  // 放大成很大的 zoom 变更：横向胶囊条高 40px，视口差 1 物理像素就是 2.5%，
-  // 平均之后 zoom 被改 1.25%；zoom 一变布局重排，测出来的目标宽度跟着变，
-  // 于是「调窗 → 重排 → 再调窗」闭环，表现为胶囊条持续闪烁。长轴上同样的
-  // 1px 只有 0.25%，落在噪声里。竖条不闪是因为它的宽度是常量，环路断开。
-  const ratio = expectedWidth >= expectedHeight ? widthRatio : heightRatio;
-  return contentScale * ratio;
 }
 
 function horizontalStripTargetWidth({
@@ -263,6 +233,7 @@ function monitorForWindowPosition(
 }
 
 export {
+  floatingViewportSize,
   horizontalStripTargetWidth,
   isDockAnchorPosition,
   isStableFloatingMode,
@@ -271,5 +242,4 @@ export {
   verticalStripHoverLocalLayout,
   verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
-  viewportCorrectedZoom,
 };

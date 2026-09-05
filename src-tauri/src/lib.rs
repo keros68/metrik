@@ -15,6 +15,7 @@ mod pinned_hover;
 mod pricing;
 mod projects;
 mod quota;
+mod quota_alerts;
 mod schema;
 mod storage;
 mod sync;
@@ -405,6 +406,7 @@ async fn usage_snapshot(
     period: String,
     force: Option<bool>,
     widget_agents: Option<Vec<String>>,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<UsageSnapshot, String> {
     let database_path = state.database_path.clone();
@@ -422,6 +424,25 @@ async fn usage_snapshot(
             force.unwrap_or(false),
         )
         .map_err(|error| error.to_string())?;
+
+        if let Err(error) = storage::open_database(&database_path).and_then(|connection| {
+            quota_alerts::check(
+                &connection,
+                &snapshot.agent_quotas,
+                chrono::Utc::now().timestamp_millis(),
+                |body| {
+                    use tauri_plugin_notification::NotificationExt;
+                    app.notification()
+                        .builder()
+                        .title("Metrik · 额度提醒")
+                        .body(body)
+                        .show()?;
+                    Ok(())
+                },
+            )
+        }) {
+            eprintln!("Metrik quota notification failed: {error}");
+        }
 
         // WidgetKit 只存在于 macOS；其它平台上这个参数没有消费者，
         // 显式标记已读，避免 clippy 的 unused-variables 报警。
@@ -475,6 +496,55 @@ async fn usage_snapshot(
     })
     .await
     .map_err(|error| format!("usage scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn quota_alert_settings(state: State<'_, AppState>) -> Result<bool, String> {
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        storage::open_database(&path)
+            .and_then(|db| quota_alerts::enabled(&db))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn codex_reset_credits(
+    state: State<'_, AppState>,
+) -> Result<app_server::ResetCreditsView, String> {
+    let gate = Arc::clone(&state.scan_gate);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        app_server::read_reset_credits(std::time::Duration::from_secs(15))
+            .map_err(|_| "Codex 重置券查询失败，请确认 Codex 已登录后重试。".to_owned())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_quota_alerts(enabled: bool, state: State<'_, AppState>) -> Result<bool, String> {
+    let path = state.database_path.clone();
+    let gate = Arc::clone(&state.scan_gate);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        let db = storage::open_database(&path).map_err(|error| error.to_string())?;
+        storage::set_app_setting(
+            &db,
+            quota_alerts::ENABLED_KEY,
+            if enabled { "1" } else { "0" },
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(enabled)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// 设置窗口显式提交 macOS Agent 选择。它是唯一允许覆盖已保存选择的通道；
@@ -1439,7 +1509,9 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 前端窗口形态必须使用编译期真实平台，不能依赖 WebView user-agent。
-    let builder = tauri::Builder::default().plugin(tauri_plugin_os::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_notification::init());
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
@@ -1590,6 +1662,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             usage_snapshot,
+            quota_alert_settings,
+            set_quota_alerts,
+            codex_reset_credits,
             usage_report,
             usage_sessions,
             usage_projects,

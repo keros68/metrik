@@ -102,6 +102,21 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   cleaned up by the unmanaged-row prune.
 - A window whose reset time has passed without fresh data renders as `--`, not as its last known percentage.
 
+Claude OAuth usage parsing accepts both flat windows and `limits[]`. Explicit
+session/weekly classifications supply total windows; model scopes supply model
+windows. An inactive array entry removes its matching flat window. Percentages
+retain their reported 0–100 unit, including fractional values below 1; invalid
+or missing values never become zero usage. Unknown surface scopes are skipped.
+
+Low-quota notifications run after `usage_snapshot` produces its official window
+views, under the shared scan lock. A local `app_setting` switch defaults to off;
+per-agent and account notification state persists in the same local settings table. Stale,
+expired, unavailable, and estimated windows cannot trigger notifications. The
+native notification plugin delivers messages without adding another polling loop.
+Codex reset-credit queries reuse `account/rateLimits/read` and expose only the
+reported count and earliest known available-credit expiry; credit IDs and raw
+responses stay out of presentation and storage.
+
 ## Storage
 
 - `scan_source`: local locator, file state, parser version, and covered time horizon
@@ -168,3 +183,24 @@ Sync is deliberately outside the first release. The planned boundary is:
 - deterministic strong event IDs for cross-device deduplication;
 - paths, prompts, output, and credentials excluded;
 - local application remains fully useful while offline.
+
+## Request pricing and bounded Codex scans
+
+Codex stores nullable request input counts only when `last_token_usage` agrees
+with the cumulative delta. This metadata does not change event identity or token
+totals. Astra requests above 272,000 input tokens use the published long-context
+multipliers; absent request evidence retains the base estimate. Fast pricing is
+not inferred from model names or arbitrary log text. Synced events currently
+lack request-size metadata and retain base pricing.
+
+Codex parsing checks the refresh deadline between JSONL records and retains one
+in-memory checkpoint, including the cumulative baseline and fork state. A pending
+source is prioritized on the next refresh. Only a complete captured file prefix
+is committed; append-only growth is handled on a later refresh. Truncation or a
+same-size rewrite restarts parsing. Other adapters retain per-file budgeting.
+Codex parser version 8 enriches existing events once; other adapters stay at 7.
+
+Codex and Claude quota caches and notification episodes include the local account
+identity digest. Results arriving after an observed account or settings change
+are discarded. An account change clears prior account quota rows; older local
+fallback samples cannot restore them. Quota replacement is transactional.

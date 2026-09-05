@@ -11,10 +11,48 @@ pub fn read_codex_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     read_codex_quota_with_command(codex_app_server_command(), timeout)
 }
 
-fn read_codex_quota_with_command(
-    mut command: Command,
-    timeout: Duration,
-) -> Result<Vec<QuotaSample>> {
+fn read_codex_quota_with_command(command: Command, timeout: Duration) -> Result<Vec<QuotaSample>> {
+    Ok(parse_rate_limits(&read_usage_with_command(
+        command, timeout,
+    )?))
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCreditsView {
+    pub available_count: Option<i64>,
+    pub next_known_expiry_ms: Option<i64>,
+}
+
+pub fn read_reset_credits(timeout: Duration) -> Result<ResetCreditsView> {
+    let result = read_usage_with_command(codex_app_server_command(), timeout)?;
+    Ok(parse_reset_credits(&result, chrono::Utc::now().timestamp()))
+}
+
+fn parse_reset_credits(result: &Value, now_secs: i64) -> ResetCreditsView {
+    let summary = result.get("rateLimitResetCredits");
+    let available_count = summary
+        .and_then(|value| value.get("availableCount"))
+        .and_then(Value::as_i64)
+        .filter(|count| *count >= 0);
+    let next_known_expiry_ms = summary
+        .and_then(|value| value.get("credits"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|credit| credit.get("status").and_then(Value::as_str) == Some("available"))
+        .filter_map(|credit| credit.get("expiresAt").and_then(Value::as_i64))
+        .filter(|expiry| *expiry > now_secs)
+        .min()
+        .and_then(|expiry| expiry.checked_mul(1000))
+        .filter(|_| available_count.is_some_and(|count| count > 0));
+    ResetCreditsView {
+        available_count,
+        next_known_expiry_ms,
+    }
+}
+
+fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Value> {
     if std::env::var_os("METRIK_DEBUG").is_some() {
         eprintln!("app-server command: {command:?}");
     }
@@ -99,7 +137,7 @@ fn read_codex_quota_with_command(
     child.terminate();
 
     let result = result.context("codex app-server quota request timed out")?;
-    Ok(parse_rate_limits(&result))
+    Ok(result)
 }
 
 struct ManagedChild {
@@ -304,6 +342,29 @@ fn integer(value: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reset_credits_preserve_missing_count_and_ignore_unavailable_expiries() {
+        use serde_json::json;
+        assert_eq!(
+            super::parse_reset_credits(&json!({}), 100).available_count,
+            None
+        );
+        assert_eq!(
+            super::parse_reset_credits(&json!({"rateLimitResetCredits":{"availableCount":0}}), 100)
+                .available_count,
+            Some(0)
+        );
+        let value = json!({"rateLimitResetCredits":{"availableCount":5,"credits":[
+            {"status":"redeemed","expiresAt":150},
+            {"status":"available","expiresAt":90},
+            {"status":"available","expiresAt":300},
+            {"status":"available","expiresAt":200}
+        ]}});
+        let parsed = super::parse_reset_credits(&value, 100);
+        assert_eq!(parsed.available_count, Some(5));
+        assert_eq!(parsed.next_known_expiry_ms, Some(200_000));
+    }
+
     use super::*;
 
     #[test]

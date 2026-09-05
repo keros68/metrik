@@ -48,6 +48,7 @@ import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAppearance.js";
 import { modelDisplayName } from "./modelNames.js";
 import { QUOTA_LOW_REMAINING, bindingWindow } from "./quotaWindows.js";
+import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
 import { horizontalStripTargetWidth } from "./windowGeometry";
 import {
   configureQoderCookie,
@@ -1281,6 +1282,7 @@ function StripBar({
   const railRef = useRef(null);
   const detailCardRef = useRef(null);
   const pointerLeaveTimerRef = useRef(null);
+  const hoverTransitionRef = useRef(false);
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
   const detailEnabled = (IS_WINDOWS || IS_LINUX) && vertical && !(pinned && IS_LINUX);
   const [hoveredDetail, setHoveredDetail] = useState(null);
@@ -1310,6 +1312,11 @@ function StripBar({
   useEffect(() => {
     if (!detailEnabled || controlsOpen) setHoveredDetail(null);
   }, [controlsOpen, detailEnabled]);
+  useEffect(() => {
+    if (!isDesktop()) return undefined;
+    const stop = onScaleFactorChanged(() => setHoveredDetail(null));
+    return () => { stop.then((unlisten) => unlisten?.()); };
+  }, []);
   const shellAppearance = glassShellAppearance("strip", {
     transparent,
     glassMode,
@@ -1357,14 +1364,20 @@ function StripBar({
       return;
     }
     runLatestWindowCorrection(async (isLatest) => {
-      const layout = await expandVerticalStripHover({
-        width: STRIP_DETAIL_WINDOW_WIDTH,
-        height: targetHeight,
-        railWidth: STRIP_VERTICAL_WIDTH,
-        railHeight,
-        anchorY: hoveredDetail.anchorY,
-        cardHeight: Math.ceil(cardRect.height),
-      });
+      hoverTransitionRef.current = true;
+      let layout;
+      try {
+        layout = await expandVerticalStripHover({
+          width: STRIP_DETAIL_WINDOW_WIDTH,
+          height: targetHeight,
+          railWidth: STRIP_VERTICAL_WIDTH,
+          railHeight,
+          anchorY: hoveredDetail.anchorY,
+          cardHeight: Math.ceil(cardRect.height),
+        });
+      } finally {
+        hoverTransitionRef.current = false;
+      }
       if (!isLatest()) return;
       if (layout) {
         setDetailLayout(layout);
@@ -1397,7 +1410,7 @@ function StripBar({
         if (!targetHeight) return;
         // 交叉轴是设计常量：竖条恒为 52 宽（方向切换后窗口可能还停在横条宽度）。
         if (
-          Math.abs(targetHeight - shell.clientHeight) < 1
+          Math.abs(targetHeight - shell.clientHeight) <= 1
           && Math.abs(shell.clientWidth - STRIP_VERTICAL_WIDTH) <= 1
         ) {
           return;
@@ -1417,7 +1430,7 @@ function StripBar({
       if (
         widthDelta < 1
         && widthDelta > -STRIP_WIDTH_SHRINK_SLACK
-        && shell.clientHeight === STRIP_BAR_HEIGHT
+        && Math.abs(shell.clientHeight - STRIP_BAR_HEIGHT) <= 1
       ) {
         return;
       }
@@ -1466,11 +1479,17 @@ function StripBar({
   const handlePointerLeave = (event) => {
     glassProps.onPointerLeave?.(event);
     cancelPointerLeave();
-    pointerLeaveTimerRef.current = window.setTimeout(() => {
+    const closeAfterTransition = () => {
+      if (hoverTransitionRef.current) {
+        pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, STRIP_DETAIL_LEAVE_DELAY);
+        return;
+      }
       pointerLeaveTimerRef.current = null;
+      if (shellRef.current?.matches(":hover")) return;
       setHoveredDetail(null);
       setControlsOpen(false);
-    }, STRIP_DETAIL_LEAVE_DELAY);
+    };
+    pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, STRIP_DETAIL_LEAVE_DELAY);
   };
   const handleDragPointerDown = (event) => {
     if (
@@ -3081,9 +3100,9 @@ const SETTINGS_TABS = [
   },
   {
     id: "display",
-    label: "Agent 选择",
-    title: "小组件展示的 Agent",
-    blurb: "选择小组件与胶囊条展示的 Agent 及其顺序。",
+    label: "Agent 与提醒",
+    title: "Agent 展示与额度提醒",
+    blurb: "选择展示的 Agent、调整顺序及配置低额度提醒。",
   },
   {
     id: "sources",
@@ -3214,22 +3233,26 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         )}
 
         {activeTab.id === "display" && (
-          <AgentsDisplayCard
-            widgetAgents={widgetAgents}
-            onToggleWidgetAgent={onToggleWidgetAgent}
-            onMoveWidgetAgent={onMoveWidgetAgent}
-            stripAgents={stripAgents}
-            onToggleStripAgent={onToggleStripAgent}
-            onMoveStripAgent={onMoveStripAgent}
-            detectedAgents={detectedAgents}
-            trayBadgeEnabled={trayBadgeEnabled}
-            onToggleTrayBadge={onToggleTrayBadge}
-          />
+          <>
+            <AgentsDisplayCard
+              widgetAgents={widgetAgents}
+              onToggleWidgetAgent={onToggleWidgetAgent}
+              onMoveWidgetAgent={onMoveWidgetAgent}
+              stripAgents={stripAgents}
+              onToggleStripAgent={onToggleStripAgent}
+              onMoveStripAgent={onMoveStripAgent}
+              detectedAgents={detectedAgents}
+              trayBadgeEnabled={trayBadgeEnabled}
+              onToggleTrayBadge={onToggleTrayBadge}
+            />
+            <QuotaAlertsCard onSnapshotRefresh={onSnapshotRefresh} />
+          </>
         )}
         {activeTab.id === "sources" && (
           <>
             <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
+            <CodexCreditsCard />
           </>
         )}
 

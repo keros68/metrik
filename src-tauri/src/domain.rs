@@ -104,6 +104,8 @@ pub struct UsageEvent {
     /// 现有账本在解析器升级后重扫时会对同一 event_id 算出不同的 hash，而
     /// 非合并型 adapter（Codex/Kimi 等）遇到 hash 不一致就报身份冲突。
     pub project_path: Option<String>,
+    /// Validated single-request input size; never a session or period total.
+    pub request_input_tokens: Option<i64>,
 }
 
 impl UsageEvent {
@@ -138,6 +140,7 @@ impl UsageEvent {
             quality,
             payload_hash,
             project_path: None,
+            request_input_tokens: None,
         }
     }
 
