@@ -130,6 +130,10 @@ jobs:
 
       # 读取本机真实 Agent 日志的烟测标记为 ignored，CI 里跑不了也不该跑。
       - name: Test
+        # Windows process-tree fixtures start PowerShell under a real deadline.
+        # Serialize them so runner contention does not consume that startup budget.
+        env:
+          RUST_TEST_THREADS: ${{ runner.os == 'Windows' && '1' || '4' }}
         run: cargo test
         working-directory: src-tauri
 
