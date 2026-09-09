@@ -16,6 +16,7 @@ Thumbs.db
 .claude/
 .zcode/
 .maintainer/
+.learnings/
 .worktrees/
 .codex-release-*/
 .playwright-cli/
