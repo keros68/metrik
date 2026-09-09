@@ -2258,7 +2258,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处即显示官方 5h/7d 剩余额度。"
+          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处显示官方 5h/7d 剩余额度。"
           : "钩子已卸载，statusLine 设置已恢复。",
       });
       onSnapshotRefresh();
@@ -2287,7 +2287,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
               disabled={busy || (!status.installed && status.conflict)}
               onClick={() => toggle(!status.installed)}
             >
-              {status.installed ? "卸载钩子" : "安装钩子"}
+              {status.installed ? "卸载钩子" : status.replaced ? "重新串联" : "安装钩子"}
             </button>
           </div>
           <dl className="settings-status">
@@ -2297,11 +2297,13 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
                 {status.installed
                   ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
                       status.lastDataAtMs
-                        ? `最近数据 ${formatSyncTime(status.lastDataAtMs)}`
+                        ? `${status.stale ? "数据已过期" : "最近数据"} ${formatSyncTime(status.lastDataAtMs)}`
                         : "等待 Claude Code 下次刷新状态栏"
                     }`
                   : status.conflict
                     ? "未安装 · 现有 statusLine 缺少 command 字段，无法串联"
+                    : status.replaced
+                      ? "已被其他 statusLine 替换 · 可重新串联当前命令"
                     : "未安装"}
               </dd>
             </div>
@@ -2351,7 +2353,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "已开启。下次刷新起直接查询官方配额（约每 2 分钟一次）；查询失败时自动回落到状态栏钩子。"
+          ? "已开启。下次刷新起直接查询官方配额（约每 5 分钟一次）；查询失败时自动回落到状态栏钩子。"
           : "已关闭。恢复为仅由状态栏钩子提供额度。",
       });
       onSnapshotRefresh();
@@ -2368,10 +2370,10 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
     <div className="settings-subsection">
       <h3>官方配额直连（OAuth）</h3>
       <p className="settings-muted">
-        备选来源：用本机 Claude Code 已保存的凭据直接查询官方配额（账户级合并值，约每 2 分钟一次），
+        备选来源：用本机 Claude Code 已保存的凭据直接查询官方配额（账户级合并值，约每 5 分钟一次），
         网页版与桌面客户端的消耗同样计入。凭据只在内存中读取，不存储、不上传。
         前提是最近使用过 Claude Code：凭据有效期仅数小时，且仅在 Claude Code 运行时刷新；
-        过期后回落到状态栏钩子。
+        服务端拒绝后回落到状态栏钩子。
       </p>
       <p className="settings-muted">
         ⚠️ 条款风险须知：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的
@@ -2399,7 +2401,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
                   : !status.scopeOk
                     ? "凭据缺少 user:profile 权限，开启后可能查询失败（可运行 claude login 重新登录）"
                     : status.expired
-                      ? `${status.enabled ? "已开启" : "未开启"} · 凭据已过期，运行一次 Claude Code 即可自动刷新`
+                      ? `${status.enabled ? "已开启" : "未开启"} · 本地有效期记录已过，开启后仍由服务端确认一次`
                       : status.enabled
                         ? "已开启 · 凭据可用"
                         : "未开启 · 凭据可用"}
