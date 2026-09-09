@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 const QUOTA_FILE: &str = "metrik-quota.json";
 const BACKUP_FILE: &str = "metrik-statusline.backup.json";
 const METADATA_FILE: &str = "metrik-statusline.json";
+pub(crate) const SOURCE_LABEL: &str = "statusLine 钩子";
+pub(crate) const MAX_SNAPSHOT_AGE_MS: i64 = 15 * 60 * 1000;
 
 /// 旧版本生成的委托脚本文件名，只在升级迁移时用于识别并删除；不再生成。
 #[cfg(windows)]
@@ -37,7 +39,10 @@ pub struct ClaudeHookStatus {
     pub conflict: bool,
     /// 已安装且串联了用户原有的 statusLine 命令。
     pub chained: bool,
+    /// Metrik 留有安装元数据，但当前 statusLine 已被其他命令替换。
+    pub replaced: bool,
     pub last_data_at_ms: Option<i64>,
+    pub stale: bool,
 }
 
 #[derive(Deserialize)]
@@ -80,9 +85,19 @@ struct StatusLineWindow {
 }
 
 fn numeric_value(value: &Value) -> Option<f64> {
-    value
+    let value = value
         .as_f64()
-        .or_else(|| value.as_str()?.parse::<f64>().ok())
+        .or_else(|| value.as_str()?.parse::<f64>().ok())?;
+    value.is_finite().then_some(value)
+}
+
+fn percentage_value(value: &Value) -> Option<f64> {
+    let value = numeric_value(value)?;
+    (0.0..=100.0).contains(&value).then_some(value)
+}
+
+pub(crate) fn snapshot_is_current(collected_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(collected_at_ms) <= MAX_SNAPSHOT_AGE_MS
 }
 
 fn payload_from_input(input: &Value) -> StatusLinePayload {
@@ -93,7 +108,7 @@ fn payload_from_input(input: &Value) -> StatusLinePayload {
             rate_limits
                 .iter()
                 .filter_map(|(key, entry)| {
-                    let used_percentage = numeric_value(entry.get("used_percentage")?)?;
+                    let used_percentage = percentage_value(entry.get("used_percentage")?)?;
                     let resets_at = entry.get("resets_at").and_then(numeric_value);
                     Some((
                         key.clone(),
@@ -634,11 +649,17 @@ impl ClaudeHook {
                     .installed_delegate()
                     .is_some_and(|value| !value.is_empty()));
         let last_data_at_ms = self.read_quota_file().map(|file| file.received_at_ms);
+        let replaced = !installed && self.read_metadata().is_some();
+        let stale = last_data_at_ms.is_some_and(|collected_at_ms| {
+            !snapshot_is_current(collected_at_ms, chrono::Utc::now().timestamp_millis())
+        });
         Ok(ClaudeHookStatus {
             installed,
             conflict,
             chained,
+            replaced,
             last_data_at_ms,
+            stale,
         })
     }
 
@@ -766,16 +787,20 @@ impl ClaudeHook {
         };
         file.windows
             .iter()
+            .filter(|(_, window)| {
+                window.used_percentage.is_finite()
+                    && (0.0..=100.0).contains(&window.used_percentage)
+            })
             .map(|(key, window)| QuotaSample {
                 adapter_id: "claude",
                 window_key: key.clone(),
-                remaining_percent: (100.0 - window.used_percentage).clamp(0.0, 100.0),
+                remaining_percent: 100.0 - window.used_percentage,
                 resets_at_ms: window
                     .resets_at
                     .map(|value| (value * 1000.0) as i64)
                     .and_then(|value| sane_resets_at_ms(key, value, file.received_at_ms)),
                 collected_at_ms: file.received_at_ms,
-                source_label: "statusLine 钩子".into(),
+                source_label: SOURCE_LABEL.into(),
                 quality: "official_snapshot",
             })
             .collect()
@@ -1487,6 +1512,67 @@ Wait-Process -Id $child.Id
     }
 
     #[test]
+    fn status_detects_replacement_and_reinstall_chains_the_new_command() {
+        let test = TestDirectory::new("replaced");
+        let hook = ClaudeHook::with_dir(test.path().to_path_buf());
+        hook.install().unwrap();
+
+        fs::write(
+            test.path().join("settings.json"),
+            r#"{"statusLine":{"type":"command","command":"replacement-line"}}"#,
+        )
+        .unwrap();
+
+        let status = hook.status().unwrap();
+        assert!(!status.installed);
+        assert!(status.replaced);
+        assert!(!status.conflict);
+
+        let status = hook.install().unwrap();
+        assert!(status.installed);
+        assert!(!status.replaced);
+        assert!(status.chained);
+        assert_eq!(
+            hook.installed_delegate().as_deref(),
+            Some("replacement-line")
+        );
+    }
+
+    #[test]
+    fn payload_rejects_non_finite_and_out_of_range_percentages() {
+        let payload = payload_from_input(&json!({
+            "rate_limits": {
+                "negative": {"used_percentage": -1},
+                "too_large": {"used_percentage": 101},
+                "not_finite": {"used_percentage": "NaN"},
+                "zero": {"used_percentage": 0},
+                "full": {"used_percentage": "100"}
+            }
+        }));
+        let windows = payload.windows.unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows["zero"].used_percentage, 0.0);
+        assert_eq!(windows["full"].used_percentage, 100.0);
+    }
+
+    #[test]
+    fn hook_status_marks_old_data_stale() {
+        let test = TestDirectory::new("stale-status");
+        let received_at_ms = chrono::Utc::now().timestamp_millis() - MAX_SNAPSHOT_AGE_MS - 1;
+        fs::write(
+            test.path().join(QUOTA_FILE),
+            format!(r#"{{"receivedAtMs":{received_at_ms},"windows":{{}}}}"#),
+        )
+        .unwrap();
+
+        let status = ClaudeHook::with_dir(test.path().to_path_buf())
+            .status()
+            .unwrap();
+        assert!(status.stale);
+        assert_eq!(status.last_data_at_ms, Some(received_at_ms));
+    }
+
+    #[test]
     fn quota_file_converts_to_remaining_percent_samples() {
         let test = TestDirectory::new("quota");
         fs::write(
@@ -1514,6 +1600,26 @@ Wait-Process -Id $child.Id
         // 缺失文件 → 空，不猜测。
         let empty = ClaudeHook::with_dir(test.path().join("missing"));
         assert!(empty.quota_samples().is_empty());
+    }
+
+    #[test]
+    fn quota_file_drops_invalid_percentages_instead_of_clamping_them() {
+        let test = TestDirectory::new("quota-invalid");
+        fs::write(
+            test.path().join(QUOTA_FILE),
+            r#"{"receivedAtMs": 1783000000000,
+                "windows": {
+                    "negative": {"usedPercentage": -1},
+                    "too_large": {"usedPercentage": 101},
+                    "valid": {"usedPercentage": 42}
+                }}"#,
+        )
+        .unwrap();
+
+        let samples = ClaudeHook::with_dir(test.path().to_path_buf()).quota_samples();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "valid");
+        assert_eq!(samples[0].remaining_percent, 58.0);
     }
 
     #[test]

@@ -615,7 +615,15 @@ async function removeSyncDevice(deviceId) {
 
 async function getClaudeHookStatus() {
   if (!isTauriRuntime()) {
-    return { demo: true, installed: false, conflict: false, lastDataAtMs: null };
+    return {
+      demo: true,
+      installed: false,
+      conflict: false,
+      chained: false,
+      replaced: false,
+      lastDataAtMs: null,
+      stale: false,
+    };
   }
   return invoke("claude_hook_status");
 }

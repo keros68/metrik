@@ -91,7 +91,7 @@ pub fn last_failure(connection: &rusqlite::Connection) -> Result<Option<ClaudeOa
 
 #[derive(Deserialize)]
 struct CredentialsFileShape {
-    #[serde(rename = "claudeAiOauth")]
+    #[serde(rename = "claudeAiOauth", alias = "claude.ai_oauth")]
     claude_ai_oauth: Option<OauthCredentials>,
 }
 
@@ -316,10 +316,8 @@ impl ClaudeOauth {
         let Some(credentials) = self.read_credentials() else {
             bail!("本机没有 Claude Code 登录凭据（环境变量、~/.claude/.credentials.json、macOS 钥匙串均未命中）");
         };
-        // 过期就别发那个注定被拒的请求：刷新只有 Claude Code 自己做得到。
-        if credentials.is_expired(chrono::Utc::now().timestamp_millis()) {
-            bail!("Claude 凭据已过期，运行一次 Claude Code 即可自动刷新");
-        }
+        // expiresAt 只作本地诊断提示。Claude Code 的记录可能晚于服务端实际
+        // 状态更新；启用直连后仍让服务端裁决一次，但 Metrik 不刷新或写回 token。
         self.request_usage(&credentials, timeout)
     }
 
@@ -347,8 +345,8 @@ impl ClaudeOauth {
             .call()
             .map_err(|error| match error {
                 // 错误信息里绝不能带请求头（token）。
-                ureq::Error::Status(401, _) => {
-                    anyhow::anyhow!("Claude 凭据被拒（401），重新运行 claude login")
+                ureq::Error::Status(code, _) if matches!(code, 401 | 403) => {
+                    anyhow::anyhow!("Claude 凭据被拒（{code}），重新运行 claude login")
                 }
                 ureq::Error::Status(429, _) => {
                     anyhow::anyhow!("Claude 用量接口限流（429），稍后自动重试")
@@ -717,10 +715,10 @@ attributes:
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 过期凭据不能既报"可用"又每次都被拒：状态要说实话，查询要早退。
-    /// 早退还顺带保证了这条用例不碰网络——过期分支在请求之前。
+    /// expiresAt 是诊断提示，不是丢弃 access token 的依据。服务端仍可能接受
+    /// 本地记录为过期的 token；Metrik 只读它，也不使用 refresh token。
     #[test]
-    fn expired_credentials_are_reported_and_short_circuit_the_request() {
+    fn expired_credentials_are_reported_without_discarding_the_token() {
         let dir = std::env::temp_dir().join(format!(
             "metrik-claude-oauth-expired-{}-{}",
             std::process::id(),
@@ -742,13 +740,8 @@ attributes:
         assert!(status.scope_ok);
         assert!(status.expired);
 
-        let error = oauth
-            .fetch_quota_samples(Duration::from_secs(1))
-            .expect_err("expired credentials must not be sent to the endpoint");
-        assert!(
-            error.to_string().contains("已过期"),
-            "unexpected error: {error}"
-        );
+        let credentials = oauth.read_credentials().expect("token remains readable");
+        assert_eq!(credentials.access_token.as_deref(), Some("sk-test"));
 
         // 未过期的凭据不该被误判——过期判定只认过去的时刻。
         let future = chrono::Utc::now().timestamp_millis() + 3_600_000;
@@ -771,6 +764,15 @@ attributes:
         let parsed = parse_credentials(blob).expect("valid blob parses");
         assert_eq!(parsed.access_token.as_deref(), Some("sk-abc"));
         assert!(parsed.scopes.iter().any(|scope| scope == REQUIRED_SCOPE));
+
+        // 兼容 cc-switch 已覆盖的旧式点号键名。
+        let dotted = r#"{"claude.ai_oauth":{"accessToken":"sk-dotted","scopes":["user:profile"]}}"#;
+        assert_eq!(
+            parse_credentials(dotted)
+                .and_then(|credentials| credentials.access_token)
+                .as_deref(),
+            Some("sk-dotted")
+        );
 
         // 前导 BOM 容忍。
         assert!(parse_credentials(&format!("\u{feff}{blob}")).is_some());

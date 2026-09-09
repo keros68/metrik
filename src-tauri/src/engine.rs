@@ -3,7 +3,6 @@ use crate::adapters::{
     KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter,
     ZcodeAdapter,
 };
-use crate::claude_oauth;
 use crate::detect;
 use crate::domain::ProjectReportRow;
 use crate::domain::{
@@ -16,6 +15,7 @@ use crate::projects::{self, ProjectResolver, Resolution};
 use crate::quota;
 use crate::storage;
 use crate::sync;
+use crate::{claude_hook, claude_oauth};
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use rusqlite::{params, Connection};
@@ -1346,14 +1346,16 @@ fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Re
             } else {
                 15.0
             };
+            let hook_snapshot_expired = source == claude_hook::SOURCE_LABEL
+                && !claude_hook::snapshot_is_current(collected_at_ms, now);
             Ok(QuotaView {
-                available: true,
+                available: !hook_snapshot_expired,
                 remaining_percent: remaining,
                 resets_in_minutes: reset
                     .filter(|value| *value > now)
                     .map(|value| (value - now) as f64 / 60_000.0),
                 age_minutes: Some(age_minutes),
-                stale: age_minutes > stale_after_minutes || reset_expired,
+                stale: hook_snapshot_expired || age_minutes > stale_after_minutes || reset_expired,
                 reset_expired,
                 source_label: source,
                 quality,
@@ -2994,6 +2996,59 @@ mod tests {
         assert!(!quota.stale);
         assert!(!quota.reset_expired);
         assert!(quota.resets_in_minutes.unwrap() > 119.0);
+    }
+
+    #[test]
+    fn stale_claude_hook_snapshot_is_not_currently_available() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let now = Utc::now().timestamp_millis();
+        connection
+            .execute(
+                "INSERT INTO quota_snapshot (
+                    adapter_id, window_key, remaining_percent, resets_at_ms,
+                    collected_at_ms, quality, source_label
+                 ) VALUES ('claude', 'five_hour', 72, ?1, ?2, 'official_snapshot', ?3)",
+                params![
+                    now + Duration::hours(2).num_milliseconds(),
+                    now - claude_hook::MAX_SNAPSHOT_AGE_MS - 1,
+                    claude_hook::SOURCE_LABEL
+                ],
+            )
+            .unwrap();
+
+        let quota = load_quota(&connection, "claude", "five_hour").unwrap();
+        assert!(!quota.available);
+        assert!(quota.stale);
+        assert!(!quota.reset_expired);
+    }
+
+    #[test]
+    fn recent_claude_hook_snapshot_remains_available() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let now = Utc::now().timestamp_millis();
+        connection
+            .execute(
+                "INSERT INTO quota_snapshot (
+                    adapter_id, window_key, remaining_percent, resets_at_ms,
+                    collected_at_ms, quality, source_label
+                 ) VALUES ('claude', 'five_hour', 72, ?1, ?2, 'official_snapshot', ?3)",
+                params![
+                    now + Duration::hours(2).num_milliseconds(),
+                    now,
+                    claude_hook::SOURCE_LABEL
+                ],
+            )
+            .unwrap();
+
+        let quota = load_quota(&connection, "claude", "five_hour").unwrap();
+        assert!(quota.available);
+        assert!(!quota.stale);
     }
 
     #[test]

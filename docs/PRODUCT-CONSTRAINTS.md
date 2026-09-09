@@ -42,6 +42,20 @@ change.
   because an exhausted weekly budget blocks the agent no matter how full the
   session window looks. A reading whose reset moment has already passed
   describes a finished cycle and is never used as the current value.
+- Claude's zero-credential `statusLine` hook is the default quota source. A
+  hook snapshot older than 15 minutes is historical evidence, not a current
+  value, and must render as unavailable until Claude Code refreshes it.
+  Percentages outside 0–100 and non-finite values are invalid, not values to
+  clamp into a plausible range.
+- Another tool may replace Claude Code's single user-level `statusLine` field.
+  Metrik reports that replacement and offers an explicit reinstall that chains
+  the new command; it does not silently overwrite or continuously reclaim the
+  setting. Project-level Claude settings may still override the user setting.
+- Claude OAuth quota access remains an off-by-default, explicit backup. It may
+  read the access token Claude Code already stores, but never refreshes, writes,
+  uploads, or logs credentials. Local token expiry is only a hint; after opt-in,
+  the server gets one chance to accept or reject it. Automatic reads use a
+  five-minute freshness interval, while manual refresh still bypasses the TTL.
 
 - Usage is grouped by project only from the working directory the source itself
   records (`cwd`, or the session-to-directory mapping the agent maintains). Never

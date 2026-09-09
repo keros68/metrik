@@ -382,8 +382,8 @@ impl QuotaProvider for CodexQuota {
     }
 }
 
-/// Claude：用户显式开启 OAuth 直连时优先（账户级合并额度，含网页版消耗，
-/// 不依赖终端状态栏）；未开启或拉取失败时回落到 statusLine 钩子文件。
+/// Claude：statusLine 钩子是默认来源。用户显式开启 OAuth 备选后才查询
+/// 账户级合并额度（含网页版消耗）；拉取失败时仍回落到钩子文件。
 struct ClaudeQuota;
 
 impl QuotaProvider for ClaudeQuota {
@@ -392,7 +392,8 @@ impl QuotaProvider for ClaudeQuota {
     }
 
     fn policy(&self) -> QuotaPolicy {
-        QuotaPolicy::new(120, 300, 6)
+        // OAuth 是风险自担的备选来源，降低自动请求频率；手动刷新仍绕过 TTL。
+        QuotaPolicy::new(300, 300, 6)
     }
 
     fn is_available(&self, env: &ProviderEnv) -> bool {
