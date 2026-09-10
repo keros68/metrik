@@ -499,6 +499,26 @@ async fn usage_snapshot(
 }
 
 #[tauri::command]
+async fn quota_snapshot(
+    period: String,
+    state: State<'_, AppState>,
+) -> Result<UsageSnapshot, String> {
+    let database_path = state.database_path.clone();
+    let scan_gate = Arc::clone(&state.scan_gate);
+    let quota_cache = Arc::clone(&state.quota_cache);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        engine::refresh_quota_snapshot(&database_path, &period, &quota_cache)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn quota_alert_settings(state: State<'_, AppState>) -> Result<bool, String> {
     let path = state.database_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1662,6 +1682,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             usage_snapshot,
+            quota_snapshot,
             quota_alert_settings,
             set_quota_alerts,
             codex_reset_credits,

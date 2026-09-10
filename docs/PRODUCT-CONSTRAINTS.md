@@ -43,8 +43,10 @@ change.
   session window looks. A reading whose reset moment has already passed
   describes a finished cycle and is never used as the current value.
 - Claude's zero-credential `statusLine` hook is the default quota source. A
-  hook snapshot older than 15 minutes is historical evidence, not a current
-  value, and must render as unavailable until Claude Code refreshes it.
+  hook snapshot older than 15 minutes remains visible but is explicitly stale;
+  it must not become indistinguishable from a fresh reading. Showing or
+  focusing a floating form refreshes quota sources without waiting for a full
+  agent-log scan.
   Percentages outside 0–100 and non-finite values are invalid, not values to
   clamp into a plausible range.
 - Another tool may replace Claude Code's single user-level `statusLine` field.
