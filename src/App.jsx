@@ -64,6 +64,7 @@ import {
   getUsageProjects,
   getProjectRules,
   setProjectRules,
+  getQuotaSnapshot,
   getUsageSnapshot,
   rebuildLocalLedger,
   removeSyncDevice,
@@ -4905,18 +4906,22 @@ export function App() {
     let periodToLoad = nextPeriod;
     // force（手动强制刷新）只作用于本次请求；排队的周期切换仍按常规加载。
     let forceLoad = options?.force === true;
+    let quotaOnly = options?.quotaOnly === true;
     try {
       while (periodToLoad) {
         activeLoadPeriod.current = periodToLoad;
         queuedLoadPeriod.current = null;
         const requestId = ++requestSequence.current;
         setLoading(true);
-        const next = await getUsageSnapshot(periodToLoad, {
-          force: forceLoad,
-          // 每轮都读 ref：排队请求必须拿到最新勾选，不能沿用创建回调时的闭包。
-          widgetAgents: widgetAgentsRef.current,
-        });
+        const next = quotaOnly
+          ? await getQuotaSnapshot(periodToLoad)
+          : await getUsageSnapshot(periodToLoad, {
+              force: forceLoad,
+              // 每轮都读 ref：排队请求必须拿到最新勾选，不能沿用创建回调时的闭包。
+              widgetAgents: widgetAgentsRef.current,
+            });
         forceLoad = false;
+        quotaOnly = false;
         if (requestId === requestSequence.current && !queuedLoadPeriod.current) {
           setSnapshot(next);
         }
@@ -4957,7 +4962,9 @@ export function App() {
 
     const refreshWhenVisible = () => {
       schedule();
-      if (document.visibilityState === "visible") loadSnapshot(period);
+      if (document.visibilityState === "visible") {
+        loadSnapshot(period, { quotaOnly: true });
+      }
     };
 
     schedule();

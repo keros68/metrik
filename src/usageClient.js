@@ -306,6 +306,19 @@ async function loadUsageSnapshot(period = "today", options = {}) {
   }
 }
 
+async function loadQuotaSnapshot(period = "today") {
+  if (!isTauriRuntime()) {
+    return demoSnapshot(period);
+  }
+
+  try {
+    return await invoke("quota_snapshot", { period });
+  } catch (error) {
+    console.warn("Unable to refresh quota snapshot.", error);
+    return unavailableSnapshot(period);
+  }
+}
+
 function demoReport() {
   const days = [];
   const now = new Date();
@@ -676,6 +689,7 @@ loadUsageSnapshot.initial = (period = "today") => (
 
 export {
   loadUsageSnapshot as getUsageSnapshot,
+  loadQuotaSnapshot as getQuotaSnapshot,
   getUsageReport,
   getUsageSessions,
   getUsageProjects,

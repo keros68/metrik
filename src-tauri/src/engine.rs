@@ -3,6 +3,9 @@ use crate::adapters::{
     KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter,
     ZcodeAdapter,
 };
+#[cfg(test)]
+use crate::claude_hook;
+use crate::claude_oauth;
 use crate::detect;
 use crate::domain::ProjectReportRow;
 use crate::domain::{
@@ -15,7 +18,6 @@ use crate::projects::{self, ProjectResolver, Resolution};
 use crate::quota;
 use crate::storage;
 use crate::sync;
-use crate::{claude_hook, claude_oauth};
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use rusqlite::{params, Connection};
@@ -203,6 +205,19 @@ pub fn build_snapshot(
     storage::prune_old_events(&connection, retention_cutoff)?;
     sync::run_sync(&mut connection, now);
     query_snapshot(&connection, period, report)
+}
+
+/// Refreshes quota sources without scanning agent logs. Floating forms call this
+/// when they become visible so a current local hook file does not wait behind the
+/// regular five-minute scan cadence.
+pub fn refresh_quota_snapshot(
+    database_path: &Path,
+    period: &str,
+    quota_cache: &quota::QuotaCache,
+) -> Result<UsageSnapshot> {
+    let connection = storage::open_database(database_path)?;
+    quota::refresh_all(&connection, quota_cache, false)?;
+    query_snapshot(&connection, period, ScanReport::default())
 }
 
 /// Builds a display snapshot from the already-indexed ledger without scanning logs,
@@ -1346,16 +1361,14 @@ fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Re
             } else {
                 15.0
             };
-            let hook_snapshot_expired = source == claude_hook::SOURCE_LABEL
-                && !claude_hook::snapshot_is_current(collected_at_ms, now);
             Ok(QuotaView {
-                available: !hook_snapshot_expired,
+                available: true,
                 remaining_percent: remaining,
                 resets_in_minutes: reset
                     .filter(|value| *value > now)
                     .map(|value| (value - now) as f64 / 60_000.0),
                 age_minutes: Some(age_minutes),
-                stale: hook_snapshot_expired || age_minutes > stale_after_minutes || reset_expired,
+                stale: age_minutes > stale_after_minutes || reset_expired,
                 reset_expired,
                 source_label: source,
                 quality,
@@ -2999,7 +3012,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_claude_hook_snapshot_is_not_currently_available() {
+    fn stale_claude_hook_snapshot_remains_visible_but_marked_stale() {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
@@ -3020,7 +3033,7 @@ mod tests {
             .unwrap();
 
         let quota = load_quota(&connection, "claude", "five_hour").unwrap();
-        assert!(!quota.available);
+        assert!(quota.available);
         assert!(quota.stale);
         assert!(!quota.reset_expired);
     }
