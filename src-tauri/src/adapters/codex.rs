@@ -448,7 +448,7 @@ mod tests {
         )
         .unwrap();
         for index in 1..=10_000 {
-            writeln!(file, "").unwrap();
+            writeln!(file).unwrap();
             let last = if index == 2 { 1 } else { 30 };
             writeln!(file, r#"{{"timestamp":"2026-09-05T00:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"total_tokens":{}}},"last_token_usage":{{"input_tokens":{last}}}}}}}}}"#, index * 30, index * 30).unwrap();
         }
