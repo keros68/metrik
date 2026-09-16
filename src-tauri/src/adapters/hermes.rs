@@ -296,6 +296,7 @@ mod tests {
         connection
     }
 
+    // 测试辅助函数需要覆盖一条用量记录的全部字段，参数多是刻意的。
     #[allow(clippy::too_many_arguments)]
     fn insert_usage(
         connection: &Connection,
