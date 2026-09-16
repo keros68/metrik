@@ -155,7 +155,11 @@ fn write_quota_atomically(path: &Path, payload: &StatusLinePayload) -> Result<()
     installed.context("unable to install Claude quota snapshot")
 }
 
-fn sweep_stale_files(directory: &Path, prefix: &str, stale_before: std::time::SystemTime) {
+pub(crate) fn sweep_stale_files(
+    directory: &Path,
+    prefix: &str,
+    stale_before: std::time::SystemTime,
+) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
@@ -175,7 +179,7 @@ fn sweep_stale_files(directory: &Path, prefix: &str, stale_before: std::time::Sy
 
 /// statusLine 命令的第一个 token（可执行文件路径），支持 `"..."`（Windows）和
 /// `'...'`（Unix）两种引用，以及裸路径。用于识别命令是否指向 metrik 本体。
-fn first_command_token(command: &str) -> Option<&str> {
+pub(crate) fn first_command_token(command: &str) -> Option<&str> {
     let command = command.trim();
     if let Some(rest) = command.strip_prefix('"') {
         return rest.split('"').next();
@@ -189,12 +193,12 @@ fn first_command_token(command: &str) -> Option<&str> {
 
 /// 用单引号包住路径供 `/bin/sh -c` 安全解析：内部单引号按 `'\''` 转义。
 #[cfg(not(windows))]
-fn shell_single_quote(value: &str) -> String {
+pub(crate) fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(windows)]
-fn command_has_shell_syntax(command: &str) -> bool {
+pub(crate) fn command_has_shell_syntax(command: &str) -> bool {
     let mut quoted = false;
     command.chars().any(|character| match character {
         '"' => {
@@ -207,7 +211,7 @@ fn command_has_shell_syntax(command: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn split_delegate_command(command: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_delegate_command(command: &str) -> Option<(&str, &str)> {
     let command = command.trim();
     if let Some(quoted) = command.strip_prefix('"') {
         let end = quoted.find('"')?;
@@ -218,7 +222,7 @@ fn split_delegate_command(command: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(windows)]
-fn delegate_process(delegate: &str) -> std::process::Command {
+pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
 
     let direct = split_delegate_command(delegate);
@@ -262,7 +266,7 @@ fn delegate_process(delegate: &str) -> std::process::Command {
 }
 
 #[cfg(windows)]
-fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
+pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
     use std::io::{Read, Write};
 
     let Ok(mut child) = delegate_process(delegate).spawn() else {
@@ -303,7 +307,7 @@ fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> S
 /// 管道 `|`、`&&`、引号等都由 shell 解释。子进程放进自己的进程组，超时后按组
 /// 终止（`killpg`），对齐 Windows 的进程树终止：委托再拉起后代也不会残留。
 #[cfg(unix)]
-fn delegate_process(delegate: &str) -> std::process::Command {
+pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
     use std::os::unix::process::CommandExt;
 
     let mut command = std::process::Command::new("/bin/sh");
@@ -327,7 +331,7 @@ fn terminate_process_group(pgid: i32) {
 }
 
 #[cfg(unix)]
-fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
+pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
     use std::io::{Read, Write};
 
     let Ok(mut child) = delegate_process(delegate).spawn() else {

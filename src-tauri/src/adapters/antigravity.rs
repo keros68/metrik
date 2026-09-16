@@ -26,13 +26,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const RPC_BASE_METHOD: &str = "/exa.language_server_pb.LanguageServerService";
-const QUOTA_SOURCE_ID: &str = "antigravity-quota";
-
-pub struct AntigravityAdapter {
-    // 端点发现（进程扫描 + 端口探测）昂贵；缓存结果，含"没找到"的负缓存，
-    // 避免未安装 Antigravity 时每次快照都 spawn 一次 PowerShell。
-    endpoint: Mutex<Option<(Instant, Option<Endpoint>)>>,
-}
 
 #[derive(Clone)]
 struct Endpoint {
@@ -43,28 +36,60 @@ struct Endpoint {
 // 未找到时的冷却，避免高频进程扫描。
 const NEGATIVE_TTL: Duration = Duration::from_secs(45);
 
-impl AntigravityAdapter {
-    pub fn detected() -> Self {
-        Self {
-            endpoint: Mutex::new(None),
+static ENDPOINT_CACHE: Mutex<Option<(Instant, Option<Endpoint>)>> = Mutex::new(None);
+
+/// 解析可用端点：命中缓存直接用；否则发现进程、取 csrf、探测监听端口。
+fn get_endpoint() -> Option<Endpoint> {
+    let mut guard = ENDPOINT_CACHE.lock().ok()?;
+    cached_endpoint(&mut guard, NEGATIVE_TTL, heartbeat_ok, discover_endpoint)
+}
+
+/// 端点缓存的纯逻辑（I/O 由调用方注入，可测）：正缓存每次用 `is_alive` 验活，
+/// 失活重新发现；负缓存（None）在 TTL 内不重复扫描进程，过期才再试。
+/// 缓存必须放在 adapter 之外跨快照持有——adapter 每次快照都重建，实例级缓存
+/// 会被重置，未装 Antigravity 的机器就会每轮快照 spawn 一次进程扫描（#186）。
+fn cached_endpoint<T>(
+    cache: &mut Option<(Instant, Option<T>)>,
+    negative_ttl: Duration,
+    is_alive: impl Fn(&T) -> bool,
+    discover: impl FnOnce() -> Option<T>,
+) -> Option<T>
+where
+    T: Clone,
+{
+    if let Some((captured, cached)) = cache.as_ref() {
+        match cached {
+            Some(endpoint) if is_alive(endpoint) => return Some(endpoint.clone()),
+            None if captured.elapsed() < negative_ttl => return None,
+            _ => {}
         }
     }
+    let resolved = discover();
+    *cache = Some((Instant::now(), resolved.clone()));
+    resolved
+}
 
-    /// 解析可用端点：命中缓存直接用；否则发现进程、取 csrf、探测监听端口。
+/// 官方配额拉取入口（供 quota 统一注册表调用）。
+pub fn fetch_antigravity_quota_snapshot(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let endpoint = get_endpoint().ok_or_else(|| anyhow!("Antigravity language server 未在运行"))?;
+    let value = rpc_call_with_timeout(
+        &endpoint,
+        "RetrieveUserQuotaSummary",
+        &json!({ "forceRefresh": true }),
+        timeout,
+    )?;
+    Ok(parse_quota_summary(&value))
+}
+
+pub struct AntigravityAdapter;
+
+impl AntigravityAdapter {
+    pub fn detected() -> Self {
+        Self
+    }
+
     fn endpoint(&self) -> Option<Endpoint> {
-        let mut guard = self.endpoint.lock().ok()?;
-        if let Some((captured, cached)) = guard.as_ref() {
-            match cached {
-                // 缓存的端点用一次 Heartbeat 验活，失活则重新发现。
-                Some(endpoint) if heartbeat_ok(endpoint) => return Some(endpoint.clone()),
-                // 负缓存未过期：不重复扫描进程。
-                None if captured.elapsed() < NEGATIVE_TTL => return None,
-                _ => {}
-            }
-        }
-        let resolved = discover_endpoint();
-        *guard = Some((Instant::now(), resolved.clone()));
-        resolved
+        get_endpoint()
     }
 
     fn call(&self, endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
@@ -82,14 +107,6 @@ impl AgentAdapter for AntigravityAdapter {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        // 配额入口：即使没有任何会话也要能取到官方配额。
-        candidates.push(SourceCandidate {
-            source_id: QUOTA_SOURCE_ID.to_owned(),
-            path: PathBuf::from("antigravity://quota"),
-            size: 0,
-            // 配额每次都刷新：mtime 用一个恒变的哨兵强制重扫。
-            mtime_ns: i64::MAX,
-        });
         if let Ok(list) = self.call(&endpoint, "GetAllCascadeTrajectories", &json!({})) {
             for cascade in normalize_trajectory_summaries(&list) {
                 candidates.push(SourceCandidate {
@@ -108,23 +125,6 @@ impl AgentAdapter for AntigravityAdapter {
         let endpoint = self
             .endpoint()
             .ok_or_else(|| anyhow!("Antigravity language server 未在运行"))?;
-
-        if candidate.source_id == QUOTA_SOURCE_ID {
-            let quotas = self
-                .call(
-                    &endpoint,
-                    "RetrieveUserQuotaSummary",
-                    &json!({ "forceRefresh": true }),
-                )
-                .map(|value| parse_quota_summary(&value))
-                .unwrap_or_default();
-            let mut source = empty_source(candidate, "antigravity-quota");
-            source.quotas = quotas;
-            return Ok(ParsedScan {
-                source,
-                diagnostics: ScanDiagnostics::default(),
-            });
-        }
 
         // cascade 路径形如 antigravity://cascade/<id>
         let cascade_id = candidate
@@ -154,19 +154,6 @@ impl AgentAdapter for AntigravityAdapter {
             },
             diagnostics: ScanDiagnostics::default(),
         })
-    }
-}
-
-fn empty_source(candidate: &SourceCandidate, logical_key: &str) -> ParsedSource {
-    ParsedSource {
-        source_id: candidate.source_id.clone(),
-        adapter_id: "antigravity",
-        locator: candidate.path.clone(),
-        logical_key: logical_key.to_owned(),
-        size: candidate.size,
-        mtime_ns: candidate.mtime_ns,
-        events: Vec::new(),
-        quotas: Vec::new(),
     }
 }
 
@@ -456,8 +443,13 @@ fn insecure_agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
-fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
-    let agent = insecure_agent(Duration::from_secs(6));
+fn rpc_call_with_timeout(
+    endpoint: &Endpoint,
+    method: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let agent = insecure_agent(timeout);
     let url = format!("{}{RPC_BASE_METHOD}/{method}", endpoint.base_url);
     let response = agent
         .post(&url)
@@ -470,6 +462,10 @@ fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
         .into_string()
         .context("读取 Antigravity 响应失败")?;
     serde_json::from_str(&text).context("Antigravity 响应不是有效 JSON")
+}
+
+fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
+    rpc_call_with_timeout(endpoint, method, body, Duration::from_secs(6))
 }
 
 fn heartbeat_ok(endpoint: &Endpoint) -> bool {
@@ -678,6 +674,73 @@ fn listening_ports(pid: u32) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #186 的回归场景：未装 Antigravity 时连续快照不得每次都做进程发现；
+    /// 负缓存只在过期后才允许再试一次。
+    #[test]
+    fn negative_cache_suppresses_discovery_until_ttl_expires() {
+        let discoveries = std::cell::Cell::new(0u32);
+        let mut discover = || {
+            discoveries.set(discoveries.get() + 1);
+            None::<String>
+        };
+
+        let mut cache: Option<(Instant, Option<String>)> = None;
+        // 首次快照真的扫描，落一条新鲜负缓存。
+        assert!(
+            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover).is_none()
+        );
+        assert_eq!(discoveries.get(), 1);
+        // TTL 内的后续快照被负缓存挡住，不再扫描。
+        assert!(
+            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover).is_none()
+        );
+        assert_eq!(discoveries.get(), 1, "TTL 内不得重复扫描进程");
+
+        // 缓存过期后才再试一次。Instant 不能凭空构造过去时刻，开机不足 TTL
+        // 的极端环境跳过这一段（上一段已覆盖核心回归）。
+        if let Some(expired) = (Instant::now() - Duration::from_secs(1)).checked_sub(NEGATIVE_TTL) {
+            cache = Some((expired, None));
+            assert!(
+                cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover)
+                    .is_none()
+            );
+            assert_eq!(discoveries.get(), 2, "负缓存过期后应重新发现");
+        }
+    }
+
+    #[test]
+    fn positive_cache_avoids_rediscovery_until_endpoint_dies() {
+        let discoveries = std::cell::Cell::new(0u32);
+        let mut discover = || {
+            discoveries.set(discoveries.get() + 1);
+            Some("endpoint-b")
+        };
+        let mut cache: Option<(Instant, Option<&'static str>)> =
+            Some((Instant::now(), Some("endpoint-a")));
+        assert_eq!(
+            cached_endpoint(
+                &mut cache,
+                NEGATIVE_TTL,
+                |_: &&'static str| true,
+                &mut discover
+            ),
+            Some("endpoint-a")
+        );
+        assert_eq!(discoveries.get(), 0, "正缓存验活通过时不得重新发现");
+
+        assert_eq!(
+            cached_endpoint(
+                &mut cache,
+                NEGATIVE_TTL,
+                |_: &&'static str| false,
+                &mut discover
+            ),
+            Some("endpoint-b")
+        );
+        assert_eq!(discoveries.get(), 1, "端点失活后必须重新发现并替换缓存");
+        assert_eq!(cache.as_ref().unwrap().1.as_deref(), Some("endpoint-b"));
+    }
 
     #[test]
     fn parses_generator_metadata_from_retry_infos_with_reasoning_as_output_subitem() {

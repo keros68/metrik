@@ -1,4 +1,5 @@
 mod adapters;
+mod antigravity_hook;
 mod app_server;
 mod claude_hook;
 mod claude_oauth;
@@ -1269,6 +1270,34 @@ async fn set_claude_hook(enabled: bool) -> Result<claude_hook::ClaudeHookStatus,
     .map_err(|error| format!("claude hook task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn antigravity_hook_status() -> Result<antigravity_hook::AntigravityHookStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        antigravity_hook::AntigravityHook::detected()
+            .status()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("antigravity hook status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_antigravity_hook(
+    enabled: bool,
+) -> Result<antigravity_hook::AntigravityHookStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let hook = antigravity_hook::AntigravityHook::detected();
+        if enabled {
+            hook.install()
+        } else {
+            hook.uninstall()
+        }
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("antigravity hook task failed: {error}"))?
+}
+
 /// 完整视图在 macOS 是带原生标题栏的独立窗口：用户手动选择明暗、且与系统相反时，
 /// 让原生标题栏跟随内容主题（"自动"传 None，交回系统决定，与内容一致）。
 /// Windows 的完整视图无边框、无原生标题栏，无需处理，这里对其它平台是 no-op。
@@ -1659,6 +1688,13 @@ pub fn run() {
                     "Metrik could not check the Claude Code statusLine hook ({error:#})"
                 ),
             }
+            match antigravity_hook::AntigravityHook::detected().repair() {
+                Ok(true) => eprintln!("Metrik repaired a stale Antigravity CLI statusLine hook"),
+                Ok(false) => {}
+                Err(error) => eprintln!(
+                    "Metrik could not check the Antigravity CLI statusLine hook ({error:#})"
+                ),
+            }
 
             app.manage(AppState {
                 database_path,
@@ -1698,6 +1734,8 @@ pub fn run() {
             remove_sync_device,
             claude_hook_status,
             set_claude_hook,
+            antigravity_hook_status,
+            set_antigravity_hook,
             claude_oauth_status,
             set_claude_oauth,
             qoder_cookie_status,
@@ -1726,6 +1764,10 @@ pub fn run() {
 
 pub fn run_statusline() {
     claude_hook::run_statusline();
+}
+
+pub fn run_antigravity_hook() {
+    antigravity_hook::run_hook();
 }
 
 #[cfg(target_os = "macos")]

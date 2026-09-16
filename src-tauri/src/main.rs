@@ -6,6 +6,10 @@ fn main() {
         metrik_lib::run_statusline();
         return;
     }
+    if command.as_deref() == Some(std::ffi::OsStr::new("--antigravity-hook")) {
+        metrik_lib::run_antigravity_hook();
+        return;
+    }
     if command.as_deref() == Some(std::ffi::OsStr::new("--publish-widget-snapshot")) {
         let Some(database_path) = std::env::args_os().nth(2).map(std::path::PathBuf::from) else {
             eprintln!("--publish-widget-snapshot requires a database path");

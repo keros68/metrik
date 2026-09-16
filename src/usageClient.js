@@ -648,6 +648,28 @@ async function setClaudeHook(enabled) {
   return invoke("set_claude_hook", { enabled });
 }
 
+async function getAntigravityHookStatus() {
+  if (!isTauriRuntime()) {
+    return {
+      demo: true,
+      installed: false,
+      conflict: false,
+      chained: false,
+      replaced: false,
+      lastDataAtMs: null,
+      stale: false,
+    };
+  }
+  return invoke("antigravity_hook_status");
+}
+
+async function setAntigravityHook(enabled) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置钩子");
+  }
+  return invoke("set_antigravity_hook", { enabled });
+}
+
 async function getQoderCookieStatus() {
   if (!isTauriRuntime()) {
     return { demo: true, configured: false, source: null, message: null };
@@ -702,6 +724,8 @@ export {
   removeSyncDevice,
   getClaudeHookStatus,
   setClaudeHook,
+  getAntigravityHookStatus,
+  setAntigravityHook,
   getClaudeOauthStatus,
   setClaudeOauth,
   getQoderCookieStatus,

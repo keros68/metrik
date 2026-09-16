@@ -55,6 +55,7 @@ import {
   configureSync,
   getClaudeHookStatus,
   getClaudeOauthStatus,
+  getAntigravityHookStatus,
   getQoderCookieStatus,
   setClaudeOauth,
   getSyncSettings,
@@ -69,6 +70,7 @@ import {
   rebuildLocalLedger,
   removeSyncDevice,
   setClaudeHook,
+  setAntigravityHook,
 } from "./usageClient";
 import {
   UI_SCALE_RANGE,
@@ -458,6 +460,9 @@ function shortWindowLabel(key) {
   if (key === "extra_usage") return "超额";
   if (key === "credits") return "额度";
   if (key === "monthly_cycle") return "月度";
+  if (key.endsWith("_5h")) return key.replace(/_5h$/, "").slice(0, 3) + " 5h";
+  if (key.endsWith("_weekly")) return key.replace(/_weekly$/, "").slice(0, 3) + " 7d";
+  if (key.endsWith("_7d")) return key.replace(/_7d$/, "").slice(0, 3) + " 7d";
   return key.replace(/^seven_day_/, "").slice(0, 4);
 }
 
@@ -2324,6 +2329,102 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
   );
 }
 
+// Antigravity CLI（agy）官方配额：CLI 内嵌 language server 的 csrf 只在进程
+// 内部，外部无法直连；官方口子是 statusLine 钩子（会话 JSON 经 stdin 推给
+// 命令）。与 Claude 钩子同一模式：只提取额度窗口，不碰对话与凭据。
+function AntigravityHookCard({ onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAntigravityHookStatus()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", message: "钩子状态读取失败。" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggle = async (enabled) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const next = await setAntigravityHook(enabled);
+      setStatus(next);
+      setFeedback({
+        tone: "success",
+        message: enabled
+          ? "钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"
+          : "钩子已卸载，statusLine 设置已恢复。",
+      });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-card">
+      <h2>Antigravity CLI 官方配额</h2>
+      <p className="settings-muted">
+        仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子
+        （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留；
+        卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。
+      </p>
+      {status?.demo ? (
+        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
+      ) : status && (
+        <>
+          <div className="settings-directory-row">
+            <button
+              type="button"
+              className={`ledger-button ${status.installed ? "ledger-button--secondary" : "ledger-button--primary"}`}
+              disabled={busy || (!status.installed && status.conflict)}
+              onClick={() => toggle(!status.installed)}
+            >
+              {status.installed ? "卸载钩子" : status.replaced ? "重新串联" : "安装钩子"}
+            </button>
+          </div>
+          <dl className="settings-status">
+            <div>
+              <dt>状态</dt>
+              <dd>
+                {status.installed
+                  ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
+                      status.lastDataAtMs
+                        ? `${status.stale ? "数据已过期" : "最近数据"} ${formatSyncTime(status.lastDataAtMs)}`
+                        : "等待 Antigravity CLI 下次刷新状态"
+                    }`
+                  : status.conflict
+                    ? "未安装 · 现有 statusLine 缺少 command 字段，无法串联"
+                    : status.replaced
+                      ? "已被其他 statusLine 替换 · 可重新串联当前命令"
+                    : "未安装"}
+              </dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {feedback && (
+        <p
+          className={`settings-feedback settings-feedback--${feedback.tone}`}
+          role={feedback.tone === "error" ? "alert" : "status"}
+        >
+          {feedback.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // OAuth 官方额度：读取 Claude Code 自己保存的登录凭据（显式 opt-in），
 // 直接查询账户级合并额度（含网页版消耗），不依赖终端状态栏。
 function ClaudeOauthBlock({ onSnapshotRefresh }) {
@@ -3254,6 +3355,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         {activeTab.id === "sources" && (
           <>
             <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
+            <AntigravityHookCard onSnapshotRefresh={onSnapshotRefresh} />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
             <CodexCreditsCard />
           </>
