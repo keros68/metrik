@@ -680,21 +680,17 @@ mod tests {
     #[test]
     fn negative_cache_suppresses_discovery_until_ttl_expires() {
         let discoveries = std::cell::Cell::new(0u32);
-        let mut discover = || {
+        let discover = || {
             discoveries.set(discoveries.get() + 1);
             None::<String>
         };
 
         let mut cache: Option<(Instant, Option<String>)> = None;
         // 首次快照真的扫描，落一条新鲜负缓存。
-        assert!(
-            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover).is_none()
-        );
+        assert!(cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, discover).is_none());
         assert_eq!(discoveries.get(), 1);
         // TTL 内的后续快照被负缓存挡住，不再扫描。
-        assert!(
-            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover).is_none()
-        );
+        assert!(cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, discover).is_none());
         assert_eq!(discoveries.get(), 1, "TTL 内不得重复扫描进程");
 
         // 缓存过期后才再试一次。Instant 不能凭空构造过去时刻，开机不足 TTL
@@ -702,8 +698,7 @@ mod tests {
         if let Some(expired) = (Instant::now() - Duration::from_secs(1)).checked_sub(NEGATIVE_TTL) {
             cache = Some((expired, None));
             assert!(
-                cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, &mut discover)
-                    .is_none()
+                cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &String| true, discover).is_none()
             );
             assert_eq!(discoveries.get(), 2, "负缓存过期后应重新发现");
         }
@@ -712,34 +707,24 @@ mod tests {
     #[test]
     fn positive_cache_avoids_rediscovery_until_endpoint_dies() {
         let discoveries = std::cell::Cell::new(0u32);
-        let mut discover = || {
+        let discover = || {
             discoveries.set(discoveries.get() + 1);
             Some("endpoint-b")
         };
         let mut cache: Option<(Instant, Option<&'static str>)> =
             Some((Instant::now(), Some("endpoint-a")));
         assert_eq!(
-            cached_endpoint(
-                &mut cache,
-                NEGATIVE_TTL,
-                |_: &&'static str| true,
-                &mut discover
-            ),
+            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &&'static str| true, discover),
             Some("endpoint-a")
         );
         assert_eq!(discoveries.get(), 0, "正缓存验活通过时不得重新发现");
 
         assert_eq!(
-            cached_endpoint(
-                &mut cache,
-                NEGATIVE_TTL,
-                |_: &&'static str| false,
-                &mut discover
-            ),
+            cached_endpoint(&mut cache, NEGATIVE_TTL, |_: &&'static str| false, discover),
             Some("endpoint-b")
         );
         assert_eq!(discoveries.get(), 1, "端点失活后必须重新发现并替换缓存");
-        assert_eq!(cache.as_ref().unwrap().1.as_deref(), Some("endpoint-b"));
+        assert_eq!(cache.as_ref().unwrap().1, Some("endpoint-b"));
     }
 
     #[test]

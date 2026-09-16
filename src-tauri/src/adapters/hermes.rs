@@ -296,6 +296,7 @@ mod tests {
         connection
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_usage(
         connection: &Connection,
         session_id: &str,
