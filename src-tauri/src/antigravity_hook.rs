@@ -813,11 +813,17 @@ mod tests {
     #[test]
     fn repair_rewrites_a_stale_hook_command() {
         let test = TestDirectory::new("repair");
-        fs::write(
-            test.path().join("settings.json"),
-            r#"{"statusLine":{"type":"command","command":"C:\\old\\path\\metrik.exe --antigravity-hook","enabled":true}}"#,
-        )
-        .unwrap();
+        // 旧命令的路径分隔符按平台写：Unix 的 Path::file_name 不认反斜杠，
+        // basename 识别只在同风格的路径下成立。
+        let stale = if cfg!(windows) {
+            r"C:\\old\\path\\metrik.exe"
+        } else {
+            "/old/path/metrik"
+        };
+        let settings = format!(
+            r#"{{"statusLine":{{"type":"command","command":"{stale} --antigravity-hook","enabled":true}}}}"#
+        );
+        fs::write(test.path().join("settings.json"), settings).unwrap();
         let hook = AntigravityHook::with_dir(test.path().to_path_buf());
         // 命令指向别的 metrik 路径：仍认作我们的（basename 匹配），自愈会改写。
         assert!(hook.status().unwrap().installed);
