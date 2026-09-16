@@ -1222,13 +1222,43 @@ fn quota_window_rank(key: &str) -> (u8, String) {
         "seven_day" | "secondary" => (1, String::new()),
         // 超额付费是套餐外的补充预算，排在全部套餐窗口之后。
         "extra_usage" => (3, String::new()),
-        other => (2, other.to_owned()),
+        other => {
+            if other.ends_with("_5h") || other.contains("5h") {
+                (0, other.to_owned())
+            } else if other.ends_with("_weekly")
+                || other.ends_with("_7d")
+                || other.contains("weekly")
+            {
+                (1, other.to_owned())
+            } else {
+                (2, other.to_owned())
+            }
+        }
     }
 }
 
+fn capitalize_model(model: &str) -> String {
+    let mut chars = model.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
 fn quota_window_label(adapter_id: &str, key: &str) -> String {
-    // Antigravity 的窗口键是官方桶标识（如 gemini_weekly），原样展示。
+    // Antigravity 的窗口键是官方桶标识（如 gemini_weekly），美化展示。
     if adapter_id == "antigravity" {
+        let lower = key.to_ascii_lowercase();
+        if let Some(prefix) = lower.strip_suffix("_5h") {
+            let model = capitalize_model(prefix);
+            return format!("{model} · 5h");
+        } else if let Some(prefix) = lower.strip_suffix("_weekly") {
+            let model = capitalize_model(prefix);
+            return format!("{model} · 每周");
+        } else if let Some(prefix) = lower.strip_suffix("_7d") {
+            let model = capitalize_model(prefix);
+            return format!("{model} · 7d");
+        }
         return key.replace('_', " ");
     }
     match key {
@@ -1246,11 +1276,7 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
         "monthly_cycle" => "月度周期".into(),
         other => {
             let model = other.strip_prefix("seven_day_").unwrap_or(other);
-            let mut chars = model.chars();
-            let pretty = chars
-                .next()
-                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-                .unwrap_or_else(|| other.to_owned());
+            let pretty = capitalize_model(model);
             format!("每周 · {pretty}")
         }
     }
@@ -1515,12 +1541,20 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             quality_label: if kimi_partial { "数据不完整" } else { "精确解析" }.into(),
         },
         SourceView {
+            id: "antigravity-quota".into(),
+            kind: "official".into(),
+            label: "Antigravity 官方配额".into(),
+            detail: "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。".into(),
+            quality: "official".into(),
+            quality_label: "官方".into(),
+        },
+        SourceView {
             id: "antigravity-live".into(),
             kind: "local".into(),
             label: "Antigravity 用量".into(),
             detail: format!(
                 "发现 {} 个活跃会话，本次更新 {} 个。{}用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
-                discovered("antigravity").saturating_sub(1),
+                discovered("antigravity"),
                 refreshed("antigravity"),
                 coverage_detail(&diagnostics("antigravity"), errors("antigravity"))
             ),
@@ -3117,6 +3151,24 @@ mod tests {
         assert!(!secondary.stale);
         assert!(secondary.resets_in_minutes.unwrap() > 8_639.0);
         assert_eq!(secondary.source_label, "app-server");
+    }
+
+    #[test]
+    fn antigravity_quota_ranks_5h_before_weekly_and_prettifies_labels() {
+        assert_eq!(quota_window_rank("gemini_5h").0, 0);
+        assert_eq!(quota_window_rank("gemini_weekly").0, 1);
+        assert_eq!(
+            quota_window_label("antigravity", "gemini_5h"),
+            "Gemini · 5h"
+        );
+        assert_eq!(
+            quota_window_label("antigravity", "gemini_weekly"),
+            "Gemini · 每周"
+        );
+        assert_eq!(
+            quota_window_label("antigravity", "claude_weekly"),
+            "Claude · 每周"
+        );
     }
 
     #[test]

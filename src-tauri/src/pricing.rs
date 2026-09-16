@@ -53,6 +53,9 @@
 //! Anthropic 按 TTL 分级，LiteLLM 给的是最常见的 5 分钟档，1 小时档更贵——
 //! 长 TTL 场景会低估。moonshot / zai / gemini 的缓存写入 LiteLLM 同样无字段，
 //! 记 0。这是估算，不是账单。
+//!
+//! 按图片、时长等单位收费但没有逐 token 价的模型不进入表。LiteLLM 对这类模型
+//! 可能把 token 输入/输出价填成 0；把占位值当成官方零价会错误显示为免费。
 
 #[path = "pricing_table.rs"]
 mod table;
@@ -598,6 +601,11 @@ mod tests {
     fn unknown_model_is_unpriced() {
         assert!(price_for("unknown", ANY_TIME_MS).is_none());
         assert!(price_for("", ANY_TIME_MS).is_none());
+        // Lyria 按图片收费，LiteLLM 的 token 价是 0 占位，不得显示成免费。
+        assert!(price_for("lyria-3.5", ANY_TIME_MS).is_none());
+        assert!(price_for("lyria-3-pro-preview", ANY_TIME_MS).is_none());
+        // GPT-5.5-Cyber 模型已公开，但官方价目仍不可核验。
+        assert!(price_for("gpt-5.5-cyber", ANY_TIME_MS).is_none());
         // 未知模型带日期后缀也不能靠剥后缀蒙混过关。
         assert!(price_for("totally-made-up-20260101", ANY_TIME_MS).is_none());
     }

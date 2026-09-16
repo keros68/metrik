@@ -21,6 +21,14 @@ const SOURCE =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const OUT = "src-tauri/src/pricing_table.rs";
 const PROVIDERS = new Set(["openai", "anthropic", "moonshot", "zai", "gemini", "xai"]);
+const asOf = new Date().toISOString().slice(0, 10);
+
+// 官方已公布、但尚未开始计费的价格只能在生效日后进入估算表。
+const PRICING_START_DATES = new Map([["gpt-rosalind-research", "2026-10-05"]]);
+
+// 模型存在不等于价格已公开。LiteLLM 偶尔会先填入一个推测值；官方价目可核验前
+// 保持 unpriced，不能把第三方数值当成第一方价格。
+const UNVERIFIED_PRICING = new Set(["gpt-5.5-cyber"]);
 
 const localPath = process.argv[2];
 let raw;
@@ -51,12 +59,20 @@ const perMillion = (value) =>
   value == null ? 0 : Math.round(value * 1e6 * 1e6) / 1e6;
 
 const rows = Object.entries(raw)
-  .filter(([, entry]) => {
+  .filter(([key, entry]) => {
     if (typeof entry !== "object" || entry === null) return false;
     if (!PROVIDERS.has(entry.litellm_provider)) return false;
-    // 没有完整的输入/输出价就不要——半个价格算出来的成本是错的。
+    const model = key.startsWith(`${entry.litellm_provider}/`)
+      ? key.slice(entry.litellm_provider.length + 1)
+      : key;
+    if (UNVERIFIED_PRICING.has(model)) return false;
+    const pricingStarts = PRICING_START_DATES.get(model);
+    if (pricingStarts != null && asOf < pricingStarts) return false;
+    // 没有完整且为正的 token 输入/输出价就不要——半个价格算出来的成本是错的；
+    // Lyria 这类按图片或时长收费的模型会把 token 价填成 0，占位值不能当免费。
     if (entry.input_cost_per_token == null) return false;
     if (entry.output_cost_per_token == null) return false;
+    if (entry.input_cost_per_token <= 0 || entry.output_cost_per_token <= 0) return false;
     return entry.mode == null || entry.mode === "chat" || entry.mode === "responses";
   })
   .map(([key, entry]) => ({
@@ -92,7 +108,6 @@ const f64Literal = (value) => {
   return fixed.includes(".") ? fixed : `${fixed}.0`;
 };
 
-const asOf = new Date().toISOString().slice(0, 10);
 const body = rows
   .map(
     (row) =>

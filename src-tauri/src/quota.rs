@@ -189,6 +189,7 @@ fn accept_scope(connection: &Connection, adapter: &str, scope: &str) -> Result<i
 
 pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
     let mut providers: Vec<Box<dyn QuotaProvider>> = vec![
+        Box::new(AntigravityQuota),
         Box::new(CodexQuota),
         Box::new(ClaudeQuota),
         Box::new(GrokQuota),
@@ -206,6 +207,30 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         providers.push(Box::new(HttpQuota { adapter_id, fetch }));
     }
     providers
+}
+
+/// Google Antigravity：官方配额双来源。IDE 在跑时走本机 language server 私有
+/// RPC（实时）；只有 Antigravity CLI（`agy`）在跑时 RPC 不可达（csrf 只在
+/// 进程内部，外部无法接入），回落到官方 statusLine 钩子落盘的快照。
+/// 两者都不可用时返回不可用，绝不估算。
+struct AntigravityQuota;
+
+impl QuotaProvider for AntigravityQuota {
+    fn adapter_id(&self) -> &'static str {
+        "antigravity"
+    }
+
+    fn policy(&self) -> QuotaPolicy {
+        QuotaPolicy::new(60, 240, 4)
+    }
+
+    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
+        adapters::fetch_antigravity_quota_snapshot(timeout)
+    }
+
+    fn fallback(&self) -> Vec<QuotaSample> {
+        crate::antigravity_hook::AntigravityHook::detected().quota_samples()
+    }
 }
 
 /// Grok Build：本地统一日志里的 credits 快照（非网络 live）。
@@ -527,6 +552,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "antigravity",
                 "claude",
                 "codex",
                 "grok",

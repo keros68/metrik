@@ -20,7 +20,8 @@ pub use pi::PiAdapter;
 pub use workbuddy::WorkbuddyAdapter;
 pub use zcode::ZcodeAdapter;
 
-// 配额快照从日志读取，供 quota 注册表调用；根目录由调用点解析（测试可注入）。
+// 配额快照从日志或 RPC 读取，供 quota 注册表调用。
+pub use antigravity::fetch_antigravity_quota_snapshot;
 pub use grok::{fetch_grok_quota_snapshot, grok_home, grok_home_exists};
 
 use crate::domain::{stable_hash, ParsedSource};
