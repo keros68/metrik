@@ -740,7 +740,14 @@ mod tests {
     #[test]
     fn every_visible_agent_has_a_menu_bar_status_item() {
         let status_ids = STATUS_ITEMS.map(|item| item.id);
-        assert_eq!(status_ids, crate::domain::AGENT_IDS);
+        // deepseek 只有官方余额（金额不是百分比），且没有品牌图标资产，
+        // 菜单栏的"图标 + 剩余%"形态无法表达，不为其建状态项。
+        let expected: Vec<&str> = crate::domain::AGENT_IDS
+            .iter()
+            .copied()
+            .filter(|id| *id != "deepseek")
+            .collect();
+        assert_eq!(status_ids, expected.as_slice());
     }
 
     #[test]

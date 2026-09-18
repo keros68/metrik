@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QUOTA_LOW_REMAINING, bindingWindow } from "./quotaWindows.js";
+import { QUOTA_LOW_REMAINING, bindingWindow, isBalanceWindow } from "./quotaWindows.js";
 
 /// 造一个窗口；顺序按后端的 quota_window_rank（five_hour → seven_day → 月度）。
 function windowOf(key, remainingPercent, { resetExpired = false, available = true } = {}) {
@@ -86,6 +86,28 @@ test("没有来源的窗口不参与比较", () => {
     windowOf("seven_day", 80),
   ]);
   assert.equal(picked.key, "seven_day");
+});
+
+test("isBalanceWindow 只认 balance_ 前缀", () => {
+  assert.equal(isBalanceWindow({ key: "balance_cny" }), true);
+  assert.equal(isBalanceWindow({ key: "balance_usd" }), true);
+  assert.equal(isBalanceWindow({ key: "five_hour" }), false);
+  assert.equal(isBalanceWindow({ key: "credits" }), false);
+  assert.equal(isBalanceWindow(null), false);
+});
+
+test("DeepSeek：余额是金额不是百分比，¥8.4 不该被告急规则顶到行首", () => {
+  const picked = bindingWindow([
+    windowOf("seven_day", 80),
+    windowOf("balance_cny", 8.4),
+  ]);
+  assert.equal(picked.key, "seven_day");
+});
+
+test("余额窗口是唯一的有效窗口时照常返回（live[0]）", () => {
+  const picked = bindingWindow([windowOf("balance_cny", 8.4)]);
+  assert.equal(picked.key, "balance_cny");
+  assert.equal(picked.view.remainingPercent, 8.4);
 });
 
 test("全部失效时返回 null，由调用方显示「已重置，等待刷新」", () => {

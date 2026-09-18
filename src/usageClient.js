@@ -145,8 +145,15 @@ function demoSnapshot(period = "today") {
           { key: "monthly_cycle", label: "月度周期", view: demoQuotaView(78, 33_120) },
         ],
       },
-      // OpenCode 与 WorkBuddy 现实中没有官方配额来源：窗口列表保持为空。
-      { agent: "opencode", windows: [] },
+      // OpenCode Go 套餐提供官方配额：Session / 每周 / 月度周期三个百分比窗口。
+      {
+        agent: "opencode",
+        windows: [
+          { key: "five_hour", label: "Session", view: demoQuotaView(73, 210) },
+          { key: "seven_day", label: "每周", view: demoQuotaView(81, 6_300) },
+          { key: "monthly_cycle", label: "月度周期", view: demoQuotaView(88, 30_240) },
+        ],
+      },
       {
         agent: "workbuddy",
         windows: [{ key: "credits", label: "Credits", view: demoQuotaView(78, 15_120) }],
@@ -154,6 +161,12 @@ function demoSnapshot(period = "today") {
       {
         agent: "qoder",
         windows: [{ key: "credits", label: "Credits", view: demoQuotaView(64, 12_960) }],
+      },
+      {
+        // DeepSeek 配额-only：余额窗口的 remainingPercent 装的是金额（演示 ¥68.50），
+        // 不是百分比，resetsInMinutes 恒为 null（余额不重置）。
+        agent: "deepseek",
+        windows: [{ key: "balance_cny", label: "余额", view: demoQuotaView(68.5, null) }],
       },
       {
         agent: "grok",
@@ -170,6 +183,8 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("workbuddy", workbuddyTokens, totalTokens),
       demoAgentSummary("grok", grokTokens, totalTokens),
       demoAgentSummary("hermes", hermesTokens, totalTokens),
+      // DeepSeek 只读官方余额，本地日志没有可归属的 token 用量，恒为 0。
+      demoAgentSummary("deepseek", 0, totalTokens),
     ],
     cost: {
       available: true,
@@ -215,6 +230,8 @@ function demoSnapshot(period = "today") {
       { id: "kimi-quota", kind: "official", label: "Kimi 官方配额", detail: "合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。", quality: "official", qualityLabel: "官方" },
       { id: "grok-local", kind: "local", label: "Grok Build 本地 Token", detail: "读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。", quality: "exact", qualityLabel: "精确解析" },
       { id: "grok-quota", kind: "official", label: "Grok Build 官方配额", detail: "读取 CLI 统一日志中的 credits 快照。", quality: "official", qualityLabel: "官方" },
+      { id: "deepseek-quota", kind: "official", label: "DeepSeek 官方余额", detail: "读取官方 API 账户余额；余额是金额不是百分比窗口，显示为货币数值且不随周期重置。", quality: "official", qualityLabel: "官方" },
+      { id: "opencode-go-quota", kind: "official", label: "OpenCode Go 官方配额", detail: "凭据取自 auth.json 的 opencode-go key 或环境变量；显示 Session/每周/月度周期窗口。", quality: "official", qualityLabel: "官方" },
     ],
     indexing: { pending: 0 },
   };

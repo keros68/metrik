@@ -203,6 +203,10 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         ("kimiwork", coding_quota::fetch_kimiwork_quota),
         ("qoder", coding_quota::fetch_qoder_quota),
         ("workbuddy", coding_quota::fetch_workbuddy_quota),
+        // OpenCode Go 套餐配额挂在 opencode 卡片（该卡同时有本地用量 adapter）。
+        ("opencode", coding_quota::fetch_opencode_go_quota),
+        // DeepSeek 是配额-only：只拉官方余额，没有本地日志来源。
+        ("deepseek", coding_quota::fetch_deepseek_quota),
     ] {
         providers.push(Box::new(HttpQuota { adapter_id, fetch }));
     }
@@ -442,8 +446,8 @@ impl QuotaProvider for ClaudeQuota {
     }
 }
 
-/// 走网络的官方配额（GLM / Kimi / Qoder / WorkBuddy）：一次实时 GET，
-/// 凭据由各自的 fetch 自行从本机配置读取，没有凭据时返回错误而不是零值。
+/// 走网络的官方配额（GLM / Kimi / Qoder / WorkBuddy / OpenCode Go / DeepSeek）：
+/// 一次实时 GET，凭据由各自的 fetch 自行从本机配置读取，没有凭据时返回错误而不是零值。
 struct HttpQuota {
     adapter_id: &'static str,
     fetch: fn(Duration) -> Result<Vec<QuotaSample>>,
@@ -555,9 +559,11 @@ mod tests {
                 "antigravity",
                 "claude",
                 "codex",
+                "deepseek",
                 "grok",
                 "kimi",
                 "kimiwork",
+                "opencode",
                 "qoder",
                 "workbuddy",
                 "zcode"

@@ -36,6 +36,7 @@ import {
 import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import deepseekAppIcon from "./assets/deepseek-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
 import opencodeAppIcon from "./assets/opencode-app-icon.png";
@@ -47,7 +48,7 @@ import workbuddyAppIcon from "./assets/workbuddy-app-icon.png";
 import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAppearance.js";
 import { modelDisplayName } from "./modelNames.js";
-import { QUOTA_LOW_REMAINING, bindingWindow } from "./quotaWindows.js";
+import { QUOTA_LOW_REMAINING, bindingWindow, isBalanceWindow } from "./quotaWindows.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
 import { horizontalStripTargetWidth } from "./windowGeometry";
 import {
@@ -206,6 +207,15 @@ const AGENT_META = {
     accent: "#3a7ca5",
     iconSrc: qoderAppIcon,
     iconClass: "agent-icon--qoder",
+  },
+  deepseek: {
+    // 配额-only：DeepSeek 官方 API 账户余额，balance_ 窗口装的是金额不是百分比。
+    label: "DeepSeek",
+    // 品牌蓝 #4d6bfe：比 codex 的 #246bdb 亮一度且偏紫，不会与 zcode 的
+    // #6a5ae0（明显更紫）混淆；卡片相邻时明度差足以区分。
+    accent: "#4d6bfe",
+    iconSrc: deepseekAppIcon,
+    iconClass: "agent-icon--deepseek",
   },
   grok: {
     // xAI Grok Build：本地单轮 usage + CLI 日志里的周 Credits 快照。
@@ -460,6 +470,7 @@ function shortWindowLabel(key) {
   if (key === "extra_usage") return "超额";
   if (key === "credits") return "额度";
   if (key === "monthly_cycle") return "月度";
+  if (key.startsWith("balance")) return "余额";
   if (key.endsWith("_5h")) return key.replace(/_5h$/, "").slice(0, 3) + " 5h";
   if (key.endsWith("_weekly")) return key.replace(/_weekly$/, "").slice(0, 3) + " 7d";
   if (key.endsWith("_7d")) return key.replace(/_7d$/, "").slice(0, 3) + " 7d";
@@ -498,6 +509,10 @@ function compactQuotaTooltip(agentId, windows) {
     const view = window.view;
     const label = window.label || shortWindowLabel(window.key);
     if (view.resetExpired) return `${label}：已重置，等待刷新`;
+    // 余额窗口：金额不拼"剩余 X%"，也没有重置倒计时。
+    if (isBalanceWindow(window)) {
+      return `${label}：余额 ${formatBalance(window.key, view.remainingPercent)} · ${quotaProvenance(view)}`;
+    }
     const reset = Number.isFinite(view.resetsInMinutes)
       ? ` · ${formatReset(view.resetsInMinutes)}后重置`
       : "";
@@ -542,6 +557,16 @@ function quotaUsedPercent(view) {
   return Math.min(100, Math.max(0, 100 - view.remainingPercent));
 }
 
+// 余额型窗口（balance_<币种>）的 remainingPercent 装的是金额，不是百分比：
+// "剩余/已用 X%"的换算对它一律不成立，展示统一走这个货币格式——金额 ≥100
+// 时不显示小数，否则保留两位。
+function formatBalance(key, value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "--";
+  const symbol = key === "balance_cny" ? "¥" : key === "balance_usd" ? "$" : "";
+  return `${symbol}${amount.toFixed(amount >= 100 ? 0 : 2)}`;
+}
+
 function windowLengthMinutes(key) {
   if (key === "five_hour" || key === "primary") return 300;
   if (key === "seven_day" || key === "secondary" || key?.startsWith?.("seven_day")) return 10080;
@@ -549,7 +574,9 @@ function windowLengthMinutes(key) {
 }
 
 // 接近耗尽的分级警示：85% 起提醒、95% 起告急（四个竞品一致的做法）。
-function quotaSeverity(view) {
+function quotaSeverity(view, key) {
+  // 余额窗口装的是金额：¥10 不是"剩余 10%"，永远走中性档，不进 warn/critical。
+  if (isBalanceWindow({ key })) return "";
   if (!view.available || view.resetExpired) return "";
   const used = quotaUsedPercent(view);
   if (used >= 95) return "critical";
@@ -572,8 +599,10 @@ function StripDetailCard({ agentId, cell, cardRef }) {
         <div className="strip-detail-metrics">
           {cell.windows.map((window) => {
             const view = window.view;
+            // 余额窗口：金额没有"已用占比"可画，轨道画满（中性表达），数值用货币格式。
+            const balance = isBalanceWindow(window);
             const used = Math.round(quotaUsedPercent(view));
-            const severity = quotaSeverity(view);
+            const severity = quotaSeverity(view, window.key);
             const reset = Number.isFinite(view.resetsInMinutes)
               ? `${formatReset(view.resetsInMinutes)}后重置`
               : "重置时间不可用";
@@ -583,12 +612,12 @@ function StripDetailCard({ agentId, cell, cardRef }) {
                 <div className="strip-detail-track" aria-hidden="true">
                   <i
                     className={severity ? `strip-detail-fill--${severity}` : ""}
-                    style={{ width: `${used}%`, backgroundColor: severity ? undefined : meta.accent }}
+                    style={{ width: balance ? "100%" : `${used}%`, backgroundColor: severity ? undefined : meta.accent }}
                   />
                 </div>
                 <p>
-                  <strong>已用 {used}%</strong>
-                  <small>{reset}</small>
+                  <strong>{balance ? `余额 ${formatBalance(window.key, view.remainingPercent)}` : `已用 ${used}%`}</strong>
+                  <small>{balance ? "账户余额 · 不重置" : reset}</small>
                 </p>
               </section>
             );
@@ -617,8 +646,10 @@ function quotaPace(view, key) {
 }
 
 function QuotaBarRow({ label, view, windowKey, accent }) {
-  const severity = quotaSeverity(view);
-  const pace = quotaPace(view, windowKey);
+  // 余额窗口：金额没有"已用占比"，轨道画满作为中性表达，数值用货币格式。
+  const balance = isBalanceWindow({ key: windowKey });
+  const severity = quotaSeverity(view, windowKey);
+  const pace = balance ? null : quotaPace(view, windowKey);
   return (
     <>
       <div
@@ -628,14 +659,20 @@ function QuotaBarRow({ label, view, windowKey, accent }) {
         <small>{label}</small>
         <div className="quota-bar-track" aria-hidden="true">
           {/* 窗口已过期的快照不再显示旧百分比，避免把陈旧值当现状。 */}
-          <i style={{ transform: `scaleX(${view.available && !view.resetExpired ? quotaUsedPercent(view) / 100 : 0})` }} />
+          <i style={{ transform: `scaleX(${view.available && !view.resetExpired ? (balance ? 1 : quotaUsedPercent(view) / 100) : 0})` }} />
         </div>
-        <em>{view.available && !view.resetExpired ? `已用 ${Math.round(quotaUsedPercent(view))}%` : "--"}</em>
+        <em>{view.available && !view.resetExpired
+          ? balance
+            ? `余额 ${formatBalance(windowKey, view.remainingPercent)}`
+            : `已用 ${Math.round(quotaUsedPercent(view))}%`
+          : "--"}</em>
         <span>
           {view.resetExpired
             ? "已重置，等待刷新"
             : view.available
-              ? `${formatReset(view.resetsInMinutes)}后重置`
+              ? balance
+                ? "账户余额 · 不重置"
+                : `${formatReset(view.resetsInMinutes)}后重置`
               : "暂不可用"}
         </span>
       </div>
@@ -1582,12 +1619,16 @@ function StripBar({
             );
           }
           const view = cell.tightest.view;
-          const severity = quotaSeverity(view);
+          // 余额窗口：一格显示货币金额而不是百分比，aria 同步用货币文案。
+          const balance = isBalanceWindow(cell.tightest);
+          const severity = quotaSeverity(view, cell.tightest.key);
           return (
             <div
               key={agentId}
               className={`strip-cell ${severity ? `strip-cell--${severity}` : ""}`}
-              aria-label={`${meta.label}：剩余 ${Math.round(view.remainingPercent)}%${Number.isFinite(view.resetsInMinutes) ? `，${formatReset(view.resetsInMinutes)}后重置` : ""}`}
+              aria-label={balance
+                ? `${meta.label}：余额 ${formatBalance(cell.tightest.key, view.remainingPercent)} · 官方余额`
+                : `${meta.label}：剩余 ${Math.round(view.remainingPercent)}%${Number.isFinite(view.resetsInMinutes) ? `，${formatReset(view.resetsInMinutes)}后重置` : ""}`}
               onPointerEnter={(event) => showDetail(event, agentId)}
             >
               <img
@@ -1597,7 +1638,7 @@ function StripBar({
                 draggable={false}
               />
               <span className="strip-cell-body">
-                <em>{Math.round(view.remainingPercent)}%</em>
+                <em>{balance ? formatBalance(cell.tightest.key, view.remainingPercent) : `${Math.round(view.remainingPercent)}%`}</em>
               </span>
             </div>
           );
@@ -1822,7 +1863,9 @@ function CompactWidget({
   const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
   const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
   const quotaWindows = compactQuotaWindows(quotaEntry);
-  const quotaView = quotaWindows.find((window) => window.view.available)?.view || UNAVAILABLE_QUOTA;
+  const quotaCurrentWindow = quotaWindows.find((window) => window.view.available);
+  const quotaView = quotaCurrentWindow?.view || UNAVAILABLE_QUOTA;
+  const quotaIsBalance = quotaCurrentWindow ? isBalanceWindow(quotaCurrentWindow) : false;
   const partial = snapshotIsPartial(snapshot);
   const sourceStatus = sourceStatusCopy(snapshot, loading, partial);
   const shellAppearance = glassShellAppearance("widget", {
@@ -1939,7 +1982,9 @@ function CompactWidget({
           >
             <span>{AGENT_META[quotaAgent].label} 已用</span>
             {quotaWindows.map((window) => {
-              const severity = quotaSeverity(window.view);
+              // 余额窗口：金额没有"已用占比"，轨道画满作为中性表达。
+              const balance = isBalanceWindow(window);
+              const severity = quotaSeverity(window.view, window.key);
               const current = window.view.available && !window.view.resetExpired;
               return (
                 <div
@@ -1948,9 +1993,13 @@ function CompactWidget({
                 >
                   <small>{shortWindowLabel(window.key)}</small>
                   <div className="widget-quota-track" aria-hidden="true">
-                    <i style={{ transform: `scaleX(${current ? quotaUsedPercent(window.view) / 100 : 0})` }} />
+                    <i style={{ transform: `scaleX(${current ? (balance ? 1 : quotaUsedPercent(window.view) / 100) : 0})` }} />
                   </div>
-                  <em>{current ? `${Math.round(quotaUsedPercent(window.view))}%` : "--"}</em>
+                  <em>{current
+                    ? balance
+                      ? formatBalance(window.key, window.view.remainingPercent)
+                      : `${Math.round(quotaUsedPercent(window.view))}%`
+                    : "--"}</em>
                 </div>
               );
             })}
@@ -1960,7 +2009,9 @@ function CompactWidget({
                 : quotaView.resetExpired
                   ? "已重置，等待刷新"
                   : quotaView.available
-                    ? `${formatReset(quotaView.resetsInMinutes)}后重置`
+                    ? quotaIsBalance
+                      ? "账户余额 · 不重置"
+                      : `${formatReset(quotaView.resetsInMinutes)}后重置`
                     : quotaEmptyCopy(quotaEntry, quotaAgent, true)}
             </small>
           </button>
@@ -1981,7 +2032,9 @@ function CompactWidget({
               const headline = bindingWindow(entry.windows) || windows[0] || null;
               const headlineView = headline?.view || null;
               const current = Boolean(headlineView && headlineView.available && !headlineView.resetExpired);
-              const severity = headlineView ? quotaSeverity(headlineView) : "";
+              const severity = headlineView ? quotaSeverity(headlineView, headline.key) : "";
+              // 余额窗口的 remainingPercent 是金额（可大于 100），不做百分比钳制。
+              const balance = headline ? isBalanceWindow(headline) : false;
               const remaining = headlineView ? Math.min(100, Math.max(0, headlineView.remainingPercent)) : 0;
               return (
                 <div
@@ -2011,7 +2064,11 @@ function CompactWidget({
                       影响数字的写法与颜色：那一格已经写着窗口或"已重置，等待
                       刷新"，再加 ~ 前缀和灰化是重复信息，只会让人以为数字是
                       估算出来的。 */}
-                  <em>{current ? `${Math.round(remaining)}%` : "--"}</em>
+                  <em>{current
+                    ? balance
+                      ? formatBalance(headline.key, headlineView.remainingPercent)
+                      : `${Math.round(remaining)}%`
+                    : "--"}</em>
                 </div>
               );
             });
@@ -5392,6 +5449,9 @@ export function App() {
       const cell = stripCellData(agentQuotaFor(snapshot, agentId));
       const view = cell?.tightest?.view;
       if (!view?.available) return { remaining: null, stale: false };
+      // 余额窗口装的是金额：菜单栏/托盘只有一个裸数字位，写 ¥68.5 会被读成
+      // "剩余 68%"。与其误导，宁可显示 "--"；金额在卡片、胶囊与 tooltip 里完整呈现。
+      if (isBalanceWindow(cell.tightest)) return { remaining: null, stale: false };
       return {
         remaining: Math.max(0, Math.min(100, Math.round(view.remainingPercent))),
         stale: Boolean(view.stale || view.quality === "official_snapshot"),

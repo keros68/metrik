@@ -46,6 +46,21 @@
 //! `ratelimitCode5h/7d` 是滚动限流窗，`subscriptionBalance`（FEATURE_OMNI +
 //! SUBSCRIPTION）是订阅周期额度池；礼品余额与加速钱包键语义不同，先不展示。
 //! 令牌由 Kimi Work 自行续期，Metrik 每次拉取都重读文件，过期照实报错。
+//!
+//! OpenCode Go（挂在 opencode 卡片）：**未经真机核验**（2026-09 接入）。响应形状
+//! 取自参考实现 dsh-opencode-go-quota（同 Qoder 先例）：`usage` 下的
+//! rolling/weekly/monthly 三个滚动窗口，`percent` 是**已用**百分比（参考实现的
+//! UI 显示"已用 X%"），入库前换算成剩余再 clamp；`resetsAt` 是 RFC3339。
+//! 凭据是 `OPENCODE_GO_API_KEY` 环境变量，或 OpenCode `auth.json` 里
+//! `opencode-go` provider 的明文 key。
+//!
+//! DeepSeek：**官方文档接口**（`GET api.deepseek.com/user/balance`，Bearer）。
+//! 返回的是账户余额——金额字符串、按币种分条——不是百分比窗口：`total_balance`
+//! 的数值直接存进 `remaining_percent`（与前端约好的契约，前端按 window_key 特判
+//! 渲染成金额），不 clamp（余额可以超过 100）；window_key 携带币种
+//! （`balance_cny`/`balance_usd`），余额没有重置概念，`resets_at_ms` 恒为 None。
+//! 凭据候选逐把尝试，先成功者胜：环境变量 `DEEPSEEK_API_KEY` → OpenCode
+//! `auth.json` 的 `deepseek` provider → pi `auth.json` 的 `deepseek` provider。
 
 use crate::domain::QuotaSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -69,6 +84,10 @@ const KIMI_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 // GetSubscriptionStats 的响应里。
 const KIMIWORK_STATS_URL: &str =
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats";
+// OpenCode Go 套餐用量端点。形状取自参考实现 dsh-opencode-go-quota，未经真机核验。
+const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+// DeepSeek 官方余额端点（官方文档接口）。
+const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
 // ── 拉取入口（供 engine 层带缓存调用） ─────────────────────────
 
@@ -698,6 +717,66 @@ fn workbuddy_auth_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// OpenCode Go 套餐的官方配额（挂在 opencode 卡片）：一次实时 GET，Bearer key。
+/// 凭据：环境变量优先，否则 OpenCode auth.json 的 opencode-go provider。
+pub fn fetch_opencode_go_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let key = resolve_opencode_go_credential().context(
+        "未找到 OpenCode Go 的 API key（OPENCODE_GO_API_KEY 环境变量或 OpenCode auth.json 的 opencode-go provider）",
+    )?;
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = agent
+        .get(OPENCODE_GO_USAGE_URL)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|error| map_ureq_error("OpenCode Go", error))?;
+    let body = response
+        .into_string()
+        .context("读取 OpenCode Go 配额响应失败")?;
+    let json: Value = serde_json::from_str(&body).context("OpenCode Go 配额响应不是预期的 JSON")?;
+    let samples = parse_opencode_go_quota(&json);
+    if samples.is_empty() {
+        bail!("OpenCode Go 配额响应缺少可用窗口");
+    }
+    Ok(samples)
+}
+
+/// DeepSeek 官方余额（配额-only 卡片）：多个来源都可能有 key（环境变量、
+/// OpenCode、pi），离线分不出哪把有效——同 GLM 先例逐把尝试，先成功者胜。
+pub fn fetch_deepseek_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let candidates = resolve_deepseek_credentials();
+    if candidates.is_empty() {
+        bail!("未找到 DeepSeek 的 API key（DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 deepseek provider）");
+    }
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let mut last_error = None;
+    for key in &candidates {
+        match fetch_deepseek_once(&agent, key) {
+            Ok(samples) => return Ok(samples),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("candidates 非空则必有错误"))
+}
+
+fn fetch_deepseek_once(agent: &ureq::Agent, key: &str) -> Result<Vec<QuotaSample>> {
+    let response = agent
+        .get(DEEPSEEK_BALANCE_URL)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|error| map_ureq_error("DeepSeek", error))?;
+    let body = response
+        .into_string()
+        .context("读取 DeepSeek 余额响应失败")?;
+    let json: Value = serde_json::from_str(&body).context("DeepSeek 余额响应不是预期的 JSON")?;
+    let samples = parse_deepseek_quota(&json);
+    if samples.is_empty() {
+        bail!("DeepSeek 余额响应缺少可用窗口");
+    }
+    Ok(samples)
+}
+
 /// ureq 错误 → 面向用户的消息。绝不能把请求头（token）带进错误里。
 fn map_ureq_error(provider: &str, error: ureq::Error) -> anyhow::Error {
     match error {
@@ -705,6 +784,8 @@ fn map_ureq_error(provider: &str, error: ureq::Error) -> anyhow::Error {
             anyhow!("{provider} 配额凭据已失效（认证被拒），重新登录对应 CLI")
         }
         ureq::Error::Status(429, _) => anyhow!("{provider} 配额接口限流（429），稍后自动重试"),
+        // 404 说明端点未部署（接口路径可能已变），与凭据失效区分开。
+        ureq::Error::Status(404, _) => anyhow!("{provider} 配额接口返回 404（端点未部署）"),
         ureq::Error::Status(code, _) => anyhow!("{provider} 配额接口返回 HTTP {code}"),
         ureq::Error::Transport(transport) => {
             anyhow!("{provider} 配额接口网络错误：{transport}")
@@ -977,6 +1058,40 @@ fn resolve_kimiwork_credential() -> Option<String> {
         }
     }
     None
+}
+
+/// OpenCode Go key：环境变量优先（用户显式配置），否则 OpenCode `auth.json`
+/// 里 `opencode-go` provider 的明文 key。
+fn resolve_opencode_go_credential() -> Option<String> {
+    env_nonempty("OPENCODE_GO_API_KEY")
+        .or_else(|| nonempty(read_opencode_auth().get("opencode-go")))
+}
+
+/// DeepSeek key 的全部候选（按优先级，去重）：环境变量 → OpenCode `auth.json`
+/// 的 `deepseek` provider → pi `auth.json` 的 `deepseek` provider。不同来源的
+/// key 可能对应不同账户，离线分不出，由调用方逐把尝试。
+fn resolve_deepseek_credentials() -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    let mut push = |key: Option<String>| {
+        if let Some(key) = key {
+            if !candidates.contains(&key) {
+                candidates.push(key);
+            }
+        }
+    };
+    push(env_nonempty("DEEPSEEK_API_KEY"));
+    push(nonempty(read_opencode_auth().get("deepseek")));
+    for path in pi_auth_paths() {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            push(nonempty(parse_provider_key_map(&raw).get("deepseek")));
+        }
+    }
+    candidates
+}
+
+/// 安装探针用：三处凭据落点里有任意一把 DeepSeek key 即算检测到。
+pub fn deepseek_credential_available() -> bool {
+    !resolve_deepseek_credentials().is_empty()
 }
 
 #[derive(Deserialize)]
@@ -1284,6 +1399,72 @@ fn kimiwork_sample(key: &str, used_ratio: f64, reset: Option<i64>, now: i64) -> 
         source_label: "Kimi 官方配额".into(),
         quality: "official_live",
     }
+}
+
+/// OpenCode Go：`usage` 下的 rolling/weekly/monthly 三个滚动窗口；`percent`
+/// 是**已用**百分比（参考实现的 UI 显示"已用 X%"），入库前换算成剩余并
+/// clamp；`resetsAt` 是 RFC3339 字符串。缺失的窗口跳过，不编造。
+/// 形状取自参考实现，未经真机核验。
+fn parse_opencode_go_quota(value: &Value) -> Vec<QuotaSample> {
+    let Some(usage) = value.get("usage") else {
+        return Vec::new();
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut samples = Vec::new();
+    for (field, key) in [
+        ("rolling", "five_hour"),
+        ("weekly", "seven_day"),
+        ("monthly", "monthly_cycle"),
+    ] {
+        let Some(window) = usage.get(field) else {
+            continue;
+        };
+        let Some(used) = first_f64(window, &["percent"]) else {
+            continue;
+        };
+        samples.push(QuotaSample {
+            adapter_id: "opencode",
+            window_key: key.to_owned(),
+            remaining_percent: (100.0 - used).clamp(0.0, 100.0),
+            resets_at_ms: first_time(window, &["resetsAt"]),
+            collected_at_ms: now,
+            source_label: "OpenCode Go 官方配额".into(),
+            quality: "official_live",
+        });
+    }
+    samples
+}
+
+/// DeepSeek 官方余额：金额不是百分比，`total_balance` 的数值直接存进
+/// `remaining_percent`（与前端约好的契约，前端按 window_key 特判渲染成金额），
+/// 不 clamp——余额可以超过 100。window_key 携带币种（`balance_cny`/…），每个
+/// 币种一个窗口；余额没有重置概念，`resets_at_ms` 恒为 None。
+/// 解析失败或为负的条目跳过；全部无效返回空（上层报"缺少可用窗口"）。
+fn parse_deepseek_quota(value: &Value) -> Vec<QuotaSample> {
+    let Some(infos) = value.get("balance_infos").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    infos
+        .iter()
+        .filter_map(|info| {
+            let currency = info.get("currency").and_then(Value::as_str)?.trim();
+            if currency.is_empty() {
+                return None;
+            }
+            // 金额是字符串（"110.00"）；total_balance = 赠送 + 充值。
+            let total = first_f64(info, &["total_balance"])?;
+            (total >= 0.0).then(|| QuotaSample {
+                adapter_id: "deepseek",
+                window_key: format!("balance_{}", currency.to_ascii_lowercase()),
+                remaining_percent: total,
+                resets_at_ms: None,
+                collected_at_ms: now,
+                source_label: "DeepSeek 官方余额".into(),
+                quality: "official_live",
+            })
+        })
+        .collect()
 }
 
 fn first_f64(value: &Value, names: &[&str]) -> Option<f64> {
@@ -1835,5 +2016,171 @@ mod tests {
                 .ok()
                 .map(|value| value.timestamp_millis())
         );
+    }
+
+    /// 参考实现（dsh-opencode-go-quota）的形状，未经真机核验：percent 是已用
+    /// 百分比（weekly 故意用字符串数字），resetsAt 是 RFC3339。
+    const OPENCODE_GO_RESPONSE: &str = r#"{
+        "usage": {
+            "rolling": {"percent": 62.5, "resetsAt": "2026-09-20T13:00:00Z"},
+            "weekly": {"percent": "41", "resetsAt": "2026-09-27T00:00:00Z"},
+            "monthly": {"percent": 12, "resetsAt": "2026-10-01T00:00:00Z"}
+        }
+    }"#;
+
+    #[test]
+    fn opencode_go_quota_maps_three_windows_and_converts_used_to_remaining() {
+        let json: Value = serde_json::from_str(OPENCODE_GO_RESPONSE).unwrap();
+        let samples = parse_opencode_go_quota(&json);
+        assert_eq!(samples.len(), 3);
+        // rolling → 5 小时窗：已用 62.5% → 剩余 37.5%。
+        assert_eq!(samples[0].window_key, "five_hour");
+        assert_eq!(samples[0].remaining_percent, 37.5);
+        assert_eq!(
+            samples[0].resets_at_ms,
+            chrono::DateTime::parse_from_rfc3339("2026-09-20T13:00:00Z")
+                .ok()
+                .map(|value| value.timestamp_millis())
+        );
+        // weekly → 每周：字符串数字同样解析。
+        assert_eq!(samples[1].window_key, "seven_day");
+        assert_eq!(samples[1].remaining_percent, 59.0);
+        // monthly → 月度周期。
+        assert_eq!(samples[2].window_key, "monthly_cycle");
+        assert_eq!(samples[2].remaining_percent, 88.0);
+        assert!(samples
+            .iter()
+            .all(|sample| sample.adapter_id == "opencode" && sample.quality == "official_live"));
+    }
+
+    #[test]
+    fn opencode_go_quota_skips_missing_windows_without_inventing_them() {
+        let json: Value = serde_json::from_str(
+            r#"{"usage": {"rolling": {"percent": 10}, "weekly": {"percent": 20}}}"#,
+        )
+        .unwrap();
+        let samples = parse_opencode_go_quota(&json);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].window_key, "five_hour");
+        assert_eq!(samples[1].window_key, "seven_day");
+        assert!(samples[0].resets_at_ms.is_none(), "缺 resetsAt 时为 None");
+    }
+
+    #[test]
+    fn opencode_go_quota_clamps_out_of_range_percent() {
+        let json: Value = serde_json::from_str(
+            r#"{"usage": {"rolling": {"percent": 105}, "weekly": {"percent": -5}}}"#,
+        )
+        .unwrap();
+        let samples = parse_opencode_go_quota(&json);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].remaining_percent, 0.0);
+        assert_eq!(samples[1].remaining_percent, 100.0);
+    }
+
+    #[test]
+    fn opencode_go_quota_empty_without_usage() {
+        let json: Value = serde_json::from_str(r#"{"error": "unauthorized"}"#).unwrap();
+        assert!(parse_opencode_go_quota(&json).is_empty());
+        // usage 存在但窗口的 percent 都解析不了：不编造窗口。
+        let json: Value =
+            serde_json::from_str(r#"{"usage": {"rolling": {"resetsAt": "2026-09-20T00:00:00Z"}}}"#)
+                .unwrap();
+        assert!(parse_opencode_go_quota(&json).is_empty());
+    }
+
+    /// 打真实 OpenCode Go 接口的烟测（解析器只能证明"对得上夹具"；形状未经真机
+    /// 核验，接口形状漂移只有它能发现）。需要 OPENCODE_GO_API_KEY 或 OpenCode
+    /// auth.json 里有 opencode-go 的 key。
+    #[test]
+    #[ignore = "reads local OpenCode Go credentials and calls the live quota API"]
+    fn live_opencode_go_quota_smoke_test() {
+        let samples =
+            fetch_opencode_go_quota(Duration::from_secs(15)).expect("fetch opencode go quota");
+        assert!(!samples.is_empty(), "配额响应里没有可用窗口");
+        for sample in &samples {
+            println!(
+                "opencode go quota: window={} remaining={:.1}% resets_at={:?}",
+                sample.window_key, sample.remaining_percent, sample.resets_at_ms
+            );
+            assert_eq!(sample.adapter_id, "opencode");
+            assert!((0.0..=100.0).contains(&sample.remaining_percent));
+        }
+    }
+
+    /// 官方文档的示例响应（api.deepseek.com/user/balance）：金额是字符串，
+    /// CNY + USD 两个币种各出一个窗口。
+    const DEEPSEEK_DOC_RESPONSE: &str = r#"{
+        "is_available": true,
+        "balance_infos": [
+            {"currency": "CNY", "total_balance": "110.00", "granted_balance": "10.00", "topped_up_balance": "100.00"},
+            {"currency": "USD", "total_balance": "5.50", "granted_balance": "0.50", "topped_up_balance": "5.00"}
+        ]
+    }"#;
+
+    #[test]
+    fn deepseek_quota_reads_the_documented_shape_with_currency_window_keys() {
+        let json: Value = serde_json::from_str(DEEPSEEK_DOC_RESPONSE).unwrap();
+        let samples = parse_deepseek_quota(&json);
+        assert_eq!(samples.len(), 2);
+        // window_key 携带币种（小写）；金额直接存进 remaining_percent，不 clamp
+        // ——110 元就该显示 110，不是被截断到 100。
+        assert_eq!(samples[0].window_key, "balance_cny");
+        assert_eq!(samples[0].remaining_percent, 110.0);
+        assert_eq!(samples[1].window_key, "balance_usd");
+        assert_eq!(samples[1].remaining_percent, 5.5);
+        assert!(samples.iter().all(|sample| {
+            sample.adapter_id == "deepseek"
+                && sample.quality == "official_live"
+                && sample.resets_at_ms.is_none()
+        }));
+    }
+
+    #[test]
+    fn deepseek_quota_skips_invalid_balances_without_inventing_them() {
+        // 非数字与负数条目跳过，有效条目照常出窗口。
+        let json: Value = serde_json::from_str(
+            r#"{"balance_infos": [
+                {"currency": "CNY", "total_balance": "abc"},
+                {"currency": "USD", "total_balance": "-5.00"},
+                {"currency": "EUR", "total_balance": "3.25"}
+            ]}"#,
+        )
+        .unwrap();
+        let samples = parse_deepseek_quota(&json);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "balance_eur");
+        // 全部无效 → 空，上层报"缺少可用窗口"。
+        let json: Value = serde_json::from_str(
+            r#"{"balance_infos": [{"currency": "CNY", "total_balance": "abc"}]}"#,
+        )
+        .unwrap();
+        assert!(parse_deepseek_quota(&json).is_empty());
+    }
+
+    #[test]
+    fn deepseek_quota_empty_without_balance_infos() {
+        let json: Value = serde_json::from_str(r#"{"is_available": true}"#).unwrap();
+        assert!(parse_deepseek_quota(&json).is_empty());
+        let json: Value = serde_json::from_str(r#"{"balance_infos": []}"#).unwrap();
+        assert!(parse_deepseek_quota(&json).is_empty());
+    }
+
+    /// 打真实 DeepSeek 余额接口的烟测。需要 DEEPSEEK_API_KEY 或 OpenCode/pi
+    /// auth.json 里有 deepseek 的 key。
+    #[test]
+    #[ignore = "reads local DeepSeek credentials and calls the live balance API"]
+    fn live_deepseek_quota_smoke_test() {
+        let samples = fetch_deepseek_quota(Duration::from_secs(15)).expect("fetch deepseek quota");
+        assert!(!samples.is_empty(), "余额响应里没有可用窗口");
+        for sample in &samples {
+            println!(
+                "deepseek balance: window={} amount={:.2}",
+                sample.window_key, sample.remaining_percent
+            );
+            assert_eq!(sample.adapter_id, "deepseek");
+            assert!(sample.window_key.starts_with("balance_"));
+            assert!(sample.remaining_percent >= 0.0, "余额是金额，可能超过 100");
+        }
     }
 }
