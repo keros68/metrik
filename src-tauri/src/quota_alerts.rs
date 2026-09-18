@@ -37,7 +37,10 @@ pub fn check(
             .iter()
             .filter(|window| {
                 let view = &window.view;
-                view.available
+                // 余额窗口（balance_*）存的是金额不是百分比：¥10 不该触发
+                // "剩余 10%" 的告警。
+                !window.key.starts_with("balance")
+                    && view.available
                     && !view.stale
                     && !view.reset_expired
                     && view.remaining_percent.is_finite()

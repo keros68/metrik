@@ -1261,6 +1261,11 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
         }
         return key.replace('_', " ");
     }
+    // DeepSeek 余额窗口（balance_cny 等）：存的是金额不是百分比，前端按
+    // window_key 特判渲染成金额。
+    if key.starts_with("balance") {
+        return "余额".into();
+    }
     match key {
         "five_hour" | "primary" => "Session".into(),
         "seven_day" | "secondary" => {
@@ -1566,6 +1571,22 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             kind: "official".into(),
             label: "Qoder 官方配额".into(),
             detail: "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。".into(),
+            quality: "official".into(),
+            quality_label: "官方".into(),
+        },
+        SourceView {
+            id: "opencode-go-quota".into(),
+            kind: "official".into(),
+            label: "OpenCode Go 官方配额".into(),
+            detail: "从本机 OpenCode auth.json 的 opencode-go key（或 OPENCODE_GO_API_KEY 环境变量）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，未经真机核验。".into(),
+            quality: "official".into(),
+            quality_label: "官方".into(),
+        },
+        SourceView {
+            id: "deepseek-quota".into(),
+            kind: "official".into(),
+            label: "DeepSeek 官方余额".into(),
+            detail: "官方 user/balance 接口，Bearer 鉴权；余额是金额不是百分比窗口（按币种分列，不参与低额度告警）；凭据依次尝试 DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 与 pi auth.json 的 deepseek key。".into(),
             quality: "official".into(),
             quality_label: "官方".into(),
         },

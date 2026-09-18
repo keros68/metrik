@@ -92,6 +92,7 @@ fn agent_label(id: &str) -> &'static str {
         "antigravity" => "Antigravity",
         "workbuddy" => "WorkBuddy",
         "qoder" => "Qoder",
+        "deepseek" => "DeepSeek",
         "pi" => "Pi",
         "qwen" => "Qwen",
         "hermes" => "Hermes",
@@ -124,6 +125,9 @@ fn make_payload<'a>(
                     quota
                         .windows
                         .iter()
+                        // 余额窗口（balance_*）存的是金额不是百分比，小组件圆环
+                        // 无法表达，不喂给小组件。
+                        .filter(|window| !window.key.starts_with("balance"))
                         .map(|window| WidgetQuotaWindow {
                             key: &window.key,
                             label: &window.label,
@@ -272,6 +276,7 @@ mod tests {
         assert_eq!(agent_label("codex"), "ChatGPT");
         assert_eq!(agent_label("zcode"), "GLM");
         assert_eq!(agent_label("opencode"), "OpenCode");
+        assert_eq!(agent_label("deepseek"), "DeepSeek");
         assert_eq!(agent_label("pi"), "Pi");
     }
 

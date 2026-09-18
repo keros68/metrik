@@ -3467,7 +3467,8 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 .agent-icon--kimi,
 .agent-icon--antigravity,
 .agent-icon--workbuddy,
-.agent-icon--qoder { color: inherit; }
+.agent-icon--qoder,
+.agent-icon--deepseek { color: inherit; }
 .agent-icon--grok { color: inherit; }
 
 .agent-monogram {

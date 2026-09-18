@@ -13,3 +13,4 @@ The source pixels are unmodified; Metrik only clips their display to the interfa
 - `pi-app-icon.png`：pi 官方 logo（pi.dev/logo-auto.svg，黑白单色几何 π）重绘为黑底白标圆角瓦片，非红色；仅用于识别 Pi 条目。
 - `qwen-app-icon.png`：千问 iOS 应用官方图标（Apple App Store 上架列表，阿里于智信普惠，2026-08 获取），仅用于识别对应服务。
 - `hermes-app-icon.png`：Hermes 桌面应用官方图标（取自本机安装目录 apps/desktop/assets/icon.icns，2026-08-31 获取，缩至 256px，黑白 nous-girl 圆角瓦片，四角透明未改），仅用于识别对应服务。
+- `deepseek-app-icon.png`：自绘占位图标（品牌蓝 #4d6bfe 圆角方块 + 白色字母 D，512px），非 DeepSeek 官方素材；待替换为官方图标后需更新此条目。

@@ -105,6 +105,12 @@ pub fn table() -> Vec<AgentProbe> {
             probe: Probe::Credential(|| coding_quota::qoder_cookie_source().is_some()),
         },
         AgentProbe {
+            // DeepSeek 是配额-only（只拉官方余额，没有本地日志），探针看三处
+            // 凭据落点（环境变量、OpenCode auth.json、pi auth.json）里有没有 key。
+            id: "deepseek",
+            probe: Probe::Credential(coding_quota::deepseek_credential_available),
+        },
+        AgentProbe {
             id: "grok",
             probe: Probe::Paths(vec![grok_home_dir()]),
         },

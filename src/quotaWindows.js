@@ -18,6 +18,12 @@
 /// "告急"的界线，与 App.jsx 里 quotaSeverity 的 warn 档同一个数：已用 85%。
 export const QUOTA_LOW_REMAINING = 15;
 
+/// 余额型窗口（key 形如 balance_cny / balance_usd）：view.remainingPercent 里
+/// 装的是金额数值而不是百分比——可能大于 100，且越小越穷但语义不是"告急"。
+export function isBalanceWindow(window) {
+  return Boolean(window?.key?.startsWith("balance"));
+}
+
 /// 从窗口列表里挑出当前真正约束用量的那个；没有有效窗口时返回 null。
 /// 传入顺序须为后端的 quota_window_rank 顺序（five_hour → seven_day → 月度 →
 /// 超额付费）：平时取第一个，并列告急时也靠它保证短周期优先。
@@ -26,7 +32,11 @@ export function bindingWindow(windows) {
     (window) => window.view.available && !window.view.resetExpired,
   );
   if (!live.length) return null;
-  const low = live.filter((window) => window.view.remainingPercent <= QUOTA_LOW_REMAINING);
+  // 余额窗口的 remainingPercent 是金额：余额 ¥10 不是"剩余 10%"，不能被告急
+  // 过滤顶到行首、压过真正见底的周期窗口；它仍可作为 live[0] 正常返回。
+  const low = live.filter(
+    (window) => !isBalanceWindow(window) && window.view.remainingPercent <= QUOTA_LOW_REMAINING,
+  );
   if (!low.length) return live[0];
   return low.reduce((tightest, window) =>
     window.view.remainingPercent < tightest.view.remainingPercent ? window : tightest,
