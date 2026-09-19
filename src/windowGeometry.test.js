@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,
   isDockAnchorPosition,
@@ -236,4 +237,20 @@ test("runtime viewport correction rejects transient invalid measurements", () =>
     }),
     null,
   );
+});
+
+test("desync heal retries escalate fast then settle at the 2s cadence", () => {
+  assert.equal(desyncHealRetryDelayMs(0), 0);
+  assert.equal(desyncHealRetryDelayMs(1), 250);
+  assert.equal(desyncHealRetryDelayMs(2), 600);
+  assert.equal(desyncHealRetryDelayMs(3), 1200);
+  assert.equal(desyncHealRetryDelayMs(4), 2000);
+  assert.equal(desyncHealRetryDelayMs(9), 2000);
+});
+
+test("desync heal retry cadence tolerates invalid attempt counters", () => {
+  assert.equal(desyncHealRetryDelayMs(undefined), 0);
+  assert.equal(desyncHealRetryDelayMs(Number.NaN), 0);
+  assert.equal(desyncHealRetryDelayMs(-3), 0);
+  assert.equal(desyncHealRetryDelayMs(2.8), 600);
 });

@@ -127,3 +127,85 @@ test("hover expansion preserves zoom and collapse restores the chosen strip scal
   assert.equal(position.y, 500);
   assert.deepEqual(zooms, [1]);
 });
+
+test("reassertCompactSize keeps retrying on the escalating cadence while the viewport stays desynced", async () => {
+  const context = controller();
+  const sizes = [];
+  const waits = [];
+  const appWindow = {
+    scaleFactor: async () => 1,
+    setSize: async (physical) => { sizes.push(physical); },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({
+      getCurrentWindow: () => appWindow,
+      currentMonitor: async () => null,
+    }),
+    applyWebviewZoom: async () => {},
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    reconcileFloatingSizeAfterShow: async () => ({}),
+    desyncHealRetryDelayMs: (attempt) => geometry.desyncHealRetryDelayMs(attempt),
+    setTimeout: (fn, ms) => { waits.push(ms); fn(); },
+  });
+  // 视口宽 256：320 的设计宽被裁，三次收敛后仍未落位。
+  context.window.innerWidth = 256;
+  context.window.innerHeight = 320;
+  await context.reassertCompactSize();
+  assert.equal(sizes.length, 4);
+  assert.deepEqual(waits, [250, 600, 1200]);
+});
+
+test("reassertCompactSize stops as soon as the viewport settles", async () => {
+  const context = controller();
+  const sizes = [];
+  const appWindow = {
+    scaleFactor: async () => 1,
+    setSize: async (physical) => {
+      sizes.push(physical);
+      context.window.innerWidth = 320;
+    },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({
+      getCurrentWindow: () => appWindow,
+      currentMonitor: async () => null,
+    }),
+    applyWebviewZoom: async () => {},
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    reconcileFloatingSizeAfterShow: async () => ({}),
+    setTimeout: () => { throw new Error("must not wait once settled"); },
+  });
+  context.window.innerWidth = 256;
+  context.window.innerHeight = 320;
+  await context.reassertCompactSize();
+  assert.equal(sizes.length, 1);
+});
+
+test("reassertCompactSize yields immediately when a newer window correction supersedes it", async () => {
+  const context = controller();
+  const appWindow = {
+    scaleFactor: async () => 1,
+    setSize: async () => { throw new Error("superseded pass must not touch the window"); },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({
+      getCurrentWindow: () => appWindow,
+      currentMonitor: async () => null,
+    }),
+    applyWebviewZoom: async () => {},
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    reconcileFloatingSizeAfterShow: async () => ({}),
+  });
+  context.window.innerWidth = 256;
+  context.window.innerHeight = 320;
+  await context.reassertCompactSize(null, () => false);
+});
