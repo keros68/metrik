@@ -18,8 +18,9 @@ use std::path::PathBuf;
 pub enum Probe {
     /// 任一路径存在即算装了。路径已按平台解析成绝对路径。
     Paths(Vec<PathBuf>),
-    /// 由用户配置的凭据提供（Qoder 只有账户级 Credits，没有本地日志；Qwen 看
-    /// pi auth.json 里有没有百炼 Token Plan 的 key）。
+    /// 由闭包判定（Qoder 只有账户级 Credits，没有本地日志；Qwen 看
+    /// pi auth.json 里有没有百炼 Token Plan 的 key；opencode 兼容"OpenCode
+    /// 本体没装、只在 pi 里挂 Go 套餐"的形态）。
     Credential(fn() -> bool),
     /// 没有便宜且可靠的安装痕迹。此类 Agent 只能靠"本周期有用量"反推，
     /// 由调用方补上，这里如实返回"未知"而不是猜一个路径。
@@ -76,8 +77,14 @@ pub fn table() -> Vec<AgentProbe> {
             probe: Probe::Paths(vec![home.join(".zcode")]),
         },
         AgentProbe {
+            // opencode 卡片有两个来源：本地日志（看数据根）与 Go 套餐配额（看
+            // 凭据）。OpenCode 本体没装、只在 pi 里挂 Go 套餐时，凭据落点
+            // （环境变量、OpenCode auth.json、pi auth.json）里有 opencode-go
+            // key 也算检测到（deepseek 探针同款）。
             id: "opencode",
-            probe: Probe::Paths(vec![opencode_data_dir()]),
+            probe: Probe::Credential(|| {
+                opencode_data_dir().exists() || coding_quota::opencode_go_credential_available()
+            }),
         },
         AgentProbe {
             id: "kimi",
@@ -198,8 +205,9 @@ mod tests {
             paths(by_id("workbuddy")),
             vec![home.join(".codebuddy"), home.join(".workbuddy")]
         );
-        // 这两个受环境变量覆盖，必须走与 adapter 相同的解析。
-        assert_eq!(paths(by_id("opencode")), vec![opencode_data_dir()]);
+        // 这两个受环境变量覆盖，必须走与 adapter 相同的解析。opencode 已改
+        // 为凭据探针（闭包在 table() 里，内部仍引用 opencode_data_dir()），
+        // 不在本断言的守护范围内。
         assert_eq!(
             paths(by_id("kimi")),
             vec![

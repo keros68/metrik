@@ -1578,7 +1578,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             id: "opencode-go-quota".into(),
             kind: "official".into(),
             label: "OpenCode Go 官方配额".into(),
-            detail: "从本机 OpenCode auth.json 的 opencode-go key（或 OPENCODE_GO_API_KEY 环境变量）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，未经真机核验。".into(),
+            detail: "从本机凭据（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go key）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，未经真机核验。".into(),
             quality: "official".into(),
             quality_label: "官方".into(),
         },

@@ -4,8 +4,9 @@
 //!
 //! 映射依据 pi 内置目录（models-store.json 的 provider 名单，2026-08 提取）：
 //! GLM Coding Plan（z.ai / BigModel CN）→ `zcode`（GLM 卡片，与 zcode 桌面端
-//! 同一账户额度）；Qwen Token Plan 各变体 → `qwen`；其余 provider（Anthropic、
-//! OpenAI 等）由 pi 自带凭据直连计费，不经过既有客户端的额度，留在 `pi` 名下。
+//! 同一账户额度）；Qwen Token Plan 各变体 → `qwen`；OpenCode Go（`opencode-go`，
+//! 2026-09 真机补录）→ `opencode`；其余 provider（Anthropic、OpenAI 等）由 pi
+//! 自带凭据直连计费，不经过既有客户端的额度，留在 `pi` 名下。
 //!
 //! 归属发生在 adapter 层（写入 `usage_event.adapter_id`），一次入库、处处一致：
 //! 图表、模型榜、会话流、成本估算与同步导出自动跟随，无需各查询点单独判断。
@@ -24,6 +25,9 @@ pub fn credited_agent(pi_provider: Option<&str>) -> &'static str {
         "zai" | "zai-coding" | "zai-coding-cn" => "zcode",
         // 百炼个人 Token Plan：pi 目录里的三个变体打同一个套餐额度。
         "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual" => "qwen",
+        // OpenCode Go：opencode.ai 网关计费的同一套餐，与跑在哪个 harness 无关；
+        // 配额源（coding_quota 的 Go 配额）同挂 opencode 卡片。
+        "opencode-go" => "opencode",
         _ => "pi",
     }
 }
@@ -40,6 +44,8 @@ mod tests {
         assert_eq!(credited_agent(Some("qwen-token-plan")), "qwen");
         assert_eq!(credited_agent(Some("qwen-token-plan-cn")), "qwen");
         assert_eq!(credited_agent(Some("qwen-token-plan-individual")), "qwen");
+        // 真机（2026-09）：pi 会话日志里的 provider id 就是 opencode-go。
+        assert_eq!(credited_agent(Some("opencode-go")), "opencode");
     }
 
     #[test]
