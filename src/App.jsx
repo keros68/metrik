@@ -77,9 +77,12 @@ import {
   UI_SCALE_RANGE,
   applyStartupUiScale,
   applyWindowMode,
+  beginStripControlsExpand,
   broadcastMacAgentSelection,
   broadcastMacAppearance,
+  cancelStripControlsExpand,
   checkForUpdate,
+  collapseStripControlsExpand,
   collapseVerticalStripHover,
   closeWindow,
   getMacAgentSelection,
@@ -1345,15 +1348,33 @@ function StripBar({
   // 控制按钮不再常驻：四个 26px 的槽在竖条上要吃掉 130px，比三个格子还高。
   // 改成按需就地展开——点状态灯位上浮出的 … 把它们放出来，条身随之变长，
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
+  const closeStripControls = useCallback(() => {
+    setHoveredDetail(null);
+    // 收起时先原生还原（单批事务）再收 DOM：按钮随窗口缩短被裁掉，
+    // 不会出现"按钮已消失、空玻璃长条还在"的中间帧。不能走可丢弃的
+    // 代次令牌——令牌一失效 setControlsOpen 就被跳过，菜单永远收不回；
+    // 还原本身丢了也无妨（fit 观察器兜底走旧路径）。
+    runWindowAction(async () => {
+      await collapseStripControlsExpand();
+      setControlsOpen(false);
+    });
+  }, []);
   const toggleControls = useCallback(() => {
     latestWindowCorrection += 1;
     setHoveredDetail(null);
-    setControlsOpen((open) => !open);
-  }, []);
+    if (controlsOpen) {
+      closeStripControls();
+      return;
+    }
+    // 展开前排入还原几何捕获：队列顺序保证它先于 fit 观察器的加高事务，
+    // 读到的是收起态的稳定几何。
+    runWindowAction(beginStripControlsExpand);
+    setControlsOpen(true);
+  }, [controlsOpen, closeStripControls]);
   // 一旦进入置顶只读态，立即丢弃胶囊的临时操作面板状态，只保留数据展示。
   useEffect(() => {
-    if (pinned && IS_LINUX) setControlsOpen(false);
-  }, [pinned]);
+    if (pinned && IS_LINUX) closeStripControls();
+  }, [pinned, closeStripControls]);
   useEffect(() => {
     if (!detailEnabled || controlsOpen) setHoveredDetail(null);
   }, [controlsOpen, detailEnabled]);
@@ -1436,6 +1457,7 @@ function StripBar({
   useEffect(() => () => {
     window.clearTimeout(pointerLeaveTimerRef.current);
     latestWindowCorrection += 1;
+    cancelStripControlsExpand();
     if (IS_WINDOWS || IS_LINUX) runWindowAction(collapseVerticalStripHover);
   }, []);
   // 窗口尺寸跟随真实内容（通用方案，替代手写常量）：每次渲染后与视口变化时
@@ -1532,7 +1554,7 @@ function StripBar({
       pointerLeaveTimerRef.current = null;
       if (shellRef.current?.matches(":hover")) return;
       setHoveredDetail(null);
-      setControlsOpen(false);
+      closeStripControls();
     };
     pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, STRIP_DETAIL_LEAVE_DELAY);
   };
@@ -1704,7 +1726,11 @@ function StripBar({
             <button
               type="button"
               className="strip-button"
-              onClick={onToggleOrientation}
+              onClick={() => {
+                // 换向后收起态的几何口径变了，预捕获的还原值作废，交给 fit 观察器。
+                cancelStripControlsExpand();
+                onToggleOrientation();
+              }}
               aria-label={vertical ? "切换为横条" : "切换为竖条"}
               title={vertical ? "切换为横条" : "切换为竖条"}
             >

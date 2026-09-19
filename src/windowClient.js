@@ -86,6 +86,7 @@ function readStoredStripScale() {
 
 let stripScale = readStoredStripScale();
 let stripHoverRestore = null;
+let stripControlsRestore = null;
 
 /// 设置胶囊条缩放系数（钳到 0.75–2.0）并持久化；返回实际生效值。
 /// 生效在形态切换里（进入胶囊条时应用），这里只管存储。
@@ -1170,6 +1171,56 @@ async function collapseVerticalStripHover() {
   rememberStripSize(restore.width, restore.height);
 }
 
+/// 控制按钮就地展开会经 fit 观察器把窗口临时加高/加宽；展开前记下原生
+/// 几何，收起时一次性还原。收起若改走 resizeStripWindow，setSize 后面
+/// 跟着 reconcile 的多轮 setSize 和贴边锚定的 setPosition——WebView2 在
+/// 每段几何事务之间都可能画出中间帧（用户实拍：收起时空玻璃长条和
+/// 底部残影框闪好几帧才消失）。还原的是展开前刚验证过的稳定几何，
+/// 不需要再 reconcile。
+async function beginStripControlsExpand() {
+  if (isMacPlatform()) return;
+  // 已有待还原的几何说明上一次收起还没落地（快速连点 ⋯）：旧值才是
+  // 收起态的稳定几何，不能被当前展开态覆盖。
+  if (stripControlsRestore) return;
+  const api = await windowApi();
+  if (!api) return;
+  const appWindow = api.getCurrentWindow();
+  const [position, size, factor] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+    appWindow.scaleFactor().catch(() => 1),
+  ]);
+  if (!size) return;
+  const scale = stripScale * (Number.isFinite(factor) && factor > 0 ? factor : 1);
+  stripControlsRestore = {
+    position,
+    size,
+    cssWidth: size.width / scale,
+    cssHeight: size.height / scale,
+  };
+}
+
+async function collapseStripControlsExpand() {
+  const restore = stripControlsRestore;
+  stripControlsRestore = null;
+  if (!restore || isMacPlatform()) return;
+  const api = await windowApi();
+  if (!api) return;
+  const appWindow = api.getCurrentWindow();
+  // 尺寸与位置同时下发：Windows 会在两段原生变更之间画中间帧，拆开
+  // 发就是收起时肉眼可见的一跳。几何来自展开前的稳定状态，不再过
+  // reconcile/锚定；极端情况（展开期间改了 DPI/缩放）由 fit 观察器
+  // 在 DOM 收起后按测量值兜底修正。
+  const mutations = [appWindow.setSize(restore.size).catch(() => {})];
+  if (restore.position) mutations.push(appWindow.setPosition(restore.position).catch(() => {}));
+  await Promise.all(mutations);
+  rememberStripSize(Math.round(restore.cssWidth), Math.round(restore.cssHeight));
+}
+
+function cancelStripControlsExpand() {
+  stripControlsRestore = null;
+}
+
 /// 小组件内容（Agent 行数）变化时只调高度，宽度恒为 320，不走 hide/show。
 /// 上限取工作区高度留 48px 呼吸位（CSS px），超出部分由列表内部滚动承担。
 async function resizeCompactWindow({ height }) {
@@ -1773,9 +1824,12 @@ export {
   WINDOW_SIZES,
   applyStartupUiScale,
   applyWindowMode,
+  beginStripControlsExpand,
   broadcastMacAgentSelection,
   broadcastMacAppearance,
+  cancelStripControlsExpand,
   checkForUpdate,
+  collapseStripControlsExpand,
   collapseVerticalStripHover,
   closeWindow,
   getAutostart,
