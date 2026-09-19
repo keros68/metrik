@@ -122,6 +122,20 @@ function horizontalStripTargetWidth({
   );
 }
 
+/// 宽度失配自愈的重试间隔（ms）。attempt 是本轮失配内已做过的自愈次数：
+/// 首次立即，其后 250/600/1200ms 快速追试，4 次后回到固定 2s 的旧节奏。
+/// WebView2 的合成/zoom 迁就经常晚于 setSize 返回，一次事务后视口仍可能
+/// 差上几个像素；可见的失配（右列被裁、滚动条）不能让观众等满一个 2s
+/// 节流周期，也不能退化成每 120ms 一次的无限重断言，所以按轮次升级。
+function desyncHealRetryDelayMs(attempt) {
+  const normalized = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0;
+  if (normalized === 0) return 0;
+  if (normalized === 1) return 250;
+  if (normalized === 2) return 600;
+  if (normalized === 3) return 1200;
+  return 2000;
+}
+
 /// 竖向胶囊的悬停卡片需要临时放大透明窗口。窗口扩展方向取胶囊所在的
 /// 半屏，原胶囊的屏幕坐标保持不动；纵向只移动到足够容纳卡片的位置。
 function verticalStripHoverLocalLayout({ targetHeight, anchorY, cardHeight, margin = 8, pointerMargin = 22 }) {
@@ -233,6 +247,7 @@ function monitorForWindowPosition(
 }
 
 export {
+  desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,
   isDockAnchorPosition,
