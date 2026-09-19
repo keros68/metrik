@@ -47,7 +47,8 @@
 //! SUBSCRIPTION）是订阅周期额度池；礼品余额与加速钱包键语义不同，先不展示。
 //! 令牌由 Kimi Work 自行续期，Metrik 每次拉取都重读文件，过期照实报错。
 //!
-//! OpenCode Go（挂在 opencode 卡片）：**未经真机核验**（2026-09 接入）。响应形状
+//! OpenCode Go（挂在 opencode 卡片）：**已按真机核验**（2026-09 接入，09-19
+//! 维护者真实账户读数确认准确）。响应形状
 //! 取自参考实现 dsh-opencode-go-quota（同 Qoder 先例）：`usage` 下的
 //! rolling/weekly/monthly 三个滚动窗口，`percent` 是**已用**百分比（参考实现的
 //! UI 显示"已用 X%"），入库前换算成剩余再 clamp；`resetsAt` 是 RFC3339。
@@ -85,7 +86,7 @@ const KIMI_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 // GetSubscriptionStats 的响应里。
 const KIMIWORK_STATS_URL: &str =
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats";
-// OpenCode Go 套餐用量端点。形状取自参考实现 dsh-opencode-go-quota，未经真机核验。
+// OpenCode Go 套餐用量端点。形状取自参考实现 dsh-opencode-go-quota，2026-09-19 真机核验读数准确。
 const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 // DeepSeek 官方余额端点（官方文档接口）。
 const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
@@ -1418,7 +1419,7 @@ fn kimiwork_sample(key: &str, used_ratio: f64, reset: Option<i64>, now: i64) -> 
 /// OpenCode Go：`usage` 下的 rolling/weekly/monthly 三个滚动窗口；`percent`
 /// 是**已用**百分比（参考实现的 UI 显示"已用 X%"），入库前换算成剩余并
 /// clamp；`resetsAt` 是 RFC3339 字符串。缺失的窗口跳过，不编造。
-/// 形状取自参考实现，未经真机核验。
+/// 形状取自参考实现；2026-09-19 真机核验读数准确。
 fn parse_opencode_go_quota(value: &Value) -> Vec<QuotaSample> {
     let Some(usage) = value.get("usage") else {
         return Vec::new();
@@ -2032,7 +2033,7 @@ mod tests {
         );
     }
 
-    /// 参考实现（dsh-opencode-go-quota）的形状，未经真机核验：percent 是已用
+    /// 参考实现（dsh-opencode-go-quota）的形状，已按真机核验：percent 是已用
     /// 百分比（weekly 故意用字符串数字），resetsAt 是 RFC3339。
     const OPENCODE_GO_RESPONSE: &str = r#"{
         "usage": {
