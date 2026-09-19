@@ -3339,7 +3339,9 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
 
 .quota-bar-row {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) auto auto;
+  /* 标签列按最长现实标签留足一行（Antigravity 的 "Gemini · 每周" ≈68px，
+     64px 时代会把"周"字折到第二行）；轨道仍保持各行同宽对齐。 */
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   margin-top: 9px;
