@@ -1722,6 +1722,13 @@ html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinne
   line-height: 1.25;
 }
 
+/* 金额格（余额）：¥xx.x 比百分比长得多，11px 必然溢出竖条 32px 内容区
+   （实测 ¥68.50 宽 36.7px）。配合 compact 格式（≤1 位小数）降一档字号，
+   ¥9999 以内都装得下；完整精度留给主窗与详情卡。 */
+.strip-cell-body em.strip-balance {
+  font-size: 10px;
+}
+
 .strip-shell--transparent .strip-cell-body em { color: rgba(255, 255, 255, 0.92); }
 
 /* 格子只有图标 + 百分比两层，接近耗尽全靠数字变色表达（沿用 85/95 分级）。 */

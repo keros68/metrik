@@ -51,8 +51,9 @@
 //! 取自参考实现 dsh-opencode-go-quota（同 Qoder 先例）：`usage` 下的
 //! rolling/weekly/monthly 三个滚动窗口，`percent` 是**已用**百分比（参考实现的
 //! UI 显示"已用 X%"），入库前换算成剩余再 clamp；`resetsAt` 是 RFC3339。
-//! 凭据是 `OPENCODE_GO_API_KEY` 环境变量，或 OpenCode `auth.json` 里
-//! `opencode-go` provider 的明文 key。
+//! 凭据按优先级取一把：`OPENCODE_GO_API_KEY` 环境变量 → OpenCode `auth.json`
+//! 里 `opencode-go` provider 的明文 key → pi `auth.json` 的同名 provider
+//! （Go 套餐常挂在 pi 下用，pi 只是 harness，两边 auth.json 同形状同名）。
 //!
 //! DeepSeek：**官方文档接口**（`GET api.deepseek.com/user/balance`，Bearer）。
 //! 返回的是账户余额——金额字符串、按币种分条——不是百分比窗口：`total_balance`
@@ -718,10 +719,10 @@ fn workbuddy_auth_dirs() -> Vec<PathBuf> {
 }
 
 /// OpenCode Go 套餐的官方配额（挂在 opencode 卡片）：一次实时 GET，Bearer key。
-/// 凭据：环境变量优先，否则 OpenCode auth.json 的 opencode-go provider。
+/// 凭据：环境变量 → OpenCode auth.json → pi auth.json 的 opencode-go provider。
 pub fn fetch_opencode_go_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     let key = resolve_opencode_go_credential().context(
-        "未找到 OpenCode Go 的 API key（OPENCODE_GO_API_KEY 环境变量或 OpenCode auth.json 的 opencode-go provider）",
+        "未找到 OpenCode Go 的 API key（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go provider）",
     )?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     let response = agent
@@ -1060,11 +1061,24 @@ fn resolve_kimiwork_credential() -> Option<String> {
     None
 }
 
-/// OpenCode Go key：环境变量优先（用户显式配置），否则 OpenCode `auth.json`
-/// 里 `opencode-go` provider 的明文 key。
+/// OpenCode Go key（按优先级取第一把）：环境变量 → OpenCode `auth.json` 的
+/// `opencode-go` provider → pi `auth.json` 的同名 provider。OpenCode Go 套餐
+/// 可以挂在 pi 下用（pi 只是 harness），key 落在 pi 的 auth.json，形状与
+/// OpenCode 的相同、provider 同名。
 fn resolve_opencode_go_credential() -> Option<String> {
     env_nonempty("OPENCODE_GO_API_KEY")
         .or_else(|| nonempty(read_opencode_auth().get("opencode-go")))
+        .or_else(|| {
+            pi_auth_paths().iter().find_map(|path| {
+                let raw = std::fs::read_to_string(path).ok()?;
+                nonempty(parse_provider_key_map(&raw).get("opencode-go"))
+            })
+        })
+}
+
+/// 安装探针用：三处凭据落点里有任意一把 OpenCode Go key 即算有该套餐。
+pub fn opencode_go_credential_available() -> bool {
+    resolve_opencode_go_credential().is_some()
 }
 
 /// DeepSeek key 的全部候选（按优先级，去重）：环境变量 → OpenCode `auth.json`

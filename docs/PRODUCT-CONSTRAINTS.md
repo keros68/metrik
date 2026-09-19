@@ -42,6 +42,12 @@ change.
   because an exhausted weekly budget blocks the agent no matter how full the
   session window looks. A reading whose reset moment has already passed
   describes a finished cycle and is never used as the current value.
+- Money balances are amounts, not quota windows, so they never participate in
+  the low-quota takeover above. The strip's fixed cross-axis width only fits a
+  short number, so strip cells render balances compactly: at most one decimal
+  at a slightly smaller type step, keeping the currency symbol. The compact
+  widget, expanded view, detail cards, and screen-reader labels always state
+  the full amount; the strip stays glanceable, not authoritative.
 - Claude's zero-credential `statusLine` hook is the default quota source. A
   hook snapshot older than 15 minutes remains visible but is explicitly stale;
   it must not become indistinguishable from a fresh reading. Showing or

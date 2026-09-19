@@ -559,12 +559,14 @@ function quotaUsedPercent(view) {
 
 // 余额型窗口（balance_<币种>）的 remainingPercent 装的是金额，不是百分比：
 // "剩余/已用 X%"的换算对它一律不成立，展示统一走这个货币格式——金额 ≥100
-// 时不显示小数，否则保留两位。
-function formatBalance(key, value) {
+// 时不显示小数，否则保留两位。compact 供胶囊条格子使用：格子只有 32px，
+// 两位小数必然溢出裁切，100 以下降到 1 位并去掉孤立的 .0。
+function formatBalance(key, value, compact = false) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "--";
   const symbol = key === "balance_cny" ? "¥" : key === "balance_usd" ? "$" : "";
-  return `${symbol}${amount.toFixed(amount >= 100 ? 0 : 2)}`;
+  const text = amount.toFixed(amount >= 100 ? 0 : compact ? 1 : 2);
+  return symbol + (compact ? text.replace(/\.0$/, "") : text);
 }
 
 function windowLengthMinutes(key) {
@@ -1638,7 +1640,9 @@ function StripBar({
                 draggable={false}
               />
               <span className="strip-cell-body">
-                <em>{balance ? formatBalance(cell.tightest.key, view.remainingPercent) : `${Math.round(view.remainingPercent)}%`}</em>
+                <em className={balance ? "strip-balance" : undefined}>
+                  {balance ? formatBalance(cell.tightest.key, view.remainingPercent, true) : `${Math.round(view.remainingPercent)}%`}
+                </em>
               </span>
             </div>
           );
