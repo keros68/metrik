@@ -50,7 +50,7 @@ import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAp
 import { modelDisplayName } from "./modelNames.js";
 import { QUOTA_LOW_REMAINING, bindingWindow, isBalanceWindow } from "./quotaWindows.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
-import { horizontalStripTargetWidth } from "./windowGeometry";
+import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
   configureQoderCookie,
   configureSync,
@@ -1797,17 +1797,23 @@ function CompactWidget({
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
   const shellRef = useRef(null);
-  // 宽度失配自愈的节流时间戳：失配不消失时观察器会一直触发，没有节流会
-  // 每 120ms 重断言一次尺寸；距上次不足 2s 不再重复自愈（失配消失即止），
-  // 替代旧的 3 次终身上限——上限烧完后失配就永远留着了。跨屏/DPI 变化时
-  // 清零，让新显示器上的自愈立即恢复资格。自愈只重断言当前尺寸，不再完整
-  // hide/show 窗口或恢复记忆位置，避免旧显示器状态覆盖新 DPI。
+  // 宽度失配自愈的节奏状态：lastDesyncHealRef 记本轮上次自愈时刻，
+  // desyncHealAttemptRef 记本轮已自愈次数（决定下次间隔），inFlight 防止
+  // reassert 内部收敛期间观察器再叠加新事务。间隔按 0/250/600/1200ms 升级、
+  // 4 轮后退回 2s 兜底（desyncHealRetryDelayMs）：失配对用户可见（右列被裁、
+  // 滚动条），不能让观众等满一个 2s 节流周期（切外观实拍挂满 2s+）；也不能
+  // 退回每 120ms 无限重断言、持续打断 WebView。失配消失即清零回首轮；跨屏/
+  // DPI 变化时同样清零，让新显示器上的自愈立即恢复资格。自愈只重断言当前
+  // 尺寸，不 hide/show、不恢复记忆位置，避免旧显示器状态覆盖新 DPI。
   const lastDesyncHealRef = useRef(0);
+  const desyncHealAttemptRef = useRef(0);
+  const desyncHealInFlightRef = useRef(false);
   useEffect(() => {
     if (!isDesktop()) return undefined;
     let cancel = null;
     onScaleFactorChanged(() => {
       lastDesyncHealRef.current = 0;
+      desyncHealAttemptRef.current = 0;
     }).then((fn) => {
       cancel = fn;
     });
@@ -1834,12 +1840,26 @@ function CompactWidget({
       const widthDesynced =
         shell.scrollWidth > shell.clientWidth + 1 || rect.width > window.innerWidth + 1;
       if (!IS_MAC && widthDesynced) {
+        // 上一轮 reassert 还在内部收敛时不叠加新事务：两个循环互踩会来回
+        // 改写尺寸；收敛循环自己会在新代次出现时让位。
+        if (desyncHealInFlightRef.current) return;
         const now = Date.now();
-        if (now - lastDesyncHealRef.current < 2000) return;
+        const attempt = desyncHealAttemptRef.current;
+        if (now - lastDesyncHealRef.current < desyncHealRetryDelayMs(attempt)) return;
         lastDesyncHealRef.current = now;
-        runLatestWindowCorrection(() => reassertCompactSize());
+        desyncHealAttemptRef.current = attempt + 1;
+        desyncHealInFlightRef.current = true;
+        runLatestWindowCorrection(async (isLatest) => {
+          try {
+            await reassertCompactSize(null, isLatest);
+          } finally {
+            desyncHealInFlightRef.current = false;
+          }
+        });
         return;
       }
+      // 失配已消失：下一轮失配从首轮立即自愈重新开始。
+      desyncHealAttemptRef.current = 0;
       const list = shell.querySelector(".widget-agent-list");
       if (!list) return;
       // 内容自然高 = 实际行高之和（getBoundingClientRect，与窗口大小无关）。

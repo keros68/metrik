@@ -10,6 +10,7 @@ import {
   trayBadgeKey,
 } from "./trayBadge.js";
 import {
+  desyncHealRetryDelayMs,
   floatingViewportSize,
   isDockAnchorPosition,
   isStableFloatingMode,
@@ -1268,32 +1269,62 @@ async function resizeCompactWindow({ height }) {
 /// DPI 变化（拖到另一台显示器、系统改缩放）后按当前缩放系数重算 compact
 /// 物理尺寸：zoom 不变、不 hide/show，只把视口校正回 320 CSS px。
 /// 否则 zoom 与物理尺寸失配时视口缩成 ~256px，320 的最小内容宽度被裁。
-async function reassertCompactSize(scaleFactor = null) {
+/// isLatest 来自调用方的窗口校正代次，失配自愈期间用户又触发别的事务时
+/// 中途让位；retryDelay 由测试注入，生产走 desyncHealRetryDelayMs。
+const COMPACT_REASSERT_PASSES = 3;
+
+async function reassertCompactSize(scaleFactor = null, isLatest = null, retryDelay = desyncHealRetryDelayMs) {
   if (isMacPlatform()) return;
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();
   const size = WINDOW_SIZES.compact;
-  await applyWebviewZoom(uiScale);
-  const physical = await scaledPhysicalSize(
-    api,
-    appWindow,
-    size.width,
-    compactContentHeight(size.height),
-    uiScale,
-    scaleFactor,
-  );
-  await appWindow.setSize(physical).catch((error) => {
-    console.warn("Unable to reassert the compact window size.", error);
-  });
-  await reconcileFloatingSizeAfterShow(
-    api,
-    appWindow,
-    size.width,
-    compactContentHeight(size.height),
-    uiScale,
-    physical,
-  );
+  const height = compactContentHeight(size.height);
+  for (let pass = 0; ; pass += 1) {
+    if (isLatest && !isLatest()) return;
+    await applyWebviewZoom(uiScale);
+    const physical = await scaledPhysicalSize(
+      api,
+      appWindow,
+      size.width,
+      height,
+      uiScale,
+      scaleFactor,
+    );
+    await appWindow.setSize(physical).catch((error) => {
+      console.warn("Unable to reassert the compact window size.", error);
+    });
+    await reconcileFloatingSizeAfterShow(
+      api,
+      appWindow,
+      size.width,
+      height,
+      uiScale,
+      physical,
+    );
+    if (pass >= COMPACT_REASSERT_PASSES) return;
+    // WebView2 的合成/zoom 迁就晚于 setSize 返回时，第一轮事务后视口仍可能
+    // 差几个像素（用户实拍：切外观后右列被裁 + 滚动条要挂 2s 节流一整圈）。
+    // 视口落位前按升级节奏原地追试，落位即止，不退回外层慢节流。
+    const factor = await appWindow.scaleFactor().catch(() => 1);
+    const monitor = await api.currentMonitor().catch(() => null);
+    const expected = floatingViewportSize(
+      size.width,
+      height,
+      uiScale,
+      factor,
+      monitor?.workArea?.size,
+    );
+    if (
+      Math.abs(window.innerWidth - expected.width) <= 1
+      && Math.abs(window.innerHeight - expected.height) <= 1
+    ) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, retryDelay(pass + 1));
+    });
+  }
 }
 
 /// strip 不能只靠 DOM ResizeObserver：跨屏时 WebView 的 CSS 视口可能仍认为自己
