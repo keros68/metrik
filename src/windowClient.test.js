@@ -127,3 +127,86 @@ test("hover expansion preserves zoom and collapse restores the chosen strip scal
   assert.equal(position.y, 500);
   assert.deepEqual(zooms, [1]);
 });
+
+test("strip controls collapse restores the pre-open geometry in one batched transaction", async () => {
+  const context = controller();
+  const calls = [];
+  let reconciles = 0;
+  let current = {
+    position: { x: 900, y: 300 },
+    size: { width: 42, height: 96 },
+  };
+  const appWindow = {
+    outerPosition: async () => current.position,
+    outerSize: async () => current.size,
+    scaleFactor: async () => 1.25,
+    setSize: async (size) => { calls.push(["setSize", size]); current = { ...current, size }; },
+    setPosition: async (position) => { calls.push(["setPosition", position]); current = { ...current, position }; },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({ getCurrentWindow: () => appWindow }),
+    reconcileFloatingSizeAfterShow: async () => { reconciles += 1; throw new Error("collapse must not reconcile"); },
+  });
+  await context.beginStripControlsExpand();
+  // fit 观察器把窗口临时加高（模拟展开态）。
+  current = { position: { x: 900, y: 160 }, size: { width: 42, height: 226 } };
+  await context.collapseStripControlsExpand();
+  assert.deepEqual(calls, [
+    ["setSize", { width: 42, height: 96 }],
+    ["setPosition", { x: 900, y: 300 }],
+  ]);
+  assert.equal(reconciles, 0);
+  // CSS 尺寸按 stripScale×DPI 反记进缓存：96/1.25 = 76.8 → 77。
+  const cached = context.stripContentSize("vertical", {});
+  assert.equal(cached.width, 34);
+  assert.equal(cached.height, 77);
+  // 收起后还原值已消费，再次收起是无害的空操作。
+  await context.collapseStripControlsExpand();
+  assert.equal(calls.length, 2);
+});
+
+test("beginStripControlsExpand keeps an existing restore instead of overwriting it", async () => {
+  const context = controller();
+  let size = { width: 42, height: 96 };
+  const appWindow = {
+    outerPosition: async () => ({ x: 900, y: 300 }),
+    outerSize: async () => size,
+    scaleFactor: async () => 1,
+    setSize: async (value) => { size = value; },
+    setPosition: async () => {},
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({ getCurrentWindow: () => appWindow }),
+  });
+  await context.beginStripControlsExpand();
+  size = { width: 42, height: 226 };
+  await context.beginStripControlsExpand();
+  await context.collapseStripControlsExpand();
+  assert.deepEqual(size, { width: 42, height: 96 });
+});
+
+test("collapseStripControlsExpand without a pending restore is a no-op", async () => {
+  const context = controller();
+  let resized = 0;
+  const appWindow = {
+    outerPosition: async () => null,
+    outerSize: async () => null,
+    scaleFactor: async () => 1,
+    setSize: async () => { resized += 1; },
+    setPosition: async () => {},
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({ getCurrentWindow: () => appWindow }),
+  });
+  await context.collapseStripControlsExpand();
+  assert.equal(resized, 0);
+});
