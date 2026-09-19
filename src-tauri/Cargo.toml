@@ -96,8 +96,7 @@ windows = { version = "0.61.3", features = [
 ] }
 
 [profile.release]
-codegen-units = 1
-lto = true
+lto = "thin"
 opt-level = "s"
 panic = "abort"
 strip = true
