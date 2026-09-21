@@ -8,7 +8,7 @@
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-09-15";
+pub const PRICING_AS_OF: &str = "2026-09-21";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -84,16 +84,16 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gemini-3.7-flash", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
     ("gemini-3.8-flash", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
     ("gemini-exp-1206", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.0, output: 2.5 }),
-    ("gemini-flash-latest", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.0, output: 2.5 }),
-    ("gemini-flash-lite-latest", Pricing { input: 0.1, cache_read: 0.01, cache_write: 0.0, output: 0.4 }),
+    ("gemini-flash-latest", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
+    ("gemini-flash-lite-latest", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.0, output: 2.5 }),
     ("gemini-gemma-2-27b-it", Pricing { input: 0.35, cache_read: 0.35, cache_write: 0.0, output: 1.05 }),
     ("gemini-gemma-2-9b-it", Pricing { input: 0.35, cache_read: 0.35, cache_write: 0.0, output: 1.05 }),
     ("gemini-omni-1.1-flash", Pricing { input: 1.5, cache_read: 1.5, cache_write: 0.0, output: 9.0 }),
     ("gemini-omni-flash-preview", Pricing { input: 1.5, cache_read: 1.5, cache_write: 0.0, output: 9.0 }),
-    ("gemini-pro-latest", Pricing { input: 1.25, cache_read: 0.125, cache_write: 0.0, output: 10.0 }),
+    ("gemini-pro-latest", Pricing { input: 2.0, cache_read: 0.2, cache_write: 0.0, output: 12.0 }),
     ("gemini-robotics-er-1.5-preview", Pricing { input: 0.3, cache_read: 0.0, cache_write: 0.0, output: 2.5 }),
     ("gemini-robotics-er-1.6-preview", Pricing { input: 1.0, cache_read: 1.0, cache_write: 0.0, output: 5.0 }),
-    ("gemini-robotics-er-2-preview", Pricing { input: 2.0, cache_read: 0.2, cache_write: 0.0, output: 10.0 }),
+    ("gemini-robotics-er-2-preview", Pricing { input: 1.0, cache_read: 0.1, cache_write: 0.0, output: 5.0 }),
     ("gemini-robotics-er-2-streaming-preview", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 10.0 }),
     ("glm-4-32b-0414-128k", Pricing { input: 0.1, cache_read: 0.1, cache_write: 0.0, output: 0.1 }),
     ("glm-4.5", Pricing { input: 0.6, cache_read: 0.6, cache_write: 0.0, output: 2.2 }),
