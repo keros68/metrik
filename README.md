@@ -40,7 +40,7 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 | Claude | `~/.claude/projects` | ✅ 5 小时、每周（状态栏钩子 / OAuth） |
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5 小时、每周 |
 | Kimi | `~/.kimi-code`、`~/.kimi` | ✅ 5 小时、每周、月度 |
-| OpenCode | `~/.local/share/opencode/storage` | ❌ |
+| OpenCode | `~/.local/share/opencode/storage` | ✅ Go 订阅（OpenCode / pi 的 auth.json） |
 | Antigravity | IDE 语言服务 RPC | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | ✅ 官方 Credits |
 | Qoder | — | ✅ 官方 Credits |

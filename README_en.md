@@ -40,7 +40,7 @@ The app interface is in Chinese. See the [user guide](docs/guide.md) for platfor
 | Claude | `~/.claude/projects` | ✅ 5-hour, weekly (status line hook / OAuth) |
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5-hour, weekly |
 | Kimi | `~/.kimi-code`, `~/.kimi` | ✅ 5-hour, weekly, monthly |
-| OpenCode | `~/.local/share/opencode/storage` | ❌ |
+| OpenCode | `~/.local/share/opencode/storage` | ✅ Go plan (OpenCode / pi auth.json) |
 | Antigravity | IDE language server RPC | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`, `~/.workbuddy/projects` | ✅ Official credits |
 | Qoder | — | ✅ Official credits |
