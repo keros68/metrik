@@ -96,6 +96,9 @@ impl Pricing {
 /// - glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
 ///   （2026-07-20 核对；同页 glm-5/glm-5.1 数值与 LiteLLM 生成表完全一致，
 ///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
+/// - gpt-5.2-codex：OpenAI 官方模型页 developers.openai.com/api/docs/models/gpt-5.2-codex
+///   （2026-09-23 核对；虽已停用，官方页面仍列出输入 $1.75、缓存读 $0.175、
+///   输出 $14/M）。保留旧会话日志的计价；缓存写入不单独收费。
 /// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
 ///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
 ///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
@@ -104,6 +107,15 @@ impl Pricing {
 ///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
 ///   规则推算不是逐模型报价，官方列出后应替换。
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
+    (
+        "gpt-5.2-codex",
+        Pricing {
+            input: 1.75,
+            cache_read: 0.175,
+            cache_write: 0.0,
+            output: 14.0,
+        },
+    ),
     (
         "deepseek-v4-flash",
         Pricing {
@@ -202,7 +214,7 @@ pub fn price_for(model: &str, occurred_at_ms: i64) -> Option<Pricing> {
     })
 }
 
-/// https://developers.openai.com/api/docs/models/gpt-6-astra (2026-09-05).
+/// https://developers.openai.com/api/docs/pricing (2026-09-23).
 /// Only validated request sizes select the long-context tier; missing evidence
 /// retains the base estimate rather than using cumulative session counters.
 pub fn price_for_request(
@@ -211,9 +223,9 @@ pub fn price_for_request(
     request_input_tokens: Option<i64>,
 ) -> Option<Pricing> {
     let mut price = price_for(model, occurred_at_ms)?;
-    if resolve(model)?.0 == "gpt-6-astra"
-        && request_input_tokens.is_some_and(|input| input > 272_000)
-    {
+    let canonical = resolve(model)?.0;
+    let input = request_input_tokens.unwrap_or_default();
+    if input > 272_000 && matches!(canonical, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna") {
         price.input *= 2.0;
         price.cache_read *= 2.0;
         price.cache_write *= 2.0;
@@ -327,6 +339,44 @@ mod tests {
             price_for_request("gpt-5", 0, Some(300_000)).unwrap().input,
             price_for("gpt-5", 0).unwrap().input
         );
+    }
+
+    #[test]
+    fn gpt6_sol_and_luna_use_long_context_rates_only_with_request_evidence() {
+        for (model, standard, long) in [
+            ("gpt-6-sol", (2.0, 0.2, 2.5, 10.0), (4.0, 0.4, 5.0, 15.0)),
+            (
+                "gpt-6-luna",
+                (0.1, 0.01, 0.125, 0.5),
+                (0.2, 0.02, 0.25, 0.75),
+            ),
+        ] {
+            let base = price_for_request(model, 0, Some(272_000)).unwrap();
+            assert_eq!(
+                (base.input, base.cache_read, base.cache_write, base.output),
+                standard
+            );
+            let extended = price_for_request(model, 0, Some(272_001)).unwrap();
+            assert_eq!(
+                (
+                    extended.input,
+                    extended.cache_read,
+                    extended.cache_write,
+                    extended.output
+                ),
+                long
+            );
+            let unknown = price_for_request(model, 0, None).unwrap();
+            assert_eq!(
+                (
+                    unknown.input,
+                    unknown.cache_read,
+                    unknown.cache_write,
+                    unknown.output
+                ),
+                standard
+            );
+        }
     }
 
     /// 峰谷之外的模型全天一价，用哪个时刻都一样；固定一个（2026-08-20 12:30
@@ -495,6 +545,26 @@ mod tests {
         assert!(price_for("glm-4.6", ANY_TIME_MS).is_some());
         assert!(price_for("gemini-3-flash-preview", ANY_TIME_MS).is_some());
         assert!(price_for("gemini-2.5-pro", ANY_TIME_MS).is_some());
+        let opus = price_for("claude-opus-5-5", ANY_TIME_MS).expect("Opus 5.5 priced");
+        assert_eq!(
+            (opus.input, opus.cache_read, opus.cache_write, opus.output),
+            (4.0, 0.2, 5.0, 20.0)
+        );
+        let sol = price_for("gpt-6-sol", ANY_TIME_MS).expect("GPT-6 Sol priced");
+        assert_eq!(
+            (sol.input, sol.cache_read, sol.cache_write, sol.output),
+            (2.0, 0.2, 2.5, 10.0)
+        );
+        let luna = price_for("gpt-6-luna", ANY_TIME_MS).expect("GPT-6 Luna priced");
+        assert_eq!(
+            (luna.input, luna.cache_read, luna.cache_write, luna.output),
+            (0.1, 0.01, 0.125, 0.5)
+        );
+        let grok_47 = price_for("grok-4.7", ANY_TIME_MS).expect("Grok 4.7 priced");
+        assert_eq!(
+            (grok_47.input, grok_47.cache_read, grok_47.output),
+            (2.0, 0.5, 6.0)
+        );
         // xAI 两个易混淆的裸名都要在表：4.6 的缓存价与 4.5 不同，
         // grok-build-0.1 是独立定价的代码快模型（别名 grok-code-fast 族）。
         // 钉在测试里：LiteLLM 若将来掉条目，重新生成会静默失价。
