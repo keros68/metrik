@@ -32,6 +32,13 @@ change.
   update may still be required instead of claiming the rescan repaired it.
 - Metrik is local-first. Optional multi-device sync must not upload prompts,
   conversation text, credentials, or raw tool output.
+- The `--quota-json` CLI is a read-only observer of the ledger: it reports the
+  windows the app last persisted, never scans logs, never fetches from
+  providers, and never takes the scan lock — the desktop app remains the only
+  writer. The JSON carries derived quota metadata only (no credentials, no raw
+  provider responses, no source paths), is versioned by `schemaVersion`, and
+  marks money-balance windows as `kind: "balance"` so consumers never render a
+  balance amount as a percentage.
 - The compact widget prioritizes per-agent official quota windows, including
   remaining percentage and reset countdown. Token analytics belong in the
   expanded view.

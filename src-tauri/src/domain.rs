@@ -28,6 +28,26 @@ pub const AGENT_IDS: [&str; 13] = [
     "hermes",
 ];
 
+/// 对外展示名，与桌面快照、CLI JSON 共用一份，避免各出口各自漂移。
+pub fn agent_label(id: &str) -> &'static str {
+    match id {
+        "codex" => "ChatGPT",
+        "claude" => "Claude",
+        "zcode" => "GLM",
+        "opencode" => "OpenCode",
+        "kimi" => "Kimi",
+        "antigravity" => "Antigravity",
+        "workbuddy" => "WorkBuddy",
+        "qoder" => "Qoder",
+        "deepseek" => "DeepSeek",
+        "grok" => "Grok",
+        "pi" => "Pi",
+        "qwen" => "Qwen",
+        "hermes" => "Hermes",
+        _ => "Agent",
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TokenVector {
     pub input_uncached: i64,

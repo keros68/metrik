@@ -121,12 +121,26 @@ Codex reset-credit queries reuse `account/rateLimits/read` and expose only the
 reported count and earliest known available-credit expiry; credit IDs and raw
 responses stay out of presentation and storage.
 
+`metrik --quota-json [database-path]` reads the same persisted windows through a
+`SQLITE_OPEN_READ_ONLY` connection (no schema check, no scan lock, no network)
+and prints them as a `schemaVersion`-tagged JSON document for external tools.
+It reuses `load_visible_agent_quota_windows`, so the CLI, the widget, and the
+desktop UI always render one identical window set for the same ledger —
+including the kimi/kimiwork merge and balance windows marked as amounts. It is
+an observer, not a refresher: the desktop app stays the only writer, and a
+missing or unreadable ledger is a stderr message with a non-zero exit code.
+
 ## Storage
 
 - `scan_source`: local locator, file state, parser version, and covered time horizon
 - `usage_event`: normalized immutable usage facts, including the project working directory when the source reports one
 - `event_observation`: relation between logical facts and local files
-- `quota_snapshot`: latest official quota per rolling window
+- `quota_snapshot`: latest official quota per rolling window. `remaining_percent`
+  holds percentages (0–100) for window quotas and raw money amounts (≥ 0, may
+  exceed 100) for `balance_*` windows; ledgers created before the balance
+  contract carry a stricter percent-only CHECK and are rebuilt on upgrade —
+  the table is wholesale-replaced derived data, so only one stale quota round
+  is lost.
 
 SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched. Version changes force retained-history reconciliation.
 
