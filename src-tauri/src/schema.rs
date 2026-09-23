@@ -86,10 +86,40 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(include_str!("../migrations/001_init.sql"))
         .context("failed to initialize usage database schema")?;
+    rebuild_quota_snapshot_if_check_forbids_balances(connection)?;
     ensure_optional_columns(connection)?;
     connection
         .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
         .context("failed to record database schema version")?;
+    Ok(())
+}
+
+/// DeepSeek 余额按契约把金额原样存进 `remaining_percent`（可以超过 100），但
+/// 早期建表的 `CHECK (remaining_percent BETWEEN 0 AND 100)` 会让余额 >100 的
+/// 写入连整轮配额事务一起失败——金额在 100 以内的账户从测不出这个问题。
+/// schema 兼容性只看列集合，这样的老库不会被上面的整库重建覆盖，所以在这里
+/// 单独识别并重建。quota_snapshot 是整体替换的派生表：丢掉的只是旧快照，
+/// 下一轮刷新即按来源回填。
+fn rebuild_quota_snapshot_if_check_forbids_balances(connection: &Connection) -> Result<()> {
+    let sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'quota_snapshot'",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed to inspect the quota_snapshot schema")?;
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+    if !sql.contains("BETWEEN 0 AND 100") {
+        return Ok(());
+    }
+    connection
+        .execute_batch("DROP TABLE quota_snapshot;")
+        .context("failed to drop the outdated quota_snapshot table")?;
+    connection
+        .execute_batch(include_str!("../migrations/001_init.sql"))
+        .context("failed to recreate quota_snapshot without the percent-only check")?;
     Ok(())
 }
 
@@ -212,6 +242,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM scan_source", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// 老库的 quota_snapshot 带着只允许百分比的 CHECK：余额按契约原样入库时
+    /// 连整轮配额写入一起失败。升级必须把它单独重建，且不动其余表。
+    #[test]
+    fn rebuilds_a_quota_snapshot_whose_check_forbids_balances() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE quota_snapshot;
+                 CREATE TABLE quota_snapshot (
+                     adapter_id       TEXT NOT NULL,
+                     window_key       TEXT NOT NULL,
+                     remaining_percent REAL NOT NULL CHECK (remaining_percent BETWEEN 0 AND 100),
+                     resets_at_ms     INTEGER,
+                     collected_at_ms  INTEGER NOT NULL,
+                     quality          TEXT NOT NULL,
+                     source_label     TEXT NOT NULL,
+                     PRIMARY KEY (adapter_id, window_key)
+                 );
+                 INSERT INTO scan_source (source_id, adapter_id, logical_key, locator,
+                     observed_size, mtime_ns, coverage_start_ms, parser_version,
+                     last_success_ms, last_error)
+                 VALUES ('keep', 'codex', 'keep', 'keep.jsonl', 1, 1, 0, 2, 1, NULL);",
+            )
+            .unwrap();
+
+        ensure_schema(&connection).unwrap();
+
+        let balance = connection.execute(
+            "INSERT INTO quota_snapshot (adapter_id, window_key, remaining_percent,
+                 resets_at_ms, collected_at_ms, quality, source_label)
+             VALUES ('deepseek', 'balance_cny', 120.0, NULL, 1, 'official_live', 'test')",
+            [],
+        );
+        assert!(balance.is_ok(), "余额超过 100 必须能入库");
+        let kept: i64 = connection
+            .query_row("SELECT COUNT(*) FROM scan_source", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "重建只针对 quota_snapshot");
     }
 
     #[test]

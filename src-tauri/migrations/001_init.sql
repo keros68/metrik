@@ -41,10 +41,12 @@ CREATE TABLE IF NOT EXISTS event_observation (
     PRIMARY KEY (event_id, source_id)
 );
 
+-- remaining_percent 对百分比窗口是 0–100，但对 DeepSeek 等余额窗口是账户金额，
+-- 按契约原样存放、可以超过 100（负数仍在解析层拦截），故只保下界。
 CREATE TABLE IF NOT EXISTS quota_snapshot (
     adapter_id       TEXT NOT NULL,
     window_key       TEXT NOT NULL,
-    remaining_percent REAL NOT NULL CHECK (remaining_percent BETWEEN 0 AND 100),
+    remaining_percent REAL NOT NULL CHECK (remaining_percent >= 0),
     resets_at_ms     INTEGER,
     collected_at_ms  INTEGER NOT NULL,
     quality          TEXT NOT NULL,
