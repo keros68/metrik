@@ -1091,24 +1091,30 @@ fn query_snapshot_at(
         comparison_percent,
         comparison_available,
         series,
-        agent_quotas: AGENT_IDS
-            .iter()
-            .map(|agent| {
-                let windows = load_visible_agent_quota_windows(connection, agent)?;
-                // 只在确实没有可用窗口时才带原因；有数字了就没什么好解释的。
-                let note =
-                    if *agent == "claude" && !windows.iter().any(|window| window.view.available) {
+        agent_quotas: {
+            // 一次快照一个时钟基准：所有 Agent、kimi/kimiwork 合并的新鲜度
+            // 判定共用它，平局结果与查询顺序无关。
+            let now_ms = Utc::now().timestamp_millis();
+            AGENT_IDS
+                .iter()
+                .map(|agent| {
+                    let windows = load_visible_agent_quota_windows(connection, agent, now_ms)?;
+                    // 只在确实没有可用窗口时才带原因；有数字了就没什么好解释的。
+                    let note = if *agent == "claude"
+                        && !windows.iter().any(|window| window.view.available)
+                    {
                         claude_oauth::last_failure(connection)?.map(|failure| failure.message)
                     } else {
                         None
                     };
-                Ok(AgentQuotaView {
-                    agent: (*agent).to_owned(),
-                    windows,
-                    note,
+                    Ok(AgentQuotaView {
+                        agent: (*agent).to_owned(),
+                        windows,
+                        note,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>>>()?,
+                .collect::<Result<Vec<_>>>()?
+        },
         agents: AGENT_IDS
             .iter()
             .map(|agent| {
@@ -1288,9 +1294,13 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
 }
 
 /// 按短窗 → 长窗 → 其余（字母序）返回一个 Agent 的全部官方窗口。
+/// `now_ms` 由调用方捕获一次并贯穿本次读取：新鲜度（age、stale）必须以同一
+/// 基准计算，否则相同 `collected_at` 的窗口会因查询先后拿到不同 age，让
+/// kimi/kimiwork 合并的平局判定退化成"比查询顺序"（CI 实测翻车）。
 fn load_agent_quota_windows(
     connection: &Connection,
     adapter_id: &str,
+    now_ms: i64,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
     let mut statement =
         connection.prepare("SELECT window_key FROM quota_snapshot WHERE adapter_id = ?1")?;
@@ -1303,7 +1313,7 @@ fn load_agent_quota_windows(
         .map(|key| {
             Ok(crate::domain::AgentQuotaWindow {
                 label: quota_window_label(adapter_id, &key),
-                view: load_quota(connection, adapter_id, &key)?,
+                view: load_quota_as_of(connection, adapter_id, &key, now_ms)?,
                 key,
             })
         })
@@ -1342,17 +1352,18 @@ fn quota_candidate_is_better(
 pub(crate) fn load_visible_agent_quota_windows(
     connection: &Connection,
     agent_id: &str,
+    now_ms: i64,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
     if agent_id != "kimi" {
-        return load_agent_quota_windows(connection, agent_id);
+        return load_agent_quota_windows(connection, agent_id, now_ms);
     }
 
     let mut merged: HashMap<String, crate::domain::AgentQuotaWindow> =
-        load_agent_quota_windows(connection, "kimi")?
+        load_agent_quota_windows(connection, "kimi", now_ms)?
             .into_iter()
             .map(|window| (window.key.clone(), window))
             .collect();
-    for mut candidate in load_agent_quota_windows(connection, "kimiwork")? {
+    for mut candidate in load_agent_quota_windows(connection, "kimiwork", now_ms)? {
         candidate.label = quota_window_label("kimi", &candidate.key);
         match merged.get(&candidate.key) {
             Some(current) if !quota_candidate_is_better(current, &candidate) => {}
@@ -1367,7 +1378,12 @@ pub(crate) fn load_visible_agent_quota_windows(
     Ok(windows)
 }
 
-fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
+fn load_quota_as_of(
+    connection: &Connection,
+    adapter_id: &str,
+    window_key: &str,
+    now_ms: i64,
+) -> Result<QuotaView> {
     let row = connection.query_row(
         "SELECT remaining_percent, resets_at_ms, source_label, quality, collected_at_ms
          FROM quota_snapshot WHERE adapter_id = ?2 AND window_key = ?1",
@@ -1385,7 +1401,7 @@ fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Re
 
     match row {
         Ok((remaining, reset, source, quality, collected_at_ms)) => {
-            let now = Utc::now().timestamp_millis();
+            let now = now_ms;
             let age_minutes = ((now - collected_at_ms).max(0) as f64) / 60_000.0;
             let reset_expired = reset.is_some_and(|value| value <= now);
             let stale_after_minutes = if quality == "official_live" {
@@ -1418,6 +1434,18 @@ fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Re
         }),
         Err(error) => Err(error.into()),
     }
+}
+
+/// 单窗口读取的测试便利入口。真实路径（快照、CLI）必须捕获一次 `now_ms`
+/// 走 `load_quota_as_of`，保证同一次读取内所有窗口的新鲜度基准一致。
+#[cfg(test)]
+fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
+    load_quota_as_of(
+        connection,
+        adapter_id,
+        window_key,
+        Utc::now().timestamp_millis(),
+    )
 }
 
 fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<SourceView> {
@@ -3222,7 +3250,12 @@ mod tests {
             )
             .unwrap();
 
-        let windows = load_visible_agent_quota_windows(&connection, "kimi").unwrap();
+        let windows = load_visible_agent_quota_windows(
+            &connection,
+            "kimi",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap();
 
         assert_eq!(
             windows

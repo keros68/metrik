@@ -72,11 +72,14 @@ fn window_kind(key: &str) -> &'static str {
 
 /// 从一个已打开的只读连接组装文档。测试直接喂内存库。
 fn quota_json_document(connection: &rusqlite::Connection) -> Result<QuotaJsonDocument> {
+    // 整份文档一个时钟基准：窗口新鲜度与 kimi/kimiwork 合并的平局判定
+    // 都以它计算，结果与查询顺序无关。
+    let now_ms = chrono::Utc::now().timestamp_millis();
     let agents = AGENT_IDS
         .iter()
         .map(|id| {
             // 单个 Agent 读不出来不该吞掉：契约上宁缺毋滥，整体失败并保留 stderr 说明。
-            let windows = crate::engine::load_visible_agent_quota_windows(connection, id)?;
+            let windows = crate::engine::load_visible_agent_quota_windows(connection, id, now_ms)?;
             // 只在确实没有可用窗口时才带原因，与桌面快照同语义。
             let note = if *id == "claude" && !windows.iter().any(|w| w.view.available) {
                 crate::claude_oauth::last_failure(connection)?.map(|failure| failure.message)
@@ -223,7 +226,9 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         let connection = memory_ledger();
         crate::storage::upsert_quota(&connection, &sample("kimi", "five_hour", 40.0, now)).unwrap();
-        // 同键更新鲜的一份 kimiwork 读数应当胜出，且不产生第二个 five_hour 窗口。
+        // 同键同刻的两份读数必须合并成一行：胜者由来源优先级决定（kimiwork），
+        // 与查询先后无关。相等时间戳刻意钉住平局方向——这里曾因两窗口各自取
+        // now 导致 age 随加载顺序漂移，在慢机器上随机翻车。
         crate::storage::upsert_quota(&connection, &sample("kimiwork", "five_hour", 80.0, now))
             .unwrap();
 
