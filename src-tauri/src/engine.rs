@@ -1338,7 +1338,8 @@ fn quota_candidate_is_better(
 
 /// Kimi Code 与 kimi-desktop 是同一可见额度身份。内部仍分桶拉取和缓存，
 /// 输出快照时按窗口键合并：重复窗口取当前更可靠/更新的一份，月度周期保留。
-fn load_visible_agent_quota_windows(
+/// 桌面快照与 `--quota-json` CLI 共用，保证两条出口对同一账本读出同一份窗口。
+pub(crate) fn load_visible_agent_quota_windows(
     connection: &Connection,
     agent_id: &str,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {

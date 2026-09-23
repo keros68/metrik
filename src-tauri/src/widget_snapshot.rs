@@ -82,24 +82,6 @@ struct WidgetQuotaWindow<'a> {
     quality: &'a str,
 }
 
-fn agent_label(id: &str) -> &'static str {
-    match id {
-        "codex" => "ChatGPT",
-        "claude" => "Claude",
-        "zcode" => "GLM",
-        "opencode" => "OpenCode",
-        "kimi" => "Kimi",
-        "antigravity" => "Antigravity",
-        "workbuddy" => "WorkBuddy",
-        "qoder" => "Qoder",
-        "deepseek" => "DeepSeek",
-        "pi" => "Pi",
-        "qwen" => "Qwen",
-        "hermes" => "Hermes",
-        _ => "Agent",
-    }
-}
-
 fn make_payload<'a>(
     snapshot: &'a UsageSnapshot,
     agent_filter: Option<&[String]>,
@@ -143,7 +125,7 @@ fn make_payload<'a>(
                 .unwrap_or_default();
             WidgetAgent {
                 id: &agent.id,
-                label: agent_label(&agent.id),
+                label: crate::domain::agent_label(&agent.id),
                 tokens: agent.tokens,
                 windows,
             }
@@ -273,11 +255,12 @@ mod tests {
 
     #[test]
     fn labels_match_the_public_agent_names() {
-        assert_eq!(agent_label("codex"), "ChatGPT");
-        assert_eq!(agent_label("zcode"), "GLM");
-        assert_eq!(agent_label("opencode"), "OpenCode");
-        assert_eq!(agent_label("deepseek"), "DeepSeek");
-        assert_eq!(agent_label("pi"), "Pi");
+        assert_eq!(crate::domain::agent_label("codex"), "ChatGPT");
+        assert_eq!(crate::domain::agent_label("zcode"), "GLM");
+        assert_eq!(crate::domain::agent_label("opencode"), "OpenCode");
+        assert_eq!(crate::domain::agent_label("deepseek"), "DeepSeek");
+        assert_eq!(crate::domain::agent_label("pi"), "Pi");
+        assert_eq!(crate::domain::agent_label("grok"), "Grok");
     }
 
     fn snapshot_with_agents(ids: &[&str]) -> UsageSnapshot {

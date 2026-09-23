@@ -3,6 +3,7 @@ mod antigravity_hook;
 mod app_server;
 mod claude_hook;
 mod claude_oauth;
+mod cli;
 mod coding_quota;
 mod detect;
 mod domain;
@@ -40,7 +41,7 @@ use tauri::{Manager, State};
 /// 自己声明，见 `quota` 模块。
 type SharedQuotaCache = Arc<quota::QuotaCache>;
 
-const DATABASE_FILE_NAME: &str = "metrik.sqlite3";
+pub(crate) const DATABASE_FILE_NAME: &str = "metrik.sqlite3";
 const RECOVERY_DATABASE_FILE_NAME: &str = "metrik.recovery.sqlite3";
 const SQLITE_SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 static MIGRATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1768,6 +1769,12 @@ pub fn run_statusline() {
 
 pub fn run_antigravity_hook() {
     antigravity_hook::run_hook();
+}
+
+/// `metrik --quota-json [database-path]`：只读导出已落库的官方额度快照。
+/// 语义与契约见 `cli` 模块文档；失败走 stderr + 非 0 退出码。
+pub fn run_quota_json(database_path: Option<&Path>) -> Result<()> {
+    cli::run_quota_json(database_path)
 }
 
 #[cfg(target_os = "macos")]

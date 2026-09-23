@@ -10,6 +10,15 @@ fn main() {
         metrik_lib::run_antigravity_hook();
         return;
     }
+    if command.as_deref() == Some(std::ffi::OsStr::new("--quota-json")) {
+        // 可选第二个参数：账本路径。缺省时解析桌面应用的默认位置。
+        let database_path = std::env::args_os().nth(2).map(std::path::PathBuf::from);
+        if let Err(error) = metrik_lib::run_quota_json(database_path.as_deref()) {
+            eprintln!("--quota-json failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if command.as_deref() == Some(std::ffi::OsStr::new("--publish-widget-snapshot")) {
         let Some(database_path) = std::env::args_os().nth(2).map(std::path::PathBuf::from) else {
             eprintln!("--publish-widget-snapshot requires a database path");
