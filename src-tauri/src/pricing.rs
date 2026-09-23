@@ -96,6 +96,9 @@ impl Pricing {
 /// - glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
 ///   （2026-07-20 核对；同页 glm-5/glm-5.1 数值与 LiteLLM 生成表完全一致，
 ///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
+/// - gpt-5.2-codex：OpenAI 官方模型页 developers.openai.com/api/docs/models/gpt-5.2-codex
+///   （2026-09-23 核对；虽已停用，官方页面仍列出输入 $1.75、缓存读 $0.175、
+///   输出 $14/M）。保留旧会话日志的计价；缓存写入不单独收费。
 /// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
 ///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
 ///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
@@ -104,6 +107,15 @@ impl Pricing {
 ///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
 ///   规则推算不是逐模型报价，官方列出后应替换。
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
+    (
+        "gpt-5.2-codex",
+        Pricing {
+            input: 1.75,
+            cache_read: 0.175,
+            cache_write: 0.0,
+            output: 14.0,
+        },
+    ),
     (
         "deepseek-v4-flash",
         Pricing {
