@@ -339,6 +339,33 @@ mod tests {
         );
     }
 
+    /// 后台派发工具（aicross 等）把会话跑在系统临时目录的 scratchpad 里，用量
+    /// 被内置规则整体隐藏，只剩"未计入项目"一个计数。设计的出口是登记项目根：
+    /// 用户规则先于内置规则判定，登记 scratchpad 的上级目录即可让这部分会话
+    /// 作为普通项目下钻。此测试钉住这条逃生门，防止内置隐藏反向吞掉用户根。
+    #[test]
+    fn a_registered_root_inside_system_temp_overrides_the_builtin_hiding() {
+        let mut resolver = resolver(ProjectRules {
+            roots: vec!["C:/Users/tester/AppData/Local/Temp/claude".into()],
+            hidden: vec![],
+        });
+
+        assert_eq!(
+            resolver.resolve(
+                "C:/Users/tester/AppData/Local/Temp/claude/F--OneDrive--/scratchpad/kimi_review"
+            ),
+            Resolution::Project {
+                path: "C:/Users/tester/AppData/Local/Temp/claude".into(),
+                pinned: true
+            }
+        );
+        // scratchpad 之外、未登记的临时目录照旧隐藏。
+        assert_eq!(
+            resolver.resolve("C:/Users/tester/AppData/Local/Temp/aicross-demo"),
+            Resolution::Hidden
+        );
+    }
+
     /// NTFS 与默认 APFS 不区分大小写：手动输入的规则大小写和日志记录
     /// 不一致时也要命中。Linux 区分大小写，此测试不适用。
     #[test]
