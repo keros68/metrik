@@ -133,8 +133,10 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
         }
     }
 
-    drop(stdin);
+    // 先杀整棵进程树再关 stdin：app-server 读到 EOF 约 20ms 就自行退出，
+    // 进程树随之断开，taskkill /T 找不到它派生的子孙（如 git），会被遗留。
     child.terminate();
+    drop(stdin);
 
     let result = result.context("codex app-server quota request timed out")?;
     Ok(result)
@@ -196,6 +198,12 @@ fn terminate_windows_process_tree(pid: u32) {
     let _ = taskkill.status();
 }
 
+/// 额度探测用不到插件。开着插件时 app-server 每次启动都会在后台升级插件市场
+/// （git ls-remote + clone 到 `.codex/.tmp/marketplaces/.staging`），短命进程退出后
+/// 克隆被遗留，Git 市场较大的用户磁盘每天涨数 GB（openai/codex#47735）。
+/// `-c` 是全局参数，必须放在子命令之前。
+const CODEX_PROBE_OVERRIDES: [&str; 2] = ["-c", "features.plugins=false"];
+
 fn codex_app_server_command() -> Command {
     #[cfg(windows)]
     {
@@ -213,6 +221,7 @@ fn codex_app_server_command() -> Command {
         command
             .args(["/D", "/C"])
             .arg(script)
+            .args(CODEX_PROBE_OVERRIDES)
             // stdio is the default transport across Codex CLI versions. Newer
             // releases removed the old `--stdio` compatibility flag entirely.
             .arg("app-server")
@@ -223,6 +232,7 @@ fn codex_app_server_command() -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new(resolve_unix_codex_binary());
+        command.args(CODEX_PROBE_OVERRIDES);
         // Do not pass the removed `--stdio` flag; app-server defaults to stdio.
         command.arg("app-server");
         command
@@ -380,6 +390,24 @@ mod tests {
     }
 
     #[test]
+    fn app_server_probe_disables_plugins_before_the_subcommand() {
+        let command = codex_app_server_command();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let subcommand = arguments
+            .iter()
+            .position(|argument| argument == "app-server")
+            .expect("app-server subcommand");
+        let flag = arguments
+            .windows(2)
+            .position(|pair| pair[0] == "-c" && pair[1] == "features.plugins=false")
+            .expect("plugins override");
+        assert!(flag < subcommand);
+    }
+
+    #[test]
     fn parses_primary_and_secondary_windows() {
         let value = json!({
             "rateLimits": {
@@ -513,6 +541,68 @@ mod tests {
             "timed-out app-server descendant {descendant_pid} is still running"
         );
         let _ = std::fs::remove_file(marker);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completed_quota_read_leaves_no_descendant_behind() {
+        use std::os::windows::process::CommandExt;
+
+        // 模拟 app-server：启动即派生一个子进程（对应插件市场升级的 git），
+        // 应答两条请求，读到 stdin EOF 立刻退出。
+        let marker = std::env::temp_dir().join(format!(
+            "metrik-probe-tree-{}-{}.txt",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let escaped_marker = marker.to_string_lossy().replace("'", "''");
+        let script = format!(
+            r#"$child = Start-Process -FilePath "$env:SystemRoot\System32\PING.EXE" -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+$child.Id | Set-Content -LiteralPath '{escaped_marker}' -Encoding ascii
+while ($null -ne ($line = [Console]::In.ReadLine())) {{
+  if ($line -match '"id":1,') {{ [Console]::Out.WriteLine('{{"id":1,"result":{{}}}}') }}
+  elseif ($line -match '"id":3,') {{ [Console]::Out.WriteLine('{{"id":3,"result":{{"rateLimits":{{}}}}}}') }}
+  [Console]::Out.Flush()
+}}"#
+        );
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &script,
+            ])
+            .creation_flags(0x0800_0000);
+
+        let result = read_usage_with_command(command, Duration::from_secs(20))
+            .expect("fake app-server should answer the quota request");
+        assert!(result.get("rateLimits").is_some());
+
+        let descendant_pid = std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .expect("fake app-server recorded its descendant before answering");
+        let filter = format!("PID eq {descendant_pid}");
+        let output = Command::new("tasklist.exe")
+            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .expect("tasklist should inspect the descendant");
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let survived = listing.contains(&format!("\"{descendant_pid}\""));
+        if survived {
+            let _ = Command::new("taskkill.exe")
+                .args(["/PID", &descendant_pid.to_string(), "/F"])
+                .creation_flags(0x0800_0000)
+                .output();
+        }
+        let _ = std::fs::remove_file(marker);
+        assert!(
+            !survived,
+            "app-server descendant {descendant_pid} outlived the quota read"
+        );
     }
 
     #[test]
