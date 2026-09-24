@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "metrik"
-version = "0.19.15"
+version = "0.19.16"
 dependencies = [
  "anyhow",
  "chrono",
