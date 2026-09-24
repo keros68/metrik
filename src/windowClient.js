@@ -1179,6 +1179,9 @@ async function collapseVerticalStripHover() {
 /// 不需要再 reconcile。
 async function beginStripControlsExpand() {
   if (isMacPlatform()) return;
+  // 点 … 时详情卡可能还开着，此刻的原生几何是透明承载区而非条身；
+  // 先收回悬停扩窗再捕获，否则收起菜单会把条身还原到承载区左缘。
+  await collapseVerticalStripHover();
   // 已有待还原的几何说明上一次收起还没落地（快速连点 ⋯）：旧值才是
   // 收起态的稳定几何，不能被当前展开态覆盖。
   if (stripControlsRestore) return;

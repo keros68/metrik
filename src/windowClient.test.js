@@ -272,6 +272,48 @@ test("beginStripControlsExpand keeps an existing restore instead of overwriting 
   assert.deepEqual(size, { width: 42, height: 96 });
 });
 
+test("opening strip controls over a hover card restores the rail, not the hover canvas", async () => {
+  const context = controller();
+  let physical = { width: 42, height: 300 };
+  let position = { x: 1600, y: 500 };
+  const appWindow = {
+    outerPosition: async () => position,
+    outerSize: async () => physical,
+    innerSize: async () => physical,
+    scaleFactor: async () => 1,
+    setSize: async (size) => { physical = size; },
+    setPosition: async (value) => { position = value; },
+  };
+  const api = {
+    getCurrentWindow: () => appWindow,
+    currentMonitor: async () => ({ workArea: {
+      position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 },
+    } }),
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => api,
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    settleWebviewLayout: async () => {},
+    applyWebviewZoom: async () => {},
+  });
+  await context.expandVerticalStripHover({
+    width: 312, height: 300, railWidth: 42, railHeight: 300,
+    anchorY: 150, cardHeight: 120,
+  });
+  assert.equal(position.x, 1600 + 42 - 312);
+  // 点 … 时详情卡还开着：还原几何捕获排在悬停收回之前。
+  await context.beginStripControlsExpand();
+  await context.collapseVerticalStripHover();
+  physical = { width: 42, height: 430 };
+  await context.collapseStripControlsExpand();
+  assert.deepEqual(physical, { width: 42, height: 300 });
+  assert.deepEqual(position, { x: 1600, y: 500 });
+});
+
 test("collapseStripControlsExpand without a pending restore is a no-op", async () => {
   const context = controller();
   let resized = 0;

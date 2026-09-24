@@ -1454,9 +1454,11 @@ html:has(.strip-shell) #root {
   background: var(--strip-detail-background);
   border: 1px solid color-mix(in srgb, var(--strip-detail-ink) 9%, transparent);
   border-radius: 14px;
+  /* 落影必须收在透明承载区之内：卡片离窗口上下缘只有 8–12px、离左缘 26px，
+     超出的部分会被窗口边界切成一道直线，把看不见的承载区暴露出来。 */
   box-shadow:
-    0 12px 26px rgba(10, 12, 16, 0.15),
-    0 3px 10px rgba(10, 12, 16, 0.09),
+    0 3px 8px rgba(10, 12, 16, 0.14),
+    0 1px 2px rgba(10, 12, 16, 0.08),
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
     inset 0 1px rgba(255, 255, 255, 0.16);
   pointer-events: none;
@@ -2574,6 +2576,11 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   backdrop-filter: none;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* 边环流光挂在 #root 上，详情打开时它描的是整个透明承载区的外框。 */
+html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
+  content: none;
 }
 
 .strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-ink-light):not(.strip-shell--glass-css) {
