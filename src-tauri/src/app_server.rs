@@ -576,7 +576,8 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {{
             ])
             .creation_flags(0x0800_0000);
 
-        let result = read_usage_with_command(command, Duration::from_secs(20))
+        // 超时只是兜底：CI 上全量并行时 PowerShell 冷启动加 Start-Process 实测超过 20s。
+        let result = read_usage_with_command(command, Duration::from_secs(90))
             .expect("fake app-server should answer the quota request");
         assert!(result.get("rateLimits").is_some());
 
