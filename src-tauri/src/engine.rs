@@ -3335,6 +3335,47 @@ mod tests {
         std::fs::remove_file(database).ok();
     }
 
+    /// 稳态刷新不得拉起子进程——#186（每轮快照一个 PowerShell）与 #210（每次
+    /// 探测遗留一个 git 克隆）这一类问题的总闸。第一轮快照可以按需探测（额度、
+    /// 端点发现），之后的快照都落在各来源的节流窗口内（最短 45 秒），一个子进程
+    /// 都不该再有。计数按线程记录，快照在本线程上同步完成。
+    ///
+    /// 结论与本机装了哪些 Agent 无关，但它会读本机数据并发起真实探测，所以默认
+    /// 忽略；CI 在干净的 runner 上显式运行（`cargo test -- --ignored steady_state`）。
+    #[test]
+    #[ignore = "reads the current machine's agent data and starts real quota probes"]
+    fn steady_state_snapshots_start_no_child_processes() {
+        let database = std::env::temp_dir().join(format!(
+            "metrik-spawn-budget-{}-{}.sqlite3",
+            std::process::id(),
+            Utc::now().timestamp_millis()
+        ));
+        let quota_cache = Mutex::new(HashMap::new());
+        let before = crate::child_process::spawned_on_this_thread();
+        build_snapshot(&database, "today", &quota_cache, false).unwrap();
+        let first = crate::child_process::spawned_on_this_thread();
+        for _ in 0..5 {
+            build_snapshot(&database, "today", &quota_cache, false).unwrap();
+        }
+        let steady = crate::child_process::spawned_on_this_thread();
+        std::fs::remove_file(&database).ok();
+
+        let delta = |from: &[(crate::child_process::Site, u32)],
+                     to: &[(crate::child_process::Site, u32)]| {
+            from.iter()
+                .zip(to)
+                .filter(|((_, was), (_, now))| now > was)
+                .map(|((site, was), (_, now))| (*site, now - was))
+                .collect::<Vec<_>>()
+        };
+        println!("first snapshot started: {:?}", delta(&before, &first));
+        let extra = delta(&first, &steady);
+        assert!(
+            extra.is_empty(),
+            "steady-state snapshots started child processes: {extra:?}"
+        );
+    }
+
     /// 在真实日志上核对项目归属的覆盖率：每个 adapter 有多少 token 能落到项目、
     /// 落到了哪些目录。只读日志，不建账本、不发网络请求。
     #[test]

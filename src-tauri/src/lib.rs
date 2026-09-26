@@ -1,6 +1,7 @@
 mod adapters;
 mod antigravity_hook;
 mod app_server;
+mod child_process;
 mod claude_hook;
 mod claude_oauth;
 mod cli;

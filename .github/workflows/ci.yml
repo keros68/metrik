@@ -138,6 +138,12 @@ jobs:
         run: cargo test
         working-directory: src-tauri
 
+      # 常驻进程的闸门：第一轮快照之后，稳态刷新不得再拉起任何子进程。它会读
+      # 本机数据、发起真实探测，所以默认 ignored，只在干净的 runner 上显式跑。
+      - name: Steady-state spawn budget
+        run: cargo test --lib steady_state_snapshots_start_no_child_processes -- --ignored
+        working-directory: src-tauri
+
       # cargo test 不能覆盖 WebKitGTK 链接与 bundle 元数据；Linux job 同时
       # 产出两个正式分发格式作为烟测。PR 不需要更新器私钥。
       - name: Linux bundle smoke check

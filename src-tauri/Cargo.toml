@@ -85,12 +85,20 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 objc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# 任务栏进度按钮 + Antigravity 钩子的 8.3 短名转换（GetShortPathNameW）。
+# 任务栏进度按钮 + Antigravity 钩子的 8.3 短名转换（GetShortPathNameW）；
+# 子进程作业对象；Antigravity 端点发现的原生进程与监听端口枚举。
 windows = { version = "0.61.3", features = [
+  "Wdk_System_Threading",
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
