@@ -116,6 +116,7 @@ pub(crate) fn output(site: Site, command: &mut Command) -> io::Result<Output> {
     command.output()
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn status(site: Site, command: &mut Command) -> io::Result<ExitStatus> {
     admit(site, command)?;
     command.status()
