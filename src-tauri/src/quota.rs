@@ -605,8 +605,11 @@ mod tests {
         let env = ProviderEnv::load(&connection).unwrap();
         assert!(ClaudeQuota.is_available(&env));
 
-        // 其余来源没有开关，永远可用。
-        assert!(CodexQuota.is_available(&env));
+        // Codex 不看设置开关，只看本机有没有它的数据目录。
+        assert_eq!(
+            CodexQuota.is_available(&env),
+            app_server::codex_may_be_signed_in()
+        );
     }
 
     #[test]
