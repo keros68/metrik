@@ -1,11 +1,25 @@
+use crate::child_process::{self, Site};
 use crate::domain::QuotaSample;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// 本机是否可能有已登录的 Codex。app-server 的登录态在 `CODEX_HOME`（默认
+/// `~/.codex`）里，这个目录都不存在时探测必然失败，不必为它周期性拉起进程。
+/// 显式指定了 `CODEX_BINARY` 的用户照常探测。
+pub fn codex_may_be_signed_in() -> bool {
+    if std::env::var_os("CODEX_BINARY").is_some() {
+        return true;
+    }
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .is_some_and(|home| home.is_dir())
+}
 
 pub fn read_codex_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     read_codex_quota_with_command(codex_app_server_command(), timeout)
@@ -61,17 +75,9 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-
-    let mut child = ManagedChild::new(
-        command
-            .spawn()
-            .context("failed to start codex app-server")?,
-    );
+    // app-server 会派生后代（插件市场升级的 git 等），整棵树随探测结束一起收掉。
+    let mut child = child_process::spawn_tree(Site::CodexAppServer, &mut command)
+        .context("failed to start codex app-server")?;
     let mut stdin = child
         .child_mut()
         .stdin
@@ -134,68 +140,12 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
     }
 
     // 先杀整棵进程树再关 stdin：app-server 读到 EOF 约 20ms 就自行退出，
-    // 进程树随之断开，taskkill /T 找不到它派生的子孙（如 git），会被遗留。
+    // 作业对象不可用而回落到 taskkill /T 时，进程树断开会遗留它派生的子孙（如 git）。
     child.terminate();
     drop(stdin);
 
     let result = result.context("codex app-server quota request timed out")?;
     Ok(result)
-}
-
-struct ManagedChild {
-    child: Option<Child>,
-}
-
-impl ManagedChild {
-    fn new(child: Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    fn child_mut(&mut self) -> &mut Child {
-        self.child
-            .as_mut()
-            .expect("managed child already terminated")
-    }
-
-    fn terminate(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            terminate_process_tree(&mut child);
-        }
-    }
-}
-
-impl Drop for ManagedChild {
-    fn drop(&mut self) {
-        self.terminate();
-    }
-}
-
-pub(crate) fn terminate_process_tree(child: &mut Child) {
-    if matches!(child.try_wait(), Ok(Some(_))) {
-        return;
-    }
-
-    #[cfg(windows)]
-    terminate_windows_process_tree(child.id());
-
-    // This is the cross-platform fallback and also reaps the direct child after
-    // Windows has terminated its descendants.
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(windows)]
-fn terminate_windows_process_tree(pid: u32) {
-    use std::os::windows::process::CommandExt;
-
-    let mut taskkill = Command::new("taskkill.exe");
-    taskkill
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000);
-    let _ = taskkill.status();
 }
 
 /// 额度探测用不到插件。开着插件时 app-server 每次启动都会在后台升级插件市场
@@ -207,8 +157,6 @@ const CODEX_PROBE_OVERRIDES: [&str; 2] = ["-c", "features.plugins=false"];
 fn codex_app_server_command() -> Command {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-
         let explicit = std::env::var_os("CODEX_BINARY").map(PathBuf::from);
         let npm_script = std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -224,8 +172,7 @@ fn codex_app_server_command() -> Command {
             .args(CODEX_PROBE_OVERRIDES)
             // stdio is the default transport across Codex CLI versions. Newer
             // releases removed the old `--stdio` compatibility flag entirely.
-            .arg("app-server")
-            .creation_flags(0x0800_0000);
+            .arg("app-server");
         command
     }
 
@@ -502,11 +449,8 @@ mod tests {
             .stderr(Stdio::null())
             .creation_flags(0x0800_0000);
 
-        let mut child = ManagedChild::new(
-            command
-                .spawn()
-                .expect("test PowerShell process should start"),
-        );
+        let mut child = child_process::spawn_tree(Site::CodexAppServer, &mut command)
+            .expect("test PowerShell process should start");
         let ready_deadline = Instant::now() + Duration::from_secs(10);
         // 只等「文件存在」会撞上写入方还占着句柄（os error 32，"另一个程序正在
         // 使用此文件"），或者读到 Set-Content 还没写完的空内容——两种都真实

@@ -423,10 +423,11 @@ fn read_macos_keychain() -> Option<String> {
 /// 的预期行为。
 #[cfg(target_os = "macos")]
 fn keychain_password(service: &str) -> Option<String> {
-    let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", service, "-w"])
-        .output()
-        .ok()?;
+    let output = crate::child_process::output(
+        crate::child_process::Site::MacosKeychain,
+        std::process::Command::new("security").args(["find-generic-password", "-s", service, "-w"]),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -439,10 +440,10 @@ fn keychain_password(service: &str) -> Option<String> {
 /// `dump-keychain` 不带 `-d` 只列元数据、不读密码本体，因此不会弹密码框。
 #[cfg(target_os = "macos")]
 fn discover_keychain_services() -> Vec<String> {
-    let Ok(output) = std::process::Command::new("security")
-        .arg("dump-keychain")
-        .output()
-    else {
+    let Ok(output) = crate::child_process::output(
+        crate::child_process::Site::MacosKeychain,
+        std::process::Command::new("security").arg("dump-keychain"),
+    ) else {
         return Vec::new();
     };
     if !output.status.success() {

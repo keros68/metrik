@@ -260,8 +260,7 @@ pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
     command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(0x0800_0000);
+        .stderr(std::process::Stdio::null());
     command
 }
 
@@ -269,7 +268,10 @@ pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
 pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
     use std::io::{Read, Write};
 
-    let Ok(mut child) = delegate_process(delegate).spawn() else {
+    let Ok(mut child) = crate::child_process::spawn(
+        crate::child_process::Site::ClaudeStatuslineDelegate,
+        &mut delegate_process(delegate),
+    ) else {
         return String::new();
     };
     let output = child.stdout.take();
@@ -292,7 +294,7 @@ pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Dur
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             _ => {
-                crate::app_server::terminate_process_tree(&mut child);
+                crate::child_process::terminate_process_tree(&mut child);
                 break;
             }
         }
@@ -334,7 +336,10 @@ fn terminate_process_group(pgid: i32) {
 pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
     use std::io::{Read, Write};
 
-    let Ok(mut child) = delegate_process(delegate).spawn() else {
+    let Ok(mut child) = crate::child_process::spawn(
+        crate::child_process::Site::ClaudeStatuslineDelegate,
+        &mut delegate_process(delegate),
+    ) else {
         return String::new();
     };
     // process_group(0) 让 pgid 等于子进程 pid。

@@ -153,12 +153,14 @@ fn publisher_path() -> Option<PathBuf> {
 }
 
 fn publish_with_helper(helper: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let mut child = Command::new(helper)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("cannot start WidgetKit publisher {}", helper.display()))?;
+    let mut child = crate::child_process::spawn(
+        crate::child_process::Site::MacosWidgetHelper,
+        Command::new(helper)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .with_context(|| format!("cannot start WidgetKit publisher {}", helper.display()))?;
     child
         .stdin
         .take()
@@ -244,7 +246,10 @@ pub fn reload_timelines() {
     };
     let helper = contents.join("Helpers").join("metrik-widget-reload");
     if helper.is_file() {
-        let _ = std::process::Command::new(helper).status();
+        let _ = crate::child_process::status(
+            crate::child_process::Site::MacosWidgetHelper,
+            &mut std::process::Command::new(helper),
+        );
     }
 }
 

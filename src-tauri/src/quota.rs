@@ -406,6 +406,10 @@ impl QuotaProvider for CodexQuota {
         QuotaPolicy::new(60, 240, 4)
     }
 
+    fn is_available(&self, _env: &ProviderEnv) -> bool {
+        app_server::codex_may_be_signed_in()
+    }
+
     fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
         app_server::read_codex_quota(timeout)
     }

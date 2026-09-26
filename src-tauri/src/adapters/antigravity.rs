@@ -534,81 +534,188 @@ fn is_antigravity_command(command: &str) -> bool {
         && (lower.contains("antigravity") || lower.contains("--csrf_token"))
 }
 
+/// 从一条进程命令行里认出 Antigravity language server 并取出 csrf 与声明端口。
+fn server_process(pid: u32, command: &str) -> Option<ServerProcess> {
+    if !is_antigravity_command(command) {
+        return None;
+    }
+    Some(ServerProcess {
+        pid,
+        csrf: extract_csrf(command)?,
+        declared_port: extract_declared_port(command),
+    })
+}
+
+/// Windows 走原生 API，不拉起 PowerShell / netstat：未装 Antigravity 的机器也会按
+/// 负缓存节奏反复发现，每次一个 PowerShell 在常驻进程里代价太高（#186），
+/// 关机过程中还会以 0xc0000142 弹窗。命令行是 UTF-16 原文，没有代码页问题。
 #[cfg(windows)]
 fn find_language_server_processes() -> Vec<ServerProcess> {
-    use std::os::windows::process::CommandExt;
-    // 必须强制 UTF-8 输出：中文 Windows 的 PowerShell 默认按控制台代码页
-    // （GBK/936）输出，命令行里只要有一个中文路径，整段 JSON 就含非 UTF-8
-    // 字节，Rust 侧 from_slice 会整体解析失败——antigravity 因此在中文系统上
-    // 一直读不到数据（本机实测定位）。
-    let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
-                  $ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | \
-                  Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
-    let Ok(output) = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(0x0800_0000)
-        .output()
-    else {
-        return Vec::new();
-    };
-    let Ok(json) = serde_json::from_slice::<Value>(&output.stdout) else {
-        return Vec::new();
-    };
-    let entries: Vec<&Value> = match &json {
-        Value::Array(items) => items.iter().collect(),
-        single @ Value::Object(_) => vec![single],
-        _ => return Vec::new(),
-    };
-    let mut processes = Vec::new();
-    for entry in entries {
-        let command = entry
-            .get("CommandLine")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if !is_antigravity_command(command) {
-            continue;
-        }
-        let Some(csrf) = extract_csrf(command) else {
-            continue;
-        };
-        let Some(pid) = entry.get("ProcessId").and_then(Value::as_u64) else {
-            continue;
-        };
-        processes.push(ServerProcess {
-            pid: pid as u32,
-            csrf,
-            declared_port: extract_declared_port(command),
-        });
-    }
-    processes
+    native::language_server_command_lines()
+        .into_iter()
+        .filter_map(|(pid, command)| server_process(pid, &command))
+        .collect()
 }
 
 #[cfg(windows)]
 fn listening_ports(pid: u32) -> Vec<u16> {
-    use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new("netstat.exe")
-        .args(["-ano", "-p", "TCP"])
-        .creation_flags(0x0800_0000)
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
+    native::listening_ipv4_ports(pid)
+}
+
+#[cfg(windows)]
+mod native {
+    use windows::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessCommandLineInformation,
     };
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut ports = Vec::new();
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 || parts[0] != "TCP" || !parts[3].eq_ignore_ascii_case("LISTENING") {
-            continue;
-        }
-        if parts[4].parse::<u32>().ok() != Some(pid) {
-            continue;
-        }
-        if let Some(port) = parts[1].rsplit(':').next().and_then(|p| p.parse().ok()) {
-            ports.push(port);
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, UNICODE_STRING};
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
+        TCP_TABLE_OWNER_PID_LISTENER,
+    };
+    use windows::Win32::Networking::WinSock::AF_INET;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由本模块打开，只在这里关闭一次。
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
         }
     }
-    ports.dedup();
-    ports
+
+    /// 可执行文件名像 language server 的进程及其命令行。先按文件名筛，只对候选
+    /// 打开进程句柄；读不到命令行的（更高权限的进程）跳过，与 WMI 查询一致。
+    pub(super) fn language_server_command_lines() -> Vec<(u32, String)> {
+        let mut found = Vec::new();
+        // SAFETY: 快照句柄由 OwnedHandle 关闭；PROCESSENTRY32W 按要求先填 dwSize。
+        unsafe {
+            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return found;
+            };
+            let snapshot = OwnedHandle(snapshot);
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut more = Process32FirstW(snapshot.0, &mut entry).is_ok();
+            while more {
+                let name_len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name =
+                    String::from_utf16_lossy(&entry.szExeFile[..name_len]).to_ascii_lowercase();
+                if name.contains("language_server") || name.contains("language-server") {
+                    if let Some(command) = command_line(entry.th32ProcessID) {
+                        found.push((entry.th32ProcessID, command));
+                    }
+                }
+                more = Process32NextW(snapshot.0, &mut entry).is_ok();
+            }
+        }
+        found
+    }
+
+    pub(super) fn command_line(pid: u32) -> Option<String> {
+        // SAFETY: 缓冲区按 8 字节对齐分配，长度如实传入；读取 UNICODE_STRING 指向
+        // 的字符前核对它落在同一块缓冲区内。
+        unsafe {
+            let process =
+                OwnedHandle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
+            let mut needed = 0u32;
+            let _ = NtQueryInformationProcess(
+                process.0,
+                ProcessCommandLineInformation,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            );
+            if (needed as usize) < std::mem::size_of::<UNICODE_STRING>() {
+                return None;
+            }
+            let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+            let capacity = buffer.len() * 8;
+            NtQueryInformationProcess(
+                process.0,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut needed,
+            )
+            .ok()
+            .ok()?;
+            let text = &*buffer.as_ptr().cast::<UNICODE_STRING>();
+            let units = usize::from(text.Length) / 2;
+            if units == 0 || text.Buffer.is_null() {
+                return None;
+            }
+            let start = buffer.as_ptr() as usize;
+            let begin = text.Buffer.0 as usize;
+            if begin < start || begin + units * 2 > start + capacity {
+                return None;
+            }
+            Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+                text.Buffer.0,
+                units,
+            )))
+        }
+    }
+
+    /// 该进程在 IPv4 上监听的 TCP 端口（与 `netstat -ano -p TCP` 同口径）。
+    pub(super) fn listening_ipv4_ports(pid: u32) -> Vec<u16> {
+        const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+        let mut size = std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>() as u32;
+        // 表在两次调用之间可能变大，缓冲不够就按系统给的新尺寸再来。
+        for _ in 0..4 {
+            let mut buffer = vec![0u32; (size as usize).div_ceil(4)];
+            let capacity = buffer.len() * 4;
+            size = capacity as u32;
+            // SAFETY: 缓冲区按 4 字节对齐，长度如实传入。
+            let status = unsafe {
+                GetExtendedTcpTable(
+                    Some(buffer.as_mut_ptr().cast()),
+                    &mut size,
+                    false,
+                    u32::from(AF_INET.0),
+                    TCP_TABLE_OWNER_PID_LISTENER,
+                    0,
+                )
+            };
+            if status == ERROR_INSUFFICIENT_BUFFER {
+                continue;
+            }
+            if status != 0 {
+                return Vec::new();
+            }
+            let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+            // SAFETY: 调用成功后表头有效；按 dwNumEntries 读行前核对不越过缓冲区。
+            let rows = unsafe {
+                let count = (*table).dwNumEntries as usize;
+                let first = std::ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>();
+                let end = first as usize + count * std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
+                if end > buffer.as_ptr() as usize + capacity {
+                    return Vec::new();
+                }
+                std::slice::from_raw_parts(first, count)
+            };
+            let mut ports: Vec<u16> = rows
+                .iter()
+                .filter(|row| row.dwOwningPid == pid)
+                .map(|row| u16::from_be(row.dwLocalPort as u16))
+                .collect();
+            ports.dedup();
+            return ports;
+        }
+        Vec::new()
+    }
 }
 
 #[cfg(not(windows))]
@@ -616,10 +723,10 @@ fn find_language_server_processes() -> Vec<ServerProcess> {
     // `ww` 是必须的：macOS 的 ps 默认把命令行截断到终端宽度，而 --csrf_token
     // 在 language_server 那条长命令行的靠后位置——截断后取不到 csrf，端点发现
     // 会静默失败。Linux 的 ps 同样接受 ww（不限宽），两平台通用。
-    let Ok(output) = std::process::Command::new("/bin/ps")
-        .args(["-axww", "-o", "pid=,command="])
-        .output()
-    else {
+    let Ok(output) = crate::child_process::output(
+        crate::child_process::Site::AntigravityProcessScan,
+        std::process::Command::new("/bin/ps").args(["-axww", "-o", "pid=,command="]),
+    ) else {
         return Vec::new();
     };
     let text = String::from_utf8_lossy(&output.stdout);
@@ -629,29 +736,26 @@ fn find_language_server_processes() -> Vec<ServerProcess> {
         let Some((pid_str, command)) = line.split_once(char::is_whitespace) else {
             continue;
         };
-        if !is_antigravity_command(command) {
-            continue;
-        }
-        let Some(csrf) = extract_csrf(command) else {
-            continue;
-        };
         let Ok(pid) = pid_str.parse::<u32>() else {
             continue;
         };
-        processes.push(ServerProcess {
-            pid,
-            csrf,
-            declared_port: extract_declared_port(command),
-        });
+        processes.extend(server_process(pid, command));
     }
     processes
 }
 
 #[cfg(not(windows))]
 fn listening_ports(pid: u32) -> Vec<u16> {
-    let output = std::process::Command::new("lsof")
-        .args(["-Pan", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"])
-        .output();
+    let output = crate::child_process::output(
+        crate::child_process::Site::AntigravityPortScan,
+        std::process::Command::new("lsof").args([
+            "-Pan",
+            "-p",
+            &pid.to_string(),
+            "-iTCP",
+            "-sTCP:LISTEN",
+        ]),
+    );
     let Ok(output) = output else {
         return Vec::new();
     };
@@ -674,6 +778,35 @@ fn listening_ports(pid: u32) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_command_line_reads_a_running_process() {
+        let command = native::command_line(std::process::id()).expect("own command line");
+        let exe = std::env::current_exe().unwrap();
+        let stem = exe.file_stem().unwrap().to_string_lossy();
+        assert!(command.contains(stem.as_ref()), "{command}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_listening_ports_find_a_port_this_process_owns() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(native::listening_ipv4_ports(std::process::id()).contains(&port));
+        assert!(!native::listening_ipv4_ports(u32::MAX).contains(&port));
+    }
+
+    #[test]
+    fn server_process_requires_an_antigravity_language_server_with_csrf() {
+        let command = r"C:\Users\me\AppData\Local\Programs\Antigravity\resources\app\extensions\antigravity\bin\language_server_windows_x64.exe --csrf_token 0a1b-2c --extension_server_port 51234";
+        let process = server_process(42, command).unwrap();
+        assert_eq!(process.pid, 42);
+        assert_eq!(process.csrf, "0a1b-2c");
+        assert_eq!(process.declared_port, Some(51234));
+        assert!(server_process(42, "language_server_windows_x64.exe --port 1").is_none());
+        assert!(server_process(42, "notepad.exe --csrf_token abc").is_none());
+    }
 
     /// #186 的回归场景：未装 Antigravity 时连续快照不得每次都做进程发现；
     /// 负缓存只在过期后才允许再试一次。

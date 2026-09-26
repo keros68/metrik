@@ -190,6 +190,7 @@ Where a source reports its own total, `TokenVector::disagrees_with_reported_tota
 - A desktop single-instance guard focuses the existing window instead of starting a second scanner.
 - Unchanged files are cheap metadata checks. Codex JSONL files can now pause between records and resume the same file on the next snapshot, using a bounded reader so append-only growth is ingested after the captured prefix completes. Truncation or same-size rewrite restarts parsing. Other adapters still budget between files, so a single very large non-Codex source can overrun one snapshot.
 - Tauri does not remove the platform webview cost: WebView2/WebKit/WebKitGTK dominates resident memory relative to the Rust process.
+- Child processes are a budgeted resource, because the refresh cadence multiplies any per-snapshot spawn. Production code starts them only through `child_process`, where every call site is a registered `Site` (a source-scan test rejects bypasses). After the first snapshot, steady-state snapshots must start none: each source throttles across snapshots (quota TTLs, the Antigravity endpoint cache), and CI enforces this with the ignored `steady_state_snapshots_start_no_child_processes` test. Windows discovery uses native process and TCP-table APIs rather than PowerShell or netstat, nothing is spawned while the session is ending, and the Codex probe runs in a kill-on-close job object so its descendants cannot outlive it.
 
 ## Planned device sync
 
