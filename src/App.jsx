@@ -36,6 +36,7 @@ import {
 import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import cursorAppIcon from "./assets/cursor-app-icon.png";
 import deepseekAppIcon from "./assets/deepseek-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
@@ -257,6 +258,14 @@ const AGENT_META = {
     accent: "#8a8d92",
     iconSrc: hermesAppIcon,
     iconClass: "agent-icon--hermes",
+  },
+  cursor: {
+    // 用量来自 Cursor 仪表盘的逐次事件，不是本机 bubble 的 tokenCount（多为 0）。
+    // 没有单独的配额窗口。
+    label: "Cursor",
+    accent: "#7aa2ff",
+    iconSrc: cursorAppIcon,
+    iconClass: "agent-icon--cursor",
   },
 };
 

@@ -24,6 +24,7 @@ const AGENT_LINE_COLORS = {
   qwen: { stroke: "#8f76e0", fill: "rgba(143, 118, 224, 0.09)" },
   pi: { stroke: "#9aa0a6", fill: "rgba(154, 160, 166, 0.09)" },
   hermes: { stroke: "#7d8085", fill: "rgba(125, 128, 133, 0.09)" },
+  cursor: { stroke: "#7aa2ff", fill: "rgba(122, 162, 255, 0.09)" },
   default: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
 };
 

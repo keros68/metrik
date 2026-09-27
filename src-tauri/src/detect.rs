@@ -143,6 +143,11 @@ pub fn table() -> Vec<AgentProbe> {
             id: "hermes",
             probe: Probe::Paths(vec![home.join(".hermes").join("state.db")]),
         },
+        AgentProbe {
+            // 与 CursorAdapter::detected() 同源：状态库在才算装过 Cursor。
+            id: "cursor",
+            probe: Probe::Paths(vec![crate::adapters::cursor_state_db()]),
+        },
     ]
 }
 
@@ -232,6 +237,11 @@ mod tests {
         assert_eq!(
             paths(by_id("hermes")),
             vec![home.join(".hermes").join("state.db")]
+        );
+        // cursor 探针与 CursorAdapter::detected() 同源。
+        assert_eq!(
+            paths(by_id("cursor")),
+            vec![crate::adapters::cursor_state_db()]
         );
     }
 

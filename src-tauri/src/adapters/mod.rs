@@ -1,6 +1,7 @@
 mod antigravity;
 mod claude;
 mod codex;
+mod cursor;
 mod grok;
 mod hermes;
 mod kimi;
@@ -12,6 +13,7 @@ mod zcode;
 pub use antigravity::AntigravityAdapter;
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use cursor::{cursor_state_db, CursorAdapter};
 pub use grok::GrokAdapter;
 pub use hermes::HermesAdapter;
 pub use kimi::KimiAdapter;

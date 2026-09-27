@@ -48,8 +48,9 @@ The app interface is in Chinese. See the [user guide](docs/guide.md) for platfor
 | Pi | `~/.pi/agent/sessions`, `~/.omp/agent/sessions` | ❌ |
 | Qwen | pi sessions attributed by Bailian Token Plan route | ❌ |
 | Hermes | `~/.hermes/state.db` | ❌ |
+| Cursor | signed-in session → dashboard per-request usage events | ❌ |
 
-Gemini CLI is not supported yet. Cursor will be evaluated once a separate credential authorization design is in place. See the [user guide](docs/guide.md#claude-配额的两种读取方式) for the two ways Claude quota is read and the terms-of-service risk of the OAuth option.
+Gemini CLI is not supported yet. Cursor records token usage only, not plan remaining: local `tokenCount` fields are mostly zero on current builds, so usage comes from the same per-request dashboard events, and the session token is never stored. See the [user guide](docs/guide.md#claude-配额的两种读取方式) for the two ways Claude quota is read and the terms-of-service risk of the OAuth option.
 
 ## Build from source
 

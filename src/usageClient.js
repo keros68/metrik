@@ -18,7 +18,7 @@ function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
   return Array.from({ length: config.points }, (_, index) => ({
     label: config.label(index),
-    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0, antigravity: 0, workbuddy: 0, grok: 0 },
+    tokens: { codex: 0, claude: 0, zcode: 0, opencode: 0, kimi: 0, antigravity: 0, workbuddy: 0, grok: 0, cursor: 0 },
   }));
 }
 
@@ -39,6 +39,7 @@ function demoSeries(period) {
         workbuddy: Math.round(total * 0.02),
         grok: Math.round(total * 0.035),
         hermes: Math.round(total * 0.015),
+        cursor: Math.round(total * 0.08),
       },
     }));
   }
@@ -58,6 +59,7 @@ function demoSeries(period) {
         workbuddy: Math.round(24_800 * config.factor * (0.8 + (index % 3) / 13) * weekend / config.points),
         grok: Math.round(44_200 * config.factor * (0.88 + (index % 4) / 12) * weekend / config.points),
         hermes: Math.round(18_600 * config.factor * (0.86 + (index % 5) / 11) * weekend / config.points),
+        cursor: Math.round(64_000 * config.factor * (0.9 + (index % 4) / 12) * weekend / config.points),
       },
     };
   });
@@ -102,8 +104,9 @@ function demoSnapshot(period = "today") {
   const grokTokens = Math.round(44_200 * scale);
   // Hermes：harness，直连 API 部分按模型计价，演示里给小额成本。
   const hermesTokens = Math.round(18_600 * scale);
+  const cursorTokens = Math.round(64_000 * scale);
   const totalTokens =
-    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens + grokTokens + hermesTokens;
+    codexTokens + claudeTokens + zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens + grokTokens + hermesTokens + cursorTokens;
   return {
     generatedAt: new Date().toISOString(),
     period,
@@ -183,6 +186,7 @@ function demoSnapshot(period = "today") {
       demoAgentSummary("workbuddy", workbuddyTokens, totalTokens),
       demoAgentSummary("grok", grokTokens, totalTokens),
       demoAgentSummary("hermes", hermesTokens, totalTokens),
+      demoAgentSummary("cursor", cursorTokens, totalTokens),
       // DeepSeek 只读官方余额，本地日志没有可归属的 token 用量，恒为 0。
       demoAgentSummary("deepseek", 0, totalTokens),
     ],
@@ -191,7 +195,7 @@ function demoSnapshot(period = "today") {
       // 演示值按 gpt-5.2 / claude / grok-4.5 价目的量级粗算。
       totalUsd: 5.93 * scale,
       // ZCode / OpenCode / Kimi / Antigravity / WorkBuddy 未计价：演示数据也如实反映这一点。
-      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens,
+      unpricedTokens: zcodeTokens + opencodeTokens + kimiTokens + antigravityTokens + workbuddyTokens + cursorTokens,
       pricingAsOf: "2026-08-19",
       byAgent: [
         { agent: "codex", usd: 2.31 * scale, unpricedTokens: 0 },
@@ -202,6 +206,7 @@ function demoSnapshot(period = "today") {
         { agent: "antigravity", usd: 0, unpricedTokens: antigravityTokens },
         { agent: "workbuddy", usd: 0, unpricedTokens: workbuddyTokens },
         { agent: "grok", usd: 0.22 * scale, unpricedTokens: 0 },
+        { agent: "cursor", usd: 0, unpricedTokens: cursorTokens },
       ],
     },
     models: [
@@ -216,6 +221,7 @@ function demoSnapshot(period = "today") {
       { model: "glm-5.2", agent: "workbuddy", tokens: workbuddyTokens, share: (workbuddyTokens / totalTokens) * 100 },
       { model: "grok-4.5-build", agent: "grok", tokens: grokTokens, share: (grokTokens / totalTokens) * 100 },
       { model: "deepseek-v4-flash", agent: "hermes", tokens: hermesTokens, share: (hermesTokens / totalTokens) * 100 },
+      { model: "composer-2.5", agent: "cursor", tokens: cursorTokens, share: (cursorTokens / totalTokens) * 100 },
     ],
     sources: [
       { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
@@ -230,6 +236,7 @@ function demoSnapshot(period = "today") {
       { id: "kimi-quota", kind: "official", label: "Kimi 官方配额", detail: "合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。", quality: "official", qualityLabel: "官方" },
       { id: "grok-local", kind: "local", label: "Grok Build 本地 Token", detail: "读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。", quality: "exact", qualityLabel: "精确解析" },
       { id: "grok-quota", kind: "official", label: "Grok Build 官方配额", detail: "读取 CLI 统一日志中的 credits 快照。", quality: "official", qualityLabel: "官方" },
+      { id: "cursor-local", kind: "local", label: "Cursor Token", detail: "读取 Cursor 已保存的登录会话，拉取仪表盘逐次用量事件；本机 bubble 的 tokenCount 多为 0，不入账。没有官方配额窗口。", quality: "exact", qualityLabel: "精确解析" },
       { id: "deepseek-quota", kind: "official", label: "DeepSeek 官方余额", detail: "读取官方 API 账户余额；余额是金额不是百分比窗口，显示为货币数值且不随周期重置。", quality: "official", qualityLabel: "官方" },
       { id: "opencode-go-quota", kind: "official", label: "OpenCode Go 官方配额", detail: "凭据取自 auth.json 的 opencode-go key 或环境变量；显示 Session/每周/月度周期窗口。", quality: "official", qualityLabel: "官方" },
     ],

@@ -19,7 +19,8 @@ OpenCode JSON ───┤
 Kimi wire.jsonl ─┤
 Grok updates ────┤
 Pi JSONL ────────┤
-Hermes SQLite ───┘
+Hermes SQLite ───┤
+Cursor dashboard ┘
 
 Codex app-server ─────────┐
 Claude statusLine hook ───┼─ official quota snapshot ──────────────┘
@@ -50,6 +51,7 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - Kimi: new-format records use the session path plus timestamp and component fingerprint; legacy StatusUpdates use the provider `message_id`. Kimi Work (kimi-desktop) embeds the same kimi-code kernel and writes the same wire.jsonl under its daimon runtime home; its sessions reuse the CLI parser unchanged, with project attribution from `session_index.jsonl` (`sessionId` → `workDir`) instead of `workspaces.json`.
 - Pi: provider `responseId` only (unique across 849 local assistant rows; the one row without it is an aborted message that falls back to the entry ID). `/fork` and `/clone` copy entries verbatim into a new session file, so a copy observes the same event with a different session in its payload and merges component-wise like Claude. Compaction and branch-summary summary usage is counted as its own event; the directory name is a lossy encoding and project attribution comes only from the header `cwd`.
 - Hermes: the full route row — session id, model, billing provider, base URL, billing mode, and task — from the `session_model_usage` primary key. Rows are cumulative counters re-read on every scan, so observations merge component-wise like Antigravity (keyed by the `hermes:` event-key prefix, since credited adapters differ); the timestamp is `last_seen`, so a long session's tokens land on its final active day. Forks and subagents only backfill metadata and never copy usage rows, so there is no replay risk.
+- Cursor: one dashboard usage event. Identity is timestamp, conversation id, model, and the token components, because the payload has no request id. Events are deltas, not cumulative counters, so they are not merged by component maxima. A partial page is never committed: `replace_source` would drop events that page did not return. Refresh follows a five-minute bucket rather than `state.vscdb` mtime.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
 
 ### Replayed history is not new usage
@@ -98,6 +100,15 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   own cards; direct and custom APIs stay under Hermes. Attribution keys on the
   plan-specific billing base URL, never on the user-editable provider alias.
   The Hermes card carries local usage only, never a quota.
+- **Cursor**: usage only, no quota window. Local bubble `tokenCount` values are
+  mostly zero after early 2026 and are not a source. Per-request tokens come
+  from `get-filtered-usage-events` on cursor.com, using the plaintext session
+  Cursor already stored in `state.vscdb` (`cursorAuth/accessToken`). The token
+  is not persisted, logged, or written back. `inputTokens` is uncached input;
+  cache read and cache write are separate; `outputTokens` is output. The
+  payload has no reasoning split and no token total (`totalCents` is money),
+  so there is no reported-total check. The state database is opened read-only
+  with a short busy timeout so the WAL copy of the session is visible.
 - **Qwen**: removed. The Bailian personal Token Plan exposes its quota only
   behind the console's interactive login; its cookie stopped working within
   days on a real account, and the product has no programmable quota API

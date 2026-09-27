@@ -119,6 +119,11 @@ change.
   provider alias; a vendor's plain pay-as-you-go endpoint is not a plan and
   stays on the Hermes card. The Hermes card carries local usage only and
   never a quota.
+- Cursor carries usage only and never a quota window. Do not count local
+  bubble `tokenCount` values: current builds persist zeros. Read the plaintext
+  session Cursor already stored, request the dashboard's per-event usage, and
+  drop the session after the request. Never persist, log, or sync that
+  session. Do not infer a project path from a conversation id.
 - Do not expose credentials or raw provider responses through UI, logs, storage,
   sync, fixtures, or diagnostics.
 

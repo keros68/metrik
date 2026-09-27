@@ -3484,7 +3484,8 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .agent-icon--antigravity,
 .agent-icon--workbuddy,
 .agent-icon--qoder,
-.agent-icon--deepseek { color: inherit; }
+.agent-icon--deepseek,
+.agent-icon--cursor { color: inherit; }
 .agent-icon--grok { color: inherit; }
 
 .agent-monogram {

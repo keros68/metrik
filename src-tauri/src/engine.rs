@@ -1,5 +1,6 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, GrokAdapter, HermesAdapter,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, GrokAdapter,
+    HermesAdapter,
     KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter,
     ZcodeAdapter,
 };
@@ -781,6 +782,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(GrokAdapter::detected()),
         Box::new(PiAdapter::detected()),
         Box::new(HermesAdapter::detected()),
+        Box::new(CursorAdapter::detected()),
     ];
     let mut report = ScanReport::default();
     let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
@@ -1470,6 +1472,15 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         || errors("opencode") > 0
         || !opencode_gaps.is_empty();
     let kimi_partial = kimi_diagnostics.partial_sources > 0 || errors("kimi") > 0;
+    let cursor_diagnostics = diagnostics("cursor");
+    let cursor_gaps = report
+        .coverage_gaps
+        .get("cursor")
+        .cloned()
+        .unwrap_or_default();
+    let cursor_partial = cursor_diagnostics.partial_sources > 0
+        || errors("cursor") > 0
+        || !cursor_gaps.is_empty();
     let mut views = vec![
         SourceView {
             id: "codex-quota".into(),
@@ -1667,6 +1678,29 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             }
             .into(),
             quality_label: if diagnostics("pi").partial_sources > 0 || errors("pi") > 0 {
+                "数据不完整"
+            } else {
+                "精确解析"
+            }
+            .into(),
+        },
+        SourceView {
+            id: "cursor-local".into(),
+            kind: "local".into(),
+            label: "Cursor Token".into(),
+            detail: format!(
+                "发现 {} 个用量来源，本次更新 {} 个。{}{}当前版本不把逐次 token 写入本机（bubble 的 tokenCount 多为 0）。已登录时读取 Cursor 自己保存的明文会话，向 cursor.com 拉取仪表盘同一份逐次用量事件：inputTokens 记为未缓存输入，缓存读写分开计入，outputTokens 为输出；事件不报 token 总量，也不单列推理 token。会话令牌不落库。没有官方配额窗口。未安装时保持为 0，不做推算；未登录则标明读不到，不用空结果覆盖已有账本。",
+                discovered("cursor"),
+                refreshed("cursor"),
+                coverage_detail(&cursor_diagnostics, errors("cursor")),
+                if cursor_gaps.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}。", cursor_gaps.join("；"))
+                },
+            ),
+            quality: if cursor_partial { "partial" } else { "exact" }.into(),
+            quality_label: if cursor_partial {
                 "数据不完整"
             } else {
                 "精确解析"
