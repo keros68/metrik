@@ -370,9 +370,15 @@ fn boundary_fingerprint(row: &Value) -> Option<String> {
 
 struct FetchCheckpoint {
     source_id: String,
+    /// 按小时对齐后的视界起点。引擎每次用当前毫秒重算 65 天前，不能拿原始值做相等比较。
     cutoff_ms: i64,
-    mtime_ns: i64,
     progress: FetchProgress,
+}
+
+/// 65 天起点按小时对齐。两次快照通常只差几秒，对齐后仍是同一个抓取窗口。
+fn stable_cutoff(cutoff_ms: i64) -> i64 {
+    const HOUR_MS: i64 = 60 * 60 * 1000;
+    cutoff_ms.div_euclid(HOUR_MS) * HOUR_MS
 }
 
 struct FetchProgress {
@@ -732,26 +738,33 @@ fn cursor_request(
 
 fn take_progress(candidate: &SourceCandidate, cutoff_ms: i64) -> FetchProgress {
     let saved = FETCH.lock().ok().and_then(|mut guard| guard.take());
-    if let Some(saved) = saved {
-        // 五分钟时间桶会在长抓取中途滚动。进度只跟来源和视界走，否则重度用户
-        // 会在桶边界把已经拉到的页全部丢掉，永远重新开始。
-        if saved.source_id == candidate.source_id && saved.cutoff_ms == cutoff_ms {
-            return saved.progress;
-        }
-    }
     let end_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(cutoff_ms);
-    FetchProgress::new(cutoff_ms, end_ms)
+        .unwrap_or(stable_cutoff(cutoff_ms));
+    restore_or_start(saved, candidate, cutoff_ms, end_ms)
+}
+
+/// 视界按小时对齐。引擎每次用当前毫秒重算 65 天前，差几秒仍是同一个窗口。
+fn restore_or_start(
+    saved: Option<FetchCheckpoint>,
+    candidate: &SourceCandidate,
+    cutoff_ms: i64,
+    end_ms: i64,
+) -> FetchProgress {
+    if let Some(saved) = saved {
+        if saved.source_id == candidate.source_id && saved.cutoff_ms == stable_cutoff(cutoff_ms) {
+            return saved.progress;
+        }
+    }
+    FetchProgress::new(stable_cutoff(cutoff_ms), end_ms)
 }
 
 fn store_progress(candidate: &SourceCandidate, cutoff_ms: i64, progress: FetchProgress) {
     if let Ok(mut guard) = FETCH.lock() {
         *guard = Some(FetchCheckpoint {
             source_id: candidate.source_id.clone(),
-            cutoff_ms,
-            mtime_ns: candidate.mtime_ns,
+            cutoff_ms: stable_cutoff(cutoff_ms),
             progress,
         });
     }
@@ -1073,6 +1086,38 @@ mod tests {
             Some(Duration::from_millis(500))
         );
         assert_eq!(budget_for(Some(Duration::from_secs(5))), Some(MAX_REQUEST));
+    }
+
+    #[test]
+    fn progress_resumes_across_snapshots_when_the_cutoff_drifts_by_seconds() {
+        let hour = 1_700_000_000_000_i64;
+        let cutoff = hour + 5_000;
+        let later = cutoff + 4_000;
+        assert_eq!(stable_cutoff(cutoff), stable_cutoff(later));
+        assert_ne!(cutoff, later);
+
+        let candidate = SourceCandidate {
+            source_id: "cursor-resume".into(),
+            path: PathBuf::from("state.vscdb"),
+            size: 1,
+            mtime_ns: 1,
+        };
+        let mut progress = FetchProgress::new(stable_cutoff(cutoff), hour + 86_400_000);
+        progress
+            .apply_page(2_500, vec![serde_json::json!({}); PAGE_SIZE as usize])
+            .unwrap();
+        assert_eq!(progress.ranges.front().unwrap().page_next, 2);
+
+        let saved = FetchCheckpoint {
+            source_id: candidate.source_id.clone(),
+            cutoff_ms: stable_cutoff(cutoff),
+            progress,
+        };
+        let resumed = restore_or_start(Some(saved), &candidate, later, hour + 86_400_000);
+        assert!(!resumed.is_complete());
+        assert_eq!(resumed.ranges.front().unwrap().page_next, 2);
+        assert!(resumed.finished.is_empty());
+        assert_eq!(resumed.ranges.front().unwrap().start_ms, stable_cutoff(cutoff));
     }
 
     #[test]
