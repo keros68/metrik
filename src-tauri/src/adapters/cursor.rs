@@ -296,14 +296,11 @@ fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
                 .context("读取 Cursor 用量响应失败")?,
         )
         .context("Cursor 用量响应不是预期的 JSON")?;
-        if let Some(count) = json_i64(json.get("totalUsageEventsCount")) {
-            total = Some(count.max(0));
+        let (count, rows) = usage_page(&json)?;
+        if total.is_some_and(|previous| previous != count) {
+            bail!("Cursor 用量事件总数在分页时改变，本轮不写入");
         }
-        let rows = json
-            .get("usageEventsDisplay")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        total = Some(count);
         let count = rows.len() as i64;
         fetched += count;
         last_page_full = count >= PAGE_SIZE;
@@ -319,6 +316,19 @@ fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
         bail!("Cursor 用量事件未完整拉完，本轮不写入，避免用残缺结果覆盖已有账本");
     }
     Ok(pages)
+}
+
+fn usage_page(json: &Value) -> Result<(i64, Vec<Value>)> {
+    // 空列表是合法的零用量；缺字段或类型变化不能当作零用量覆盖旧账本。
+    let total = json_i64(json.get("totalUsageEventsCount"))
+        .filter(|count| *count >= 0)
+        .context("Cursor 用量响应缺少有效的事件总数，本轮不写入")?;
+    let rows = json
+        .get("usageEventsDisplay")
+        .and_then(Value::as_array)
+        .cloned()
+        .context("Cursor 用量响应缺少事件列表，本轮不写入")?;
+    Ok((total, rows))
 }
 
 fn map_cursor_error(error: ureq::Error) -> anyhow::Error {
@@ -576,6 +586,29 @@ mod tests {
         assert!(!usage_fetch_is_complete(1000, Some(2500), true, false));
         assert!(!usage_fetch_is_complete(15_000, None, true, true));
         assert!(usage_fetch_is_complete(20, None, false, false));
+    }
+
+    #[test]
+    fn usage_page_rejects_missing_or_invalid_fields() {
+        assert!(usage_page(&serde_json::json!({})).is_err());
+        assert!(usage_page(&serde_json::json!({"totalUsageEventsCount": 0})).is_err());
+        assert!(usage_page(&serde_json::json!({
+            "totalUsageEventsCount": 0,
+            "usageEventsDisplay": null
+        }))
+        .is_err());
+        assert!(usage_page(&serde_json::json!({
+            "totalUsageEventsCount": -1,
+            "usageEventsDisplay": []
+        }))
+        .is_err());
+        let (total, rows) = usage_page(&serde_json::json!({
+            "totalUsageEventsCount": 0,
+            "usageEventsDisplay": []
+        }))
+        .unwrap();
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
     }
 
     #[test]

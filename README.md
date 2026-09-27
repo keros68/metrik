@@ -10,7 +10,7 @@
 
 </div>
 
-Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.04 x86_64。用量从本机日志解析，配额取自各 Agent 官方接口，无云端服务。
+Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.04 x86_64。用量来自本机日志或 Cursor 仪表盘事件，配额取自各 Agent 官方接口，无 Metrik 云端服务。
 
 <p align="center">
   <img src="design/shot-glass.jpg" alt="Metrik 桌面小组件与配额胶囊条 · 透明档">
@@ -22,7 +22,7 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 - **桌面形态**：Windows 提供桌面小组件，Ubuntu 提供紧凑卡片，两者均可收缩为横向 / 纵向配额胶囊条；macOS 提供菜单栏面板和原生 WidgetKit 桌面小组件。
 - **统计与报表**：26 周热力图、周趋势、Agent 占比与按项目归集的会话明细，可导出 CSV。
 - **多设备同步**：指定坚果云、OneDrive 或 Syncthing 等共享文件夹后，各设备近 30 天统计事件自动合并。
-- **隐私**：数据库不写入提示词、回复正文、工具输出与凭据；更新检查是唯一主动发起的网络请求，可在设置中关闭。
+- **隐私**：数据库不写入提示词、回复正文、工具输出与凭据。部分配额刷新会请求相应服务；检测到已登录的 Cursor 时，用量刷新还会请求 cursor.com。更新检查可在设置中关闭。
 
 ## 快速开始
 

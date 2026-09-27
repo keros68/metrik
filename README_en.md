@@ -10,7 +10,7 @@
 
 </div>
 
-Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usage is parsed from local logs, quota comes from each agent's official endpoint, and there is no cloud service.
+Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usage comes from local logs or Cursor dashboard events, quota comes from each agent's official endpoint, and Metrik has no cloud service.
 
 <p align="center">
   <img src="design/shot-glass.jpg" alt="Metrik desktop widget and quota strip, clear glass">
@@ -22,7 +22,7 @@ Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usa
 - **Desktop forms**: A desktop widget on Windows and a compact card on Ubuntu, both collapsible into a horizontal or vertical quota strip. On macOS, a menu bar panel and a native WidgetKit desktop widget.
 - **Statistics and reports**: 26-week heatmap, weekly trends, agent share, and per-project session details, with CSV export.
 - **Multi-device sync**: After you choose a shared folder (Jianguoyun, OneDrive, Syncthing, and similar), statistics events from the last 30 days on each device are merged automatically.
-- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. The update check is the only network request the app makes on its own and can be turned off in settings.
+- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. Some quota refreshes contact the relevant services; when a signed-in Cursor installation is detected, usage refreshes also contact cursor.com. Update checks can be turned off in settings.
 
 ## Get started
 
