@@ -14,15 +14,18 @@
 //! - `totalCents` 是金额不是 token 总量，没有可核对的自报总量，不做
 //!   `disagrees_with_reported_total`
 //!
-//! 事件是增量而不是累计行，身份用时间、会话、模型与分量指纹。整页拉完才落库：
-//! 残缺结果若走 `replace_source` 会删掉这次没看到的旧事件。没有官方配额窗口。
+//! 事件是增量而不是累计行。接口没有 request id，身份用时间、会话、模型与
+//! 分量；同一毫秒里这份指纹重复出现时按出现次序加后缀，避免并行调用被并成一条。
+//! 65 天窗口若超过单次分页上限，就按时间对半切开再拉，不因条数多就整段放弃。
+//! 每一段都必须拉完整才拼进结果：残缺结果若走 `replace_source` 会删掉这次没看到的旧事件。
+//! 接口不带工作目录，用量不归入项目；未收录价目的模型保持未计价。没有官方配额窗口。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
 use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +36,9 @@ const AUTH_ME_URL: &str = "https://cursor.com/api/auth/me";
 const REFRESH_MS: i64 = 5 * 60 * 1000;
 const PAGE_SIZE: i64 = 1000;
 const MAX_PAGES: i64 = 15;
+/// 同一段时间里总数被新请求改写时，先整段重拉，仍对不上再把时间切开。
+const RANGE_ATTEMPTS: u32 = 3;
+const MAX_SPLIT_DEPTH: u32 = 48;
 
 pub struct CursorAdapter {
     state_db: PathBuf,
@@ -141,7 +147,7 @@ struct ParsedPages {
 
 fn events_from_pages(pages: &[Value], cutoff_ms: i64) -> ParsedPages {
     let mut events = Vec::new();
-    let mut seen = HashSet::new();
+    let mut occurrences: HashMap<String, u32> = HashMap::new();
     let mut malformed = 0usize;
     for page in pages {
         let Some(rows) = page.as_array() else {
@@ -151,9 +157,7 @@ fn events_from_pages(pages: &[Value], cutoff_ms: i64) -> ParsedPages {
         for row in rows {
             match event_from_row(row, cutoff_ms) {
                 RowOutcome::Event(event) => {
-                    if seen.insert(event.event_key.clone()) {
-                        events.push(event);
-                    }
+                    events.push(with_occurrence(event, &mut occurrences));
                 }
                 RowOutcome::Skip => {}
                 RowOutcome::Malformed => malformed += 1,
@@ -161,6 +165,28 @@ fn events_from_pages(pages: &[Value], cutoff_ms: i64) -> ParsedPages {
         }
     }
     ParsedPages { events, malformed }
+}
+
+/// 第一条保持原键，方便唯一事件在重拉时对上已有账本。第二条起加出现次序。
+fn with_occurrence(event: UsageEvent, occurrences: &mut HashMap<String, u32>) -> UsageEvent {
+    let base = event.event_key.clone();
+    let occurrence = {
+        let seen = occurrences.entry(base.clone()).or_insert(0);
+        *seen += 1;
+        *seen
+    };
+    if occurrence == 1 {
+        return event;
+    }
+    UsageEvent::new(
+        "cursor",
+        format!("{base}#{occurrence}"),
+        event.occurred_at_ms,
+        event.session_id,
+        event.model,
+        event.tokens,
+        event.quality,
+    )
 }
 
 enum RowOutcome {
@@ -208,6 +234,7 @@ fn event_from_row(row: &Value, cutoff_ms: i64) -> RowOutcome {
         .unwrap_or("cursor")
         .to_owned();
     // 分量写进事件键：同一次请求重拉时键不变；仪表盘若改写读数，旧键在整源替换时退出，不会加计两次。
+    // 同毫秒的另一次调用由 `with_occurrence` 加后缀，不在这里丢掉。
     let event_key = format!(
         "cursor:{occurred_at_ms}|{session_id}|{}|{}|{}|{}|{}",
         model.as_deref().unwrap_or(""),
@@ -242,6 +269,102 @@ fn usage_fetch_is_complete(
     }
 }
 
+fn page_budget() -> i64 {
+    MAX_PAGES * PAGE_SIZE
+}
+
+enum TotalDecision {
+    Accept,
+    RetryRange,
+    SplitRange,
+}
+
+/// 超过单次分页上限就切开，不把重度用户锁在失败上。
+/// 翻页过程中总数变了先重拉这一段：人越活跃，整段放弃的概率越高。
+fn decide_total(previous: Option<i64>, total: i64) -> TotalDecision {
+    if total > page_budget() {
+        return TotalDecision::SplitRange;
+    }
+    if previous.is_some_and(|previous| previous != total) {
+        return TotalDecision::RetryRange;
+    }
+    TotalDecision::Accept
+}
+
+/// 两段都含中点。接口没有写明端点开闭，重叠这一毫秒再按指纹扣掉重复，
+/// 避免开闭理解反了时把边界上的调用丢掉或算两次。
+fn split_millis(start: i64, end: i64) -> Option<((i64, i64), (i64, i64))> {
+    if end <= start {
+        return None;
+    }
+    // 只差 1 毫秒时无法重叠切开，否则右段会和原窗口一样大，递归不会结束。
+    if end == start + 1 {
+        return Some(((start, start), (end, end)));
+    }
+    let mid = start + (end - start) / 2;
+    if mid <= start || mid >= end {
+        return None;
+    }
+    Some(((start, mid), (mid, end)))
+}
+
+fn merge_overlapping_pages(mut left: Vec<Value>, right: Vec<Value>, boundary_ms: i64) -> Vec<Value> {
+    let mut boundary_counts: HashMap<String, u32> = HashMap::new();
+    for page in &left {
+        let Some(rows) = page.as_array() else {
+            continue;
+        };
+        for row in rows {
+            if json_i64(row.get("timestamp")) != Some(boundary_ms) {
+                continue;
+            }
+            let Some(fingerprint) = boundary_fingerprint(row) else {
+                continue;
+            };
+            *boundary_counts.entry(fingerprint).or_insert(0) += 1;
+        }
+    }
+    let right = right.into_iter().map(|page| {
+        let Some(rows) = page.as_array() else {
+            return page;
+        };
+        let kept = rows
+            .iter()
+            .filter(|row| {
+                if json_i64(row.get("timestamp")) != Some(boundary_ms) {
+                    return true;
+                }
+                let Some(fingerprint) = boundary_fingerprint(row) else {
+                    return true;
+                };
+                let count = boundary_counts.entry(fingerprint).or_insert(0);
+                if *count == 0 {
+                    return true;
+                }
+                *count -= 1;
+                false
+            })
+            .cloned()
+            .collect();
+        Value::Array(kept)
+    });
+    left.extend(right);
+    left
+}
+
+fn boundary_fingerprint(row: &Value) -> Option<String> {
+    match event_from_row(row, i64::MIN) {
+        RowOutcome::Event(event) => Some(event.event_key),
+        RowOutcome::Skip | RowOutcome::Malformed => None,
+    }
+}
+
+enum Paginate {
+    Done(Vec<Value>),
+    Retry,
+    Split,
+}
+
 fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
     let sub = jwt_sub(access_token)?;
     let cookie = format!("WorkosCursorSessionToken={sub}%3A%3A{access_token}");
@@ -267,16 +390,53 @@ fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(cutoff_ms);
+    fetch_window(&agent, &cookie, user_id, cutoff_ms, end_ms, 0)
+}
 
+fn fetch_window(
+    agent: &ureq::Agent,
+    cookie: &str,
+    user_id: i64,
+    start_ms: i64,
+    end_ms: i64,
+    depth: u32,
+) -> Result<Vec<Value>> {
+    if start_ms > end_ms {
+        return Ok(Vec::new());
+    }
+    for _ in 0..RANGE_ATTEMPTS {
+        match paginate_window(agent, cookie, user_id, start_ms, end_ms)? {
+            Paginate::Done(pages) => return Ok(pages),
+            Paginate::Retry => continue,
+            Paginate::Split => break,
+        }
+    }
+    if depth >= MAX_SPLIT_DEPTH {
+        bail!("Cursor 用量时间窗口无法继续切开，本轮不写入");
+    }
+    let Some(((left_start, left_end), (right_start, right_end))) = split_millis(start_ms, end_ms)
+    else {
+        bail!("Cursor 用量在同一毫秒内超过单次分页上限，本轮不写入");
+    };
+    let left = fetch_window(agent, cookie, user_id, left_start, left_end, depth + 1)?;
+    let right = fetch_window(agent, cookie, user_id, right_start, right_end, depth + 1)?;
+    Ok(merge_overlapping_pages(left, right, left_end))
+}
+
+fn paginate_window(
+    agent: &ureq::Agent,
+    cookie: &str,
+    user_id: i64,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Paginate> {
     let mut pages = Vec::new();
     let mut fetched = 0i64;
-    let mut total = None;
-    let mut last_page_full = false;
-    let mut hit_cap = false;
+    let mut expected: Option<i64> = None;
     for page in 1..=MAX_PAGES {
         let body = serde_json::json!({
             "teamId": 0,
-            "startDate": cutoff_ms.to_string(),
+            "startDate": start_ms.to_string(),
             "endDate": end_ms.to_string(),
             "page": page,
             "pageSize": PAGE_SIZE,
@@ -284,7 +444,7 @@ fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
         });
         let response = agent
             .post(FILTERED_USAGE_URL)
-            .set("Cookie", &cookie)
+            .set("Cookie", cookie)
             .set("Origin", "https://cursor.com")
             .set("Content-Type", "application/json")
             .set("Accept", "application/json")
@@ -296,26 +456,25 @@ fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
                 .context("读取 Cursor 用量响应失败")?,
         )
         .context("Cursor 用量响应不是预期的 JSON")?;
-        let (count, rows) = usage_page(&json)?;
-        if total.is_some_and(|previous| previous != count) {
-            bail!("Cursor 用量事件总数在分页时改变，本轮不写入");
+        let (total, rows) = usage_page(&json)?;
+        match decide_total(expected, total) {
+            TotalDecision::SplitRange => return Ok(Paginate::Split),
+            TotalDecision::RetryRange => return Ok(Paginate::Retry),
+            TotalDecision::Accept => expected = Some(total),
         }
-        total = Some(count);
-        let count = rows.len() as i64;
-        fetched += count;
-        last_page_full = count >= PAGE_SIZE;
+        let row_count = rows.len() as i64;
+        fetched += row_count;
+        let full = row_count >= PAGE_SIZE;
         pages.push(Value::Array(rows));
-        if !last_page_full || total.is_some_and(|total| fetched >= total) {
-            break;
-        }
-        if page == MAX_PAGES {
-            hit_cap = true;
+        if !full || fetched >= total {
+            if usage_fetch_is_complete(fetched, Some(total), full, false) {
+                return Ok(Paginate::Done(pages));
+            }
+            bail!("Cursor 用量事件未完整拉完，本轮不写入，避免用残缺结果覆盖已有账本");
         }
     }
-    if !usage_fetch_is_complete(fetched, total, last_page_full, hit_cap) {
-        bail!("Cursor 用量事件未完整拉完，本轮不写入，避免用残缺结果覆盖已有账本");
-    }
-    Ok(pages)
+    // 总数声称装得下，15 页却仍不满：当成这段太密，交给时间切开，而不是永久失败。
+    Ok(Paginate::Split)
 }
 
 fn usage_page(json: &Value) -> Result<(i64, Vec<Value>)> {
@@ -540,7 +699,12 @@ mod tests {
     fn dashboard_rows_split_tokens_the_same_way_as_other_agents() {
         let parsed = events_from_pages(&[sample_page()], 1_783_000_000_000);
         assert_eq!(parsed.malformed, 1);
-        assert_eq!(parsed.events.len(), 1, "重复行与零 token、窗口外事件都不入账");
+        assert_eq!(
+            parsed.events.len(),
+            2,
+            "同一毫秒的两条相同结构都要入账；零 token 与窗口外事件不入账"
+        );
+        assert!(parsed.events[1].event_key.ends_with("#2"));
         let event = &parsed.events[0];
         assert_eq!(event.adapter_id, "cursor");
         assert_eq!(event.session_id, "conv-1");
@@ -586,6 +750,74 @@ mod tests {
         assert!(!usage_fetch_is_complete(1000, Some(2500), true, false));
         assert!(!usage_fetch_is_complete(15_000, None, true, true));
         assert!(usage_fetch_is_complete(20, None, false, false));
+    }
+
+    #[test]
+    fn a_large_or_shifting_total_is_split_or_retried_instead_of_abandoned() {
+        assert!(matches!(
+            decide_total(None, page_budget()),
+            TotalDecision::Accept
+        ));
+        assert!(matches!(
+            decide_total(None, page_budget() + 1),
+            TotalDecision::SplitRange
+        ));
+        assert!(matches!(
+            decide_total(Some(3_000), 3_001),
+            TotalDecision::RetryRange
+        ));
+        assert!(matches!(
+            decide_total(Some(3_000), page_budget() + 5),
+            TotalDecision::SplitRange
+        ));
+    }
+
+    #[test]
+    fn time_splits_overlap_on_the_midpoint_only() {
+        let ((left_start, left_end), (right_start, right_end)) = split_millis(1_000, 5_000).unwrap();
+        assert_eq!(left_start, 1_000);
+        assert_eq!(right_end, 5_000);
+        assert_eq!(right_start, left_end);
+        assert!(left_end - left_start < 4_000);
+        assert!(right_end - right_start < 4_000);
+        assert!(split_millis(10, 10).is_none());
+        let ((only_left, only_left_end), (only_right, only_right_end)) =
+            split_millis(10, 11).unwrap();
+        assert_eq!(
+            (only_left, only_left_end, only_right, only_right_end),
+            (10, 10, 11, 11)
+        );
+    }
+
+    #[test]
+    fn overlapping_boundary_rows_are_counted_once_unless_the_right_side_has_more() {
+        let row = serde_json::json!({
+            "timestamp": 50,
+            "model": "composer-2.5",
+            "conversationId": "conv-1",
+            "tokenUsage": { "inputTokens": 3, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0 }
+        });
+        let extra = serde_json::json!({
+            "timestamp": 50,
+            "model": "composer-2.5",
+            "conversationId": "conv-1",
+            "tokenUsage": { "inputTokens": 9, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0 }
+        });
+        let merged = merge_overlapping_pages(
+            vec![Value::Array(vec![row.clone(), row.clone()])],
+            vec![Value::Array(vec![row.clone(), extra])],
+            50,
+        );
+        let parsed = events_from_pages(&merged, 0);
+        assert_eq!(parsed.events.len(), 3);
+        assert_eq!(
+            parsed
+                .events
+                .iter()
+                .filter(|event| event.tokens.input_uncached == 3)
+                .count(),
+            2
+        );
     }
 
     #[test]
