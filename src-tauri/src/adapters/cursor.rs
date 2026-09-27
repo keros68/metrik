@@ -18,6 +18,8 @@
 //! 分量；同一毫秒里这份指纹重复出现时按出现次序加后缀，避免并行调用被并成一条。
 //! 65 天窗口若超过单次分页上限，就按时间对半切开再拉，不因条数多就整段放弃。
 //! 每一段都必须拉完整才拼进结果：残缺结果若走 `replace_source` 会删掉这次没看到的旧事件。
+//! 网络请求之间看扫描截止时间。没拉完只把进度留在内存（不含会话），下次快照续跑；
+//! 整段窗口完成后才一次性入账。
 //! 接口不带工作目录，用量不归入项目；未收录价目的模型保持未计价。没有官方配额窗口。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
@@ -25,9 +27,10 @@ use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const FILTERED_USAGE_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 const AUTH_ME_URL: &str = "https://cursor.com/api/auth/me";
@@ -38,7 +41,12 @@ const PAGE_SIZE: i64 = 1000;
 const MAX_PAGES: i64 = 15;
 /// 同一段时间里总数被新请求改写时，先整段重拉，仍对不上再把时间切开。
 const RANGE_ATTEMPTS: u32 = 3;
-const MAX_SPLIT_DEPTH: u32 = 48;
+const MAX_QUEUED_RANGES: usize = 256;
+/// 剩余预算不够发下一次请求时先挂起。单次请求也不超过这个上限，避免一次套接字把扫描锁占满。
+const MIN_SLICE: Duration = Duration::from_millis(200);
+const MAX_REQUEST: Duration = Duration::from_secs(2);
+
+static FETCH: Mutex<Option<FetchCheckpoint>> = Mutex::new(None);
 
 pub struct CursorAdapter {
     state_db: PathBuf,
@@ -90,28 +98,29 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let mut diagnostics = ScanDiagnostics::default();
-        // 没有会话时不写空结果：replace_source 会把已入账的事件清掉。
-        let Some(token) = read_access_token(&self.state_db)? else {
-            bail!("Cursor 没有登录会话，本轮不写入");
+        self.parse_until(
+            candidate,
+            cutoff_ms,
+            Instant::now() + Duration::from_secs(180),
+        )?
+        .context("Cursor 用量未在单次解析时限内完成")
+    }
+
+    fn has_pending(&self, candidate: &SourceCandidate) -> bool {
+        fetch_is_pending(candidate)
+    }
+
+    fn parse_until(
+        &self,
+        candidate: &SourceCandidate,
+        cutoff_ms: i64,
+        deadline: Instant,
+    ) -> Result<Option<ParsedScan>> {
+        let Some(pages) = drive_fetch(self.state_db.as_path(), candidate, cutoff_ms, Some(deadline))?
+        else {
+            return Ok(None);
         };
-        let pages = fetch_usage_pages(&token, cutoff_ms)?;
-        let parsed = events_from_pages(&pages, cutoff_ms);
-        diagnostics.malformed_lines = parsed.malformed;
-        let events = parsed.events;
-        Ok(ParsedScan {
-            source: ParsedSource {
-                source_id: candidate.source_id.clone(),
-                adapter_id: self.id(),
-                locator: candidate.path.clone(),
-                logical_key: candidate.source_id.clone(),
-                size: candidate.size,
-                mtime_ns: candidate.mtime_ns,
-                events,
-                quotas: Vec::new(),
-            },
-            diagnostics,
-        })
+        Ok(Some(scan_from_pages(candidate, cutoff_ms, pages)))
     }
 
     fn coverage_gaps(&self) -> Vec<String> {
@@ -359,122 +368,399 @@ fn boundary_fingerprint(row: &Value) -> Option<String> {
     }
 }
 
-enum Paginate {
-    Done(Vec<Value>),
-    Retry,
-    Split,
+struct FetchCheckpoint {
+    source_id: String,
+    cutoff_ms: i64,
+    mtime_ns: i64,
+    progress: FetchProgress,
 }
 
-fn fetch_usage_pages(access_token: &str, cutoff_ms: i64) -> Result<Vec<Value>> {
-    let sub = jwt_sub(access_token)?;
-    let cookie = format!("WorkosCursorSessionToken={sub}%3A%3A{access_token}");
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(12))
-        .build();
-    let me = agent
-        .get(AUTH_ME_URL)
-        .set("Cookie", &cookie)
-        .set("Accept", "application/json")
-        .call()
-        .map_err(map_cursor_error)?;
-    let me_json: Value = serde_json::from_str(
-        &me.into_string()
-            .context("读取 Cursor 登录状态失败")?,
-    )
-    .context("Cursor 登录状态不是预期的 JSON")?;
-    let user_id = json_i64(me_json.get("id"))
-        .filter(|id| *id > 0)
-        .context("Cursor 登录会话缺少用户标识")?;
-
-    let end_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(cutoff_ms);
-    fetch_window(&agent, &cookie, user_id, cutoff_ms, end_ms, 0)
+struct FetchProgress {
+    user_id: Option<i64>,
+    ranges: VecDeque<RangeJob>,
+    finished: Vec<FinishedRange>,
+    transport_failures: u32,
 }
 
-fn fetch_window(
-    agent: &ureq::Agent,
-    cookie: &str,
-    user_id: i64,
+struct RangeJob {
     start_ms: i64,
     end_ms: i64,
-    depth: u32,
-) -> Result<Vec<Value>> {
-    if start_ms > end_ms {
-        return Ok(Vec::new());
-    }
-    for _ in 0..RANGE_ATTEMPTS {
-        match paginate_window(agent, cookie, user_id, start_ms, end_ms)? {
-            Paginate::Done(pages) => return Ok(pages),
-            Paginate::Retry => continue,
-            Paginate::Split => break,
+    attempts_used: u32,
+    page_next: i64,
+    fetched: i64,
+    expected_total: Option<i64>,
+    pages: Vec<Value>,
+}
+
+struct FinishedRange {
+    start_ms: i64,
+    end_ms: i64,
+    pages: Vec<Value>,
+}
+
+impl RangeJob {
+    fn new(start_ms: i64, end_ms: i64) -> Self {
+        Self {
+            start_ms,
+            end_ms,
+            attempts_used: 0,
+            page_next: 1,
+            fetched: 0,
+            expected_total: None,
+            pages: Vec::new(),
         }
     }
-    if depth >= MAX_SPLIT_DEPTH {
-        bail!("Cursor 用量时间窗口无法继续切开，本轮不写入");
+
+    fn reset_pages(&mut self) {
+        self.page_next = 1;
+        self.fetched = 0;
+        // 清掉旧总数，下一页按服务端的新总数重新起页，而不是和过期总数死磕。
+        self.expected_total = None;
+        self.pages.clear();
     }
-    let Some(((left_start, left_end), (right_start, right_end))) = split_millis(start_ms, end_ms)
-    else {
-        bail!("Cursor 用量在同一毫秒内超过单次分页上限，本轮不写入");
-    };
-    let left = fetch_window(agent, cookie, user_id, left_start, left_end, depth + 1)?;
-    let right = fetch_window(agent, cookie, user_id, right_start, right_end, depth + 1)?;
-    Ok(merge_overlapping_pages(left, right, left_end))
 }
 
-fn paginate_window(
-    agent: &ureq::Agent,
-    cookie: &str,
+impl FetchProgress {
+    fn new(cutoff_ms: i64, end_ms: i64) -> Self {
+        let mut ranges = VecDeque::new();
+        if cutoff_ms <= end_ms {
+            ranges.push_back(RangeJob::new(cutoff_ms, end_ms));
+        }
+        Self {
+            user_id: None,
+            ranges,
+            finished: Vec::new(),
+            transport_failures: 0,
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    fn pages(&self) -> Vec<Value> {
+        let mut acc = Vec::new();
+        let mut acc_end = None;
+        for range in &self.finished {
+            if acc_end == Some(range.start_ms) {
+                acc = merge_overlapping_pages(acc, range.pages.clone(), range.start_ms);
+            } else {
+                acc.extend(range.pages.clone());
+            }
+            acc_end = Some(range.end_ms);
+        }
+        acc
+    }
+
+    /// 把一页结果应用到当前时间段。调用方每次只发一页，发之前先看预算。
+    fn apply_page(&mut self, total: i64, rows: Vec<Value>) -> Result<()> {
+        let Some(front) = self.ranges.front() else {
+            bail!("Cursor 用量没有待拉的时间段");
+        };
+        match decide_total(front.expected_total, total) {
+            TotalDecision::SplitRange => self.split_front(),
+            TotalDecision::RetryRange => {
+                let attempts = {
+                    let front = self.ranges.front_mut().expect("range still queued");
+                    front.attempts_used += 1;
+                    front.reset_pages();
+                    front.attempts_used
+                };
+                if attempts >= RANGE_ATTEMPTS {
+                    self.split_front()
+                } else {
+                    Ok(())
+                }
+            }
+            TotalDecision::Accept => {
+                let row_count = rows.len() as i64;
+                let full = row_count >= PAGE_SIZE;
+                let action = {
+                    let front = self.ranges.front_mut().expect("range still queued");
+                    front.expected_total = Some(total);
+                    front.fetched += row_count;
+                    front.pages.push(Value::Array(rows));
+                    if full && front.fetched < total {
+                        if front.page_next >= MAX_PAGES {
+                            RangeAction::Split
+                        } else {
+                            front.page_next += 1;
+                            RangeAction::Continue
+                        }
+                    } else if usage_fetch_is_complete(front.fetched, Some(total), full, false) {
+                        RangeAction::Finish
+                    } else {
+                        RangeAction::Incomplete
+                    }
+                };
+                match action {
+                    RangeAction::Continue => Ok(()),
+                    RangeAction::Split => self.split_front(),
+                    RangeAction::Finish => {
+                        self.finish_front();
+                        Ok(())
+                    }
+                    RangeAction::Incomplete => {
+                        bail!("Cursor 用量事件未完整拉完，本轮不写入，避免用残缺结果覆盖已有账本")
+                    }
+                }
+            }
+        }
+    }
+
+    fn split_front(&mut self) -> Result<()> {
+        let Some(front) = self.ranges.pop_front() else {
+            bail!("Cursor 用量没有待切开的时间段");
+        };
+        let Some((left, right)) = split_millis(front.start_ms, front.end_ms) else {
+            bail!("Cursor 用量在同一毫秒内超过单次分页上限，本轮不写入");
+        };
+        self.ranges
+            .push_front(RangeJob::new(right.0, right.1));
+        self.ranges
+            .push_front(RangeJob::new(left.0, left.1));
+        if self.ranges.len() > MAX_QUEUED_RANGES {
+            bail!("Cursor 用量时间窗口切得过碎，本轮不写入");
+        }
+        Ok(())
+    }
+
+    fn finish_front(&mut self) {
+        let Some(front) = self.ranges.pop_front() else {
+            return;
+        };
+        self.finished.push(FinishedRange {
+            start_ms: front.start_ms,
+            end_ms: front.end_ms,
+            pages: front.pages,
+        });
+    }
+}
+
+enum RangeAction {
+    Continue,
+    Split,
+    Finish,
+    Incomplete,
+}
+
+fn budget_for(remaining: Option<Duration>) -> Option<Duration> {
+    let Some(remaining) = remaining else {
+        return Some(Duration::from_secs(8));
+    };
+    if remaining < MIN_SLICE {
+        return None;
+    }
+    Some(remaining.min(MAX_REQUEST))
+}
+
+fn scan_from_pages(candidate: &SourceCandidate, cutoff_ms: i64, pages: Vec<Value>) -> ParsedScan {
+    let parsed = events_from_pages(&pages, cutoff_ms);
+    ParsedScan {
+        source: ParsedSource {
+            source_id: candidate.source_id.clone(),
+            adapter_id: "cursor",
+            locator: candidate.path.clone(),
+            logical_key: candidate.source_id.clone(),
+            size: candidate.size,
+            mtime_ns: candidate.mtime_ns,
+            events: parsed.events,
+            quotas: Vec::new(),
+        },
+        diagnostics: ScanDiagnostics {
+            malformed_lines: parsed.malformed,
+            ..ScanDiagnostics::default()
+        },
+    }
+}
+
+fn fetch_is_pending(candidate: &SourceCandidate) -> bool {
+    FETCH.lock().ok().is_some_and(|guard| {
+        guard
+            .as_ref()
+            .is_some_and(|saved| saved.source_id == candidate.source_id)
+    })
+}
+
+fn drive_fetch(
+    state_db: &Path,
+    candidate: &SourceCandidate,
+    cutoff_ms: i64,
+    deadline: Option<Instant>,
+) -> Result<Option<Vec<Value>>> {
+    let mut progress = take_progress(candidate, cutoff_ms);
+    let token = match read_access_token(state_db)? {
+        Some(token) => token,
+        None => {
+            clear_fetch();
+            bail!("Cursor 没有登录会话，本轮不写入");
+        }
+    };
+    let outcome = drive_with_token(&mut progress, &token, deadline);
+    match &outcome {
+        Ok(None) => store_progress(candidate, cutoff_ms, progress),
+        Ok(Some(_)) | Err(_) => clear_fetch(),
+    }
+    outcome
+}
+
+fn drive_with_token(
+    progress: &mut FetchProgress,
+    access_token: &str,
+    deadline: Option<Instant>,
+) -> Result<Option<Vec<Value>>> {
+    loop {
+        if progress.is_complete() {
+            return Ok(Some(progress.pages()));
+        }
+        let Some(timeout) = budget_for(deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())))
+        else {
+            return Ok(None);
+        };
+        let step = if progress.user_id.is_none() {
+            match fetch_user_id(access_token, timeout) {
+                Ok(user_id) => {
+                    progress.user_id = Some(user_id);
+                    progress.transport_failures = 0;
+                    continue;
+                }
+                Err(step) => step,
+            }
+        } else {
+            let user_id = progress.user_id.expect("checked above");
+            let (start_ms, end_ms, page) = {
+                let front = progress.ranges.front().expect("incomplete fetch has a range");
+                (front.start_ms, front.end_ms, front.page_next)
+            };
+            match fetch_usage_page(access_token, user_id, start_ms, end_ms, page, timeout) {
+                Ok((total, rows)) => {
+                    progress.transport_failures = 0;
+                    progress.apply_page(total, rows)?;
+                    continue;
+                }
+                Err(step) => step,
+            }
+        };
+        match step {
+            FetchStop::Pause => {
+                progress.transport_failures += 1;
+                if progress.transport_failures >= 3 {
+                    bail!("Cursor 用量接口连续失败，本轮不写入");
+                }
+                return Ok(None);
+            }
+            FetchStop::Fatal(error) => return Err(error),
+        }
+    }
+}
+
+enum FetchStop {
+    Pause,
+    Fatal(anyhow::Error),
+}
+
+fn fetch_user_id(access_token: &str, timeout: Duration) -> Result<i64, FetchStop> {
+    let json = cursor_request(access_token, AUTH_ME_URL, None, timeout)?;
+    json_i64(json.get("id"))
+        .filter(|id| *id > 0)
+        .context("Cursor 登录会话缺少用户标识")
+        .map_err(FetchStop::Fatal)
+}
+
+fn fetch_usage_page(
+    access_token: &str,
     user_id: i64,
     start_ms: i64,
     end_ms: i64,
-) -> Result<Paginate> {
-    let mut pages = Vec::new();
-    let mut fetched = 0i64;
-    let mut expected: Option<i64> = None;
-    for page in 1..=MAX_PAGES {
-        let body = serde_json::json!({
-            "teamId": 0,
-            "startDate": start_ms.to_string(),
-            "endDate": end_ms.to_string(),
-            "page": page,
-            "pageSize": PAGE_SIZE,
-            "userId": user_id,
-        });
-        let response = agent
-            .post(FILTERED_USAGE_URL)
-            .set("Cookie", cookie)
+    page: i64,
+    timeout: Duration,
+) -> Result<(i64, Vec<Value>), FetchStop> {
+    let body = serde_json::json!({
+        "teamId": 0,
+        "startDate": start_ms.to_string(),
+        "endDate": end_ms.to_string(),
+        "page": page,
+        "pageSize": PAGE_SIZE,
+        "userId": user_id,
+    });
+    let json = cursor_request(access_token, FILTERED_USAGE_URL, Some(body), timeout)?;
+    usage_page(&json).map_err(FetchStop::Fatal)
+}
+
+fn cursor_request(
+    access_token: &str,
+    url: &str,
+    body: Option<Value>,
+    timeout: Duration,
+) -> Result<Value, FetchStop> {
+    let sub = jwt_sub(access_token).map_err(FetchStop::Fatal)?;
+    let cookie = format!("WorkosCursorSessionToken={sub}%3A%3A{access_token}");
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = if let Some(body) = body {
+        agent
+            .post(url)
+            .set("Cookie", &cookie)
             .set("Origin", "https://cursor.com")
             .set("Content-Type", "application/json")
             .set("Accept", "application/json")
             .send_string(&body.to_string())
-            .map_err(map_cursor_error)?;
-        let json: Value = serde_json::from_str(
-            &response
-                .into_string()
-                .context("读取 Cursor 用量响应失败")?,
-        )
-        .context("Cursor 用量响应不是预期的 JSON")?;
-        let (total, rows) = usage_page(&json)?;
-        match decide_total(expected, total) {
-            TotalDecision::SplitRange => return Ok(Paginate::Split),
-            TotalDecision::RetryRange => return Ok(Paginate::Retry),
-            TotalDecision::Accept => expected = Some(total),
+    } else {
+        agent
+            .get(url)
+            .set("Cookie", &cookie)
+            .set("Accept", "application/json")
+            .call()
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::Status(401 | 403, _)) => {
+            return Err(FetchStop::Fatal(anyhow::anyhow!(cursor_status_message(401))));
         }
-        let row_count = rows.len() as i64;
-        fetched += row_count;
-        let full = row_count >= PAGE_SIZE;
-        pages.push(Value::Array(rows));
-        if !full || fetched >= total {
-            if usage_fetch_is_complete(fetched, Some(total), full, false) {
-                return Ok(Paginate::Done(pages));
-            }
-            bail!("Cursor 用量事件未完整拉完，本轮不写入，避免用残缺结果覆盖已有账本");
+        Err(ureq::Error::Status(429, _)) | Err(ureq::Error::Transport(_)) => {
+            return Err(FetchStop::Pause);
+        }
+        Err(error) => return Err(FetchStop::Fatal(map_cursor_error(error))),
+    };
+    let text = response
+        .into_string()
+        .context("读取 Cursor 用量响应失败")
+        .map_err(FetchStop::Fatal)?;
+    serde_json::from_str(&text)
+        .context("Cursor 用量响应不是预期的 JSON")
+        .map_err(FetchStop::Fatal)
+}
+
+fn take_progress(candidate: &SourceCandidate, cutoff_ms: i64) -> FetchProgress {
+    let saved = FETCH.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(saved) = saved {
+        // 五分钟时间桶会在长抓取中途滚动。进度只跟来源和视界走，否则重度用户
+        // 会在桶边界把已经拉到的页全部丢掉，永远重新开始。
+        if saved.source_id == candidate.source_id && saved.cutoff_ms == cutoff_ms {
+            return saved.progress;
         }
     }
-    // 总数声称装得下，15 页却仍不满：当成这段太密，交给时间切开，而不是永久失败。
-    Ok(Paginate::Split)
+    let end_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(cutoff_ms);
+    FetchProgress::new(cutoff_ms, end_ms)
+}
+
+fn store_progress(candidate: &SourceCandidate, cutoff_ms: i64, progress: FetchProgress) {
+    if let Ok(mut guard) = FETCH.lock() {
+        *guard = Some(FetchCheckpoint {
+            source_id: candidate.source_id.clone(),
+            cutoff_ms,
+            mtime_ns: candidate.mtime_ns,
+            progress,
+        });
+    }
+}
+
+fn clear_fetch() {
+    if let Ok(mut guard) = FETCH.lock() {
+        *guard = None;
+    }
 }
 
 fn usage_page(json: &Value) -> Result<(i64, Vec<Value>)> {
@@ -770,6 +1056,56 @@ mod tests {
             decide_total(Some(3_000), page_budget() + 5),
             TotalDecision::SplitRange
         ));
+    }
+
+    #[test]
+    fn a_page_stops_at_the_budget_without_closing_the_range() {
+        let mut progress = FetchProgress::new(0, 10_000);
+        progress
+            .apply_page(2_500, vec![serde_json::json!({}); PAGE_SIZE as usize])
+            .unwrap();
+        assert!(!progress.is_complete());
+        assert!(progress.finished.is_empty());
+        assert_eq!(progress.ranges.front().unwrap().page_next, 2);
+        assert!(budget_for(Some(Duration::from_millis(50))).is_none());
+        assert_eq!(
+            budget_for(Some(Duration::from_millis(500))),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(budget_for(Some(Duration::from_secs(5))), Some(MAX_REQUEST));
+    }
+
+    #[test]
+    fn an_oversized_window_splits_before_any_partial_page_is_kept() {
+        let mut progress = FetchProgress::new(0, 10_000);
+        progress.apply_page(page_budget() + 1, Vec::new()).unwrap();
+        assert_eq!(progress.ranges.len(), 2);
+        assert!(progress.ranges.iter().all(|range| range.pages.is_empty()));
+        assert!(progress.finished.is_empty());
+    }
+
+    #[test]
+    fn a_shifting_total_retries_then_splits_instead_of_failing() {
+        let mut progress = FetchProgress::new(1_000, 5_000);
+        progress
+            .apply_page(2_000, vec![serde_json::json!({}); PAGE_SIZE as usize])
+            .unwrap();
+        for shift in 1..=RANGE_ATTEMPTS {
+            progress
+                .apply_page(2_000 + i64::from(shift), vec![serde_json::json!({}); PAGE_SIZE as usize])
+                .unwrap();
+            if shift < RANGE_ATTEMPTS {
+                // 重拉后的第一页采用新总数；下一页若再变，才算下一次重试。
+                progress
+                    .apply_page(
+                        2_000 + i64::from(shift),
+                        vec![serde_json::json!({}); PAGE_SIZE as usize],
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(progress.ranges.len(), 2);
+        assert!(progress.finished.is_empty());
     }
 
     #[test]

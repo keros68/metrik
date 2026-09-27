@@ -1689,7 +1689,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             kind: "local".into(),
             label: "Cursor Token".into(),
             detail: format!(
-                "发现 {} 个用量来源，本次更新 {} 个。{}{}当前版本不把逐次 token 写入本机（bubble 的 tokenCount 多为 0）。已登录时读取 Cursor 自己保存的明文会话，向 cursor.com 拉取仪表盘同一份逐次用量事件：inputTokens 记为未缓存输入，缓存读写分开计入，outputTokens 为输出；事件不报 token 总量，也不单列推理 token。会话令牌不落库。同一毫秒里结构相同的多次调用分别计数。事件很多时按时间对半切开再拉，不因超过单次分页上限就整段放弃。接口不带工作目录，这些用量不归入项目；价目表没有的模型计入未计价，不估算金额。没有官方配额窗口。未安装时保持为 0，不做推算；未登录则标明读不到，不用空结果覆盖已有账本。",
+                "发现 {} 个用量来源，本次更新 {} 个。{}{}当前版本不把逐次 token 写入本机（bubble 的 tokenCount 多为 0）。已登录时读取 Cursor 自己保存的明文会话，向 cursor.com 拉取仪表盘同一份逐次用量事件：inputTokens 记为未缓存输入，缓存读写分开计入，outputTokens 为输出；事件不报 token 总量，也不单列推理 token。会话令牌不落库。同一毫秒里结构相同的多次调用分别计数。事件很多时按时间对半切开再拉，不因超过单次分页上限就整段放弃。一次刷新没拉完会记下进度并标为补齐中，下次续跑，不用半截结果入账。接口不带工作目录，这些用量不归入项目；价目表没有的模型计入未计价，不估算金额。没有官方配额窗口。未安装时保持为 0，不做推算；未登录则标明读不到，不用空结果覆盖已有账本。",
                 discovered("cursor"),
                 refreshed("cursor"),
                 coverage_detail(&cursor_diagnostics, errors("cursor")),
