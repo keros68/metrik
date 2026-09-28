@@ -22,7 +22,7 @@ Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usa
 - **Desktop forms**: A desktop widget on Windows and a compact card on Ubuntu, both collapsible into a horizontal or vertical quota strip. On macOS, a menu bar panel and a native WidgetKit desktop widget.
 - **Statistics and reports**: 26-week heatmap, weekly trends, agent share, and per-project session details, with CSV export.
 - **Multi-device sync**: After you choose a shared folder (Jianguoyun, OneDrive, Syncthing, and similar), statistics events from the last 30 days on each device are merged automatically.
-- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. The update check is the only network request the app makes on its own and can be turned off in settings.
+- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. Network requests go only to each agent's official quota endpoint, the Cursor dashboard once enabled, and the update check, which can be turned off in settings.
 
 ## Get started
 
