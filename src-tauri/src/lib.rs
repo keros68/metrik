@@ -778,6 +778,55 @@ async fn rebuild_local_ledger(
     .map_err(|error| format!("local ledger rebuild task failed: {error}"))?
 }
 
+/// 只读状态：开关是否开启、本机是否装了 Cursor、会话是否可用。不返回会话内容。
+#[tauri::command]
+async fn cursor_usage_status(
+    state: State<'_, AppState>,
+) -> Result<adapters::CursorUsageStatus, String> {
+    let database_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection =
+            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
+        let enabled = storage::get_app_setting(&connection, adapters::CURSOR_USAGE_SETTING_KEY)
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some("1");
+        Ok(adapters::cursor_usage_status(enabled))
+    })
+    .await
+    .map_err(|error| format!("cursor usage status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_cursor_usage(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<adapters::CursorUsageStatus, String> {
+    let database_path = state.database_path.clone();
+    let scan_gate = Arc::clone(&state.scan_gate);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        let mut connection =
+            storage::open_database(&database_path).map_err(|error| error.to_string())?;
+        storage::set_app_setting(
+            &connection,
+            adapters::CURSOR_USAGE_SETTING_KEY,
+            if enabled { "1" } else { "0" },
+        )
+        .map_err(|error| error.to_string())?;
+        adapters::reset_cursor_runtime_state();
+        if !enabled {
+            storage::remove_adapter_ledger(&mut connection, "cursor")
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(adapters::cursor_usage_status(enabled))
+    })
+    .await
+    .map_err(|error| format!("cursor usage setting task failed: {error}"))?
+}
+
 /// 只读状态：开关是否开启、本机是否有 Claude 登录凭据、scope 是否满足。
 /// 永不向前端返回 token 内容。
 #[tauri::command]
@@ -1740,6 +1789,8 @@ pub fn run() {
             set_antigravity_hook,
             claude_oauth_status,
             set_claude_oauth,
+            cursor_usage_status,
+            set_cursor_usage,
             qoder_cookie_status,
             configure_qoder_cookie,
             set_taskbar_button,

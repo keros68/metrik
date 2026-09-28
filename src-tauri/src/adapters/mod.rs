@@ -1,6 +1,7 @@
 mod antigravity;
 mod claude;
 mod codex;
+mod cursor;
 mod grok;
 mod hermes;
 mod kimi;
@@ -12,6 +13,7 @@ mod zcode;
 pub use antigravity::AntigravityAdapter;
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use cursor::{cursor_state_db, CursorAdapter};
 pub use grok::GrokAdapter;
 pub use hermes::HermesAdapter;
 pub use kimi::KimiAdapter;
@@ -23,6 +25,12 @@ pub use zcode::ZcodeAdapter;
 // 配额快照从日志或 RPC 读取，供 quota 注册表调用。
 pub use antigravity::fetch_antigravity_quota_snapshot;
 pub use grok::{fetch_grok_quota_snapshot, grok_home, grok_home_exists};
+
+// Cursor 用量默认关闭，设置开关与状态查询。
+pub use cursor::{
+    reset_runtime_state as reset_cursor_runtime_state, usage_status as cursor_usage_status,
+    CursorUsageStatus, USAGE_SETTING_KEY as CURSOR_USAGE_SETTING_KEY,
+};
 
 use crate::domain::{stable_hash, ParsedSource};
 use anyhow::Result;

@@ -48,8 +48,9 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 | Pi | `~/.pi/agent/sessions`、`~/.omp/agent/sessions` | ❌ |
 | Qwen | pi 会话按百炼 Token Plan 路由归属 | ❌ |
 | Hermes | `~/.hermes/state.db` | ❌ |
+| Cursor | cursor.com 仪表盘逐次用量（设置中开启） | ❌ |
 
-暂不支持 Gemini CLI；Cursor 待设计独立的凭据授权机制后再评估。Claude 配额的两种读取方式及 OAuth 条款风险见[使用说明](docs/guide.md#claude-配额的两种读取方式)。
+暂不支持 Gemini CLI。Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话读取仪表盘用量；用量是账号级的，不参与多设备同步。Claude 配额的两种读取方式及 OAuth 条款风险见[使用说明](docs/guide.md#claude-配额的两种读取方式)。
 
 ## 从源码构建
 

@@ -721,6 +721,20 @@ async function setClaudeOauth(enabled) {
   return invoke("set_claude_oauth", { enabled });
 }
 
+async function getCursorUsageStatus() {
+  if (!isTauriRuntime()) {
+    return { demo: true, enabled: false, installed: false, signedIn: false, expired: false };
+  }
+  return invoke("cursor_usage_status");
+}
+
+async function setCursorUsage(enabled) {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器演示模式不能配置 Cursor 用量来源");
+  }
+  return invoke("set_cursor_usage", { enabled });
+}
+
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
   isTauriRuntime() ? pendingSnapshot(period) : demoSnapshot(period)
@@ -745,6 +759,8 @@ export {
   setAntigravityHook,
   getClaudeOauthStatus,
   setClaudeOauth,
+  getCursorUsageStatus,
+  setCursorUsage,
   getQoderCookieStatus,
   configureQoderCookie,
 };

@@ -36,6 +36,7 @@ import {
 import antigravityAppIcon from "./assets/antigravity-app-icon.png";
 import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
+import cursorAppIcon from "./assets/cursor-app-icon.png";
 import deepseekAppIcon from "./assets/deepseek-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
@@ -56,9 +57,11 @@ import {
   configureSync,
   getClaudeHookStatus,
   getClaudeOauthStatus,
+  getCursorUsageStatus,
   getAntigravityHookStatus,
   getQoderCookieStatus,
   setClaudeOauth,
+  setCursorUsage,
   getSyncSettings,
   getUsageReport,
   exportCsvFile,
@@ -257,6 +260,15 @@ const AGENT_META = {
     accent: "#8a8d92",
     iconSrc: hermesAppIcon,
     iconClass: "agent-icon--hermes",
+  },
+  cursor: {
+    // 只有用量、没有配额窗口：取 cursor.com 仪表盘的账号级逐次事件，需在
+    // 设置的数据来源页开启。
+    label: "Cursor",
+    // 官方图标是米白瓦片上的黑色立方体；强调色取暖灰褐，与 pi / hermes 的冷灰区分。
+    accent: "#a08c6e",
+    iconSrc: cursorAppIcon,
+    iconClass: "agent-icon--cursor",
   },
 };
 
@@ -3185,6 +3197,99 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
   );
 }
 
+// Cursor 不把逐次 token 写进本机，用量只能从 cursor.com 仪表盘拉取，要用到
+// Cursor 本机保存的登录会话，所以默认关闭，由用户在这里开启。
+function CursorUsageCard({ onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCursorUsageStatus()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", message: "Cursor 用量来源状态读取失败。" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggle = async (enabled) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const next = await setCursorUsage(enabled);
+      setStatus(next);
+      setFeedback({
+        tone: "success",
+        message: enabled
+          ? "已开启。近 65 天的用量会在接下来几次刷新里补齐。"
+          : "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量已从本机账本删除。",
+      });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 没装 Cursor 时不占设置页的位置；已开启的仍然显示，便于关闭。
+  if (status && !status.demo && !status.installed && !status.enabled) return null;
+
+  return (
+    <div className="settings-card">
+      <h2>Cursor 用量</h2>
+      <p className="settings-muted">
+        Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量。
+        会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读。
+        用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步；只记 Token，不读套餐余量。
+      </p>
+      {status?.demo && <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>}
+      {status && !status.demo && (
+        <>
+          <div className="settings-directory-row">
+            <button
+              type="button"
+              className={`ledger-button ${status.enabled ? "ledger-button--secondary" : "ledger-button--primary"}`}
+              disabled={busy}
+              onClick={() => toggle(!status.enabled)}
+            >
+              {status.enabled ? "关闭" : "开启"}
+            </button>
+          </div>
+          <dl className="settings-status">
+            <div>
+              <dt>状态</dt>
+              <dd>
+                {`${status.enabled ? "已开启" : "未开启"} · ${
+                  !status.signedIn
+                    ? "Cursor 未登录"
+                    : status.expired
+                      ? "登录会话已过期，打开 Cursor 即可刷新"
+                      : "登录会话可用"
+                }`}
+              </dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {feedback && (
+        <p
+          className={`settings-feedback settings-feedback--${feedback.tone}`}
+          role={feedback.tone === "error" ? "alert" : "status"}
+        >
+          {feedback.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function QoderQuotaCard({ onSnapshotRefresh }) {
   const [status, setStatus] = useState(null);
   const [cookieInput, setCookieInput] = useState("");
@@ -3464,6 +3569,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
             <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
             <AntigravityHookCard onSnapshotRefresh={onSnapshotRefresh} />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
+            <CursorUsageCard onSnapshotRefresh={onSnapshotRefresh} />
             <CodexCreditsCard />
           </>
         )}

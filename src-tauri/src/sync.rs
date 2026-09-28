@@ -285,8 +285,9 @@ pub fn run_sync(connection: &mut Connection, now_ms: i64) {
 fn export_local_events(connection: &Connection, dir: &Path, now_ms: i64) -> Result<()> {
     let (device_id, label) = device_identity(connection)?;
     let mut statement = connection.prepare(
+        // Cursor 的事件是账号级的，每台开启的设备都拉到同一份，导出会重复计数。
         "SELECT event_id, adapter_id, occurred_at_ms, processed_tokens
-         FROM usage_event WHERE occurred_at_ms >= ?1
+         FROM usage_event WHERE occurred_at_ms >= ?1 AND adapter_id != 'cursor'
          ORDER BY occurred_at_ms",
     )?;
     let events = statement
@@ -564,6 +565,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remote_on_a, 222);
+    }
+
+    #[test]
+    fn account_wide_cursor_events_are_not_exported() {
+        let shared = TestDirectory::new("cursor");
+        let now = Utc::now().timestamp_millis();
+
+        let mut device_a = open_test_db();
+        set_setting(
+            &device_a,
+            SETTING_SYNC_DIR,
+            &shared.path().to_string_lossy(),
+        )
+        .unwrap();
+        insert_local_event(&device_a, "event-a", now - 1_000, 111);
+        device_a
+            .execute(
+                "UPDATE usage_event SET adapter_id = 'cursor' WHERE event_id = 'event-a'",
+                [],
+            )
+            .unwrap();
+        insert_local_event(&device_a, "event-b", now - 2_000, 222);
+        run_sync(&mut device_a, now);
+
+        let mut device_b = open_test_db();
+        set_setting(
+            &device_b,
+            SETTING_SYNC_DIR,
+            &shared.path().to_string_lossy(),
+        )
+        .unwrap();
+        run_sync(&mut device_b, now);
+
+        let remote_total: i64 = device_b
+            .query_row(
+                "SELECT COALESCE(SUM(processed_tokens), 0) FROM remote_usage_event",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remote_total, 222);
     }
 
     #[test]
