@@ -1,7 +1,7 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, GrokAdapter, HermesAdapter,
-    KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter,
-    ZcodeAdapter,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, GrokAdapter,
+    HermesAdapter, KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate,
+    WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
 };
 #[cfg(test)]
 use crate::claude_hook;
@@ -770,6 +770,8 @@ fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i
 /// 按固定的保留期视界摄取日志。需要解析的源按 mtime 倒序排队，在时间预算内尽量
 /// 解析；没轮到的记进 `report.backfill_pending`，由界面显式标注为「补齐中」。
 fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanReport> {
+    let cursor_enabled =
+        storage::get_app_setting(connection, CURSOR_USAGE_SETTING_KEY)?.as_deref() == Some("1");
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![
         Box::new(CodexAdapter::detected()),
         Box::new(ClaudeAdapter::detected()),
@@ -781,6 +783,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(GrokAdapter::detected()),
         Box::new(PiAdapter::detected()),
         Box::new(HermesAdapter::detected()),
+        Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
     let mut report = ScanReport::default();
     let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
@@ -1470,6 +1473,14 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         || errors("opencode") > 0
         || !opencode_gaps.is_empty();
     let kimi_partial = kimi_diagnostics.partial_sources > 0 || errors("kimi") > 0;
+    let cursor_diagnostics = diagnostics("cursor");
+    let cursor_gaps = report
+        .coverage_gaps
+        .get("cursor")
+        .cloned()
+        .unwrap_or_default();
+    let cursor_partial =
+        cursor_diagnostics.partial_sources > 0 || errors("cursor") > 0 || !cursor_gaps.is_empty();
     let mut views = vec![
         SourceView {
             id: "codex-quota".into(),
@@ -1674,6 +1685,33 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             .into(),
         },
     ];
+
+    // 默认关闭：没开启时不列这一行，免得把"未开启"误读成"没用过"。
+    if discovered("cursor") > 0 || !cursor_gaps.is_empty() {
+        views.push(SourceView {
+            id: "cursor-local".into(),
+            kind: "local".into(),
+            label: "Cursor Token（账号级）".into(),
+            detail: format!(
+                "近 {} 天按日读取，本次更新 {} 天。{}{}用量来自 cursor.com 仪表盘的逐次事件，含这个账号在所有设备上的用量，不参与多设备同步；已过去的日子只拉一次，今天和昨天每 15 分钟重拉。登录会话每次从 Cursor 的本机状态库现读，不落库。接口不带工作目录，用量不归入项目；价目表没有的模型计入未计价。",
+                discovered("cursor"),
+                refreshed("cursor"),
+                coverage_detail(&cursor_diagnostics, errors("cursor")),
+                if cursor_gaps.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}。", cursor_gaps.join("；"))
+                },
+            ),
+            quality: if cursor_partial { "partial" } else { "exact" }.into(),
+            quality_label: if cursor_partial {
+                "数据不完整"
+            } else {
+                "精确解析"
+            }
+            .into(),
+        });
+    }
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
         let device_count = sync_status.devices.len();
