@@ -54,7 +54,7 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 
 ## 从源码构建
 
-依赖 Node.js 22+、Rust 1.88+。
+依赖 Node.js 22+、Rust 1.90+。
 
 ```bash
 npm install
