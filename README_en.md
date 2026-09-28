@@ -54,7 +54,7 @@ Gemini CLI is not supported yet. Cursor does not record per-request tokens local
 
 ## Build from source
 
-Requires Node.js 22+ and Rust 1.88+.
+Requires Node.js 22+ and Rust 1.90+.
 
 ```bash
 npm install
