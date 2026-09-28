@@ -2,7 +2,7 @@
 
 ## 环境依赖
 
-依赖 Node.js 22+、Rust 1.88+。Ubuntu 24.04 还需安装 Tauri 的 WebKitGTK 与 AppIndicator 构建依赖：
+依赖 Node.js 22+、Rust 1.90+。Ubuntu 24.04 还需安装 Tauri 的 WebKitGTK 与 AppIndicator 构建依赖：
 
 ```bash
 sudo apt-get update
