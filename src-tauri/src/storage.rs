@@ -108,6 +108,27 @@ fn reset_derived_ledger_connection(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// 删掉一个 Agent 的全部来源与事件。用于关闭需要联网的来源：关掉后不留它拉来的数据。
+pub fn remove_adapter_ledger(connection: &mut Connection, adapter_id: &str) -> Result<()> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "DELETE FROM event_observation WHERE source_id IN
+             (SELECT source_id FROM scan_source WHERE adapter_id = ?1)
+         OR event_id IN (SELECT event_id FROM usage_event WHERE adapter_id = ?1)",
+        [adapter_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM usage_event WHERE adapter_id = ?1",
+        [adapter_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM scan_source WHERE adapter_id = ?1",
+        [adapter_id],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn get_app_setting(connection: &Connection, key: &str) -> Result<Option<String>> {
     connection
         .query_row(
@@ -581,6 +602,57 @@ mod tests {
             events,
             quotas: vec![],
         }
+    }
+
+    #[test]
+    fn removing_an_adapter_ledger_keeps_other_agents() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let event = |adapter: &'static str, key: &str| {
+            UsageEvent::new(
+                adapter,
+                key.into(),
+                1_000,
+                "session".into(),
+                None,
+                TokenVector {
+                    output: 5,
+                    ..Default::default()
+                },
+                "exact",
+            )
+        };
+        replace_source(
+            &mut connection,
+            &source("cursor-day", "cursor", vec![event("cursor", "c")]),
+            0,
+        )
+        .unwrap();
+        replace_source(
+            &mut connection,
+            &source("codex-file", "codex", vec![event("codex", "x")]),
+            0,
+        )
+        .unwrap();
+
+        remove_adapter_ledger(&mut connection, "cursor").unwrap();
+
+        let count = |sql: &str| -> i64 { connection.query_row(sql, [], |row| row.get(0)).unwrap() };
+        assert_eq!(
+            count("SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'cursor'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM scan_source WHERE adapter_id = 'cursor'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'codex'"),
+            1
+        );
+        assert_eq!(count("SELECT COUNT(*) FROM event_observation"), 1);
     }
 
     /// 解析器升级后的重扫：事件内容一模一样，只有项目归属从无到有。

@@ -2211,6 +2211,7 @@ name = "metrik"
 version = "0.19.16"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs 6.0.0",
  "gdkx11",
