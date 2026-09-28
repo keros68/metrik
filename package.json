@@ -20,7 +20,7 @@
     "@fontsource/instrument-serif": "^5.2.8",
     "@fontsource/newsreader": "5.2.10",
     "@phosphor-icons/react": "^2.1.10",
-    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/api": "^2.12.0",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-os": "^2.3.2",
@@ -33,6 +33,6 @@
     "vite": "6.4.2"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
+    "@tauri-apps/cli": "^2.12.0"
   }
 }
