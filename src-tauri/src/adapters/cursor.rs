@@ -26,9 +26,14 @@
 //!
 //! 事件是账号级的，包含这个账号在所有设备上的用量；同步导出因此跳过 Cursor，
 //! 避免两台都开启的设备各算一遍。接口不带工作目录，用量不归入项目。
+//!
+//! 套餐余量同样来自仪表盘（`GET https://cursor.com/api/usage-summary`），
+//! 与用量共用开关和登录会话，见 `fetch_plan_quota`。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
-use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
+use crate::domain::{
+    sane_resets_at_ms, stable_hash, ParsedSource, QuotaSample, TokenVector, UsageEvent,
+};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use rusqlite::{types::Value as SqlValue, Connection, OpenFlags, OptionalExtension};
@@ -42,6 +47,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const USAGE_SETTING_KEY: &str = "cursor_usage_enabled";
 
 const USAGE_EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
+const USAGE_SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
+/// 套餐余量的窗口键：Cursor 按账单周期（约一个月）重置。
+const PLAN_WINDOW_KEY: &str = "monthly_cycle";
 const DAY_MS: i64 = 86_400_000;
 /// 今天和昨天的重拉间隔。仪表盘数据按小时聚合，更密的轮询拿不到新东西。
 const REFRESH_MS: i64 = 15 * 60 * 1000;
@@ -263,6 +271,82 @@ pub fn usage_status(enabled: bool) -> CursorUsageStatus {
         signed_in,
         expired,
     }
+}
+
+/// 套餐余量：`individualUsage.plan` 在当前账单周期内的已用比例。
+/// 调用方负责开关判断；这里只在会话可用时发一次请求。
+pub fn fetch_plan_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
+    let now = now_ms();
+    let session = match read_session(&cursor_state_db())? {
+        SessionState::Usable(session) if session.expires_at_ms > now + EXPIRY_MARGIN_MS => session,
+        SessionState::Usable(_) => bail!(EXPIRED),
+        SessionState::Missing => bail!(NOT_SIGNED_IN),
+    };
+    let response = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .build()
+        .get(USAGE_SUMMARY_URL)
+        .set("Cookie", &session.cookie)
+        .set("Accept", "application/json")
+        .call();
+    let response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::Status(401 | 403, _)) => bail!(FetchError::Auth.message()),
+        Err(ureq::Error::Status(code, _)) => bail!("Cursor 套餐余量暂时读不到（HTTP {code}）"),
+        Err(ureq::Error::Transport(_)) => bail!("Cursor 套餐余量暂时读不到（网络错误）"),
+    };
+    let text = response
+        .into_string()
+        .context("读取 Cursor 套餐余量响应失败")?;
+    let json: Value = serde_json::from_str(&text).context("Cursor 套餐余量响应不是 JSON")?;
+    let samples = parse_usage_summary(&json, now_ms());
+    if samples.is_empty() {
+        bail!("Cursor 套餐余量响应缺少可用额度");
+    }
+    Ok(samples)
+}
+
+/// 已用比例优先取 `totalPercentUsed`（仪表盘顶部的总百分比，已是百分数，
+/// 可以小于 1）；没有时用 `used / limit`（单位是美分）。企业成员没有
+/// `plan` 时用个人上限 `overall`。都没有（如不限量账号）则不出窗口。
+fn parse_usage_summary(json: &Value, collected_at_ms: i64) -> Vec<QuotaSample> {
+    let individual = json.get("individualUsage");
+    let plan = individual
+        .and_then(|usage| usage.get("plan"))
+        .filter(|plan| plan.get("enabled").and_then(Value::as_bool) != Some(false));
+    let used_percent = plan
+        .and_then(|plan| json_f64(plan.get("totalPercentUsed")))
+        .or_else(|| plan.and_then(used_ratio_percent))
+        .or_else(|| {
+            individual
+                .and_then(|usage| usage.get("overall"))
+                .and_then(used_ratio_percent)
+        });
+    let Some(used_percent) = used_percent.filter(|value| value.is_finite()) else {
+        return Vec::new();
+    };
+    let resets_at_ms = json
+        .get("billingCycleEnd")
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .and_then(|time| {
+            sane_resets_at_ms(PLAN_WINDOW_KEY, time.timestamp_millis(), collected_at_ms)
+        });
+    vec![QuotaSample {
+        adapter_id: "cursor",
+        window_key: PLAN_WINDOW_KEY.into(),
+        remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
+        resets_at_ms,
+        collected_at_ms,
+        source_label: "Cursor 官方配额".into(),
+        quality: "official_live",
+    }]
+}
+
+fn used_ratio_percent(block: &Value) -> Option<f64> {
+    let used = json_f64(block.get("used"))?;
+    let limit = json_f64(block.get("limit")).filter(|limit| *limit > 0.0)?;
+    Some(used / limit * 100.0)
 }
 
 /// 关闭开关时丢掉内存里的进度与退避，下次开启从头拉。
@@ -653,6 +737,14 @@ fn json_i64(value: Option<&Value>) -> Option<i64> {
     }
 }
 
+fn json_f64(value: Option<&Value>) -> Option<f64> {
+    match value? {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,5 +1043,98 @@ mod tests {
         assert!(active_backoff("session-a", now + RATE_LIMIT_BACKOFF).is_none());
         clear_failure();
         assert!(active_backoff("session-a", now).is_none());
+    }
+
+    /// 2026-05-23 开始的周期里采集。
+    const IN_CYCLE_MS: i64 = 1_780_000_000_000;
+
+    #[test]
+    fn plan_quota_prefers_the_dashboard_total_percent_and_resets_at_cycle_end() {
+        // 字段形态取自 CodexBar 的 usage-summary 测试样例。
+        let json = json!({
+            "membershipType": "pro",
+            "billingCycleStart": "2026-05-23T10:27:04.000Z",
+            "billingCycleEnd": "2026-06-23T10:27:04.000Z",
+            "individualUsage": {
+                "plan": { "used": 388, "limit": 2000, "totalPercentUsed": 19.4 },
+                "onDemand": { "used": 450, "limit": 1000 }
+            }
+        });
+        let samples = parse_usage_summary(&json, IN_CYCLE_MS);
+        assert_eq!(samples.len(), 1);
+        let sample = &samples[0];
+        assert_eq!(sample.adapter_id, "cursor");
+        assert_eq!(sample.window_key, "monthly_cycle");
+        assert!((sample.remaining_percent - 80.6).abs() < 1e-9);
+        assert_eq!(sample.resets_at_ms, Some(1_782_210_424_000));
+        assert_eq!(sample.collected_at_ms, IN_CYCLE_MS);
+        assert_eq!(sample.quality, "official_live");
+    }
+
+    #[test]
+    fn plan_quota_total_percent_is_already_a_percentage() {
+        // 0.40625 表示 0.40625%，不是 40.625%；也不改用 used/limit 的 9.8%。
+        let json = json!({
+            "individualUsage": {
+                "plan": { "used": 4900, "limit": 50000, "totalPercentUsed": 0.40625 }
+            }
+        });
+        let samples = parse_usage_summary(&json, IN_CYCLE_MS);
+        assert!((samples[0].remaining_percent - 99.59375).abs() < 1e-9);
+        assert_eq!(samples[0].resets_at_ms, None);
+    }
+
+    #[test]
+    fn plan_quota_falls_back_to_the_used_limit_ratio_and_clamps_overage() {
+        let json = json!({
+            "individualUsage": { "plan": { "used": "500", "limit": 2000 } }
+        });
+        assert_eq!(
+            parse_usage_summary(&json, IN_CYCLE_MS)[0].remaining_percent,
+            75.0
+        );
+
+        let over = json!({
+            "individualUsage": { "plan": { "used": 15000, "limit": 10000 } }
+        });
+        assert_eq!(
+            parse_usage_summary(&over, IN_CYCLE_MS)[0].remaining_percent,
+            0.0
+        );
+    }
+
+    #[test]
+    fn plan_quota_uses_the_enterprise_member_cap_without_a_plan_block() {
+        let json = json!({
+            "membershipType": "enterprise",
+            "individualUsage": { "overall": { "used": 2500, "limit": 10000 } }
+        });
+        assert_eq!(
+            parse_usage_summary(&json, IN_CYCLE_MS)[0].remaining_percent,
+            75.0
+        );
+    }
+
+    #[test]
+    fn plan_quota_without_a_limit_yields_no_window() {
+        for json in [
+            json!({ "membershipType": "enterprise", "isUnlimited": true, "individualUsage": {} }),
+            json!({ "individualUsage": { "plan": { "used": 10, "limit": 0 } } }),
+            json!({ "individualUsage": { "plan": { "enabled": false, "totalPercentUsed": 5.0 } } }),
+            json!({}),
+        ] {
+            assert!(parse_usage_summary(&json, IN_CYCLE_MS).is_empty(), "{json}");
+        }
+    }
+
+    #[test]
+    fn plan_quota_drops_an_implausible_cycle_end() {
+        let json = json!({
+            "billingCycleEnd": "2030-01-01T00:00:00.000Z",
+            "individualUsage": { "plan": { "totalPercentUsed": 10 } }
+        });
+        let samples = parse_usage_summary(&json, IN_CYCLE_MS);
+        assert_eq!(samples[0].remaining_percent, 90.0);
+        assert_eq!(samples[0].resets_at_ms, None);
     }
 }

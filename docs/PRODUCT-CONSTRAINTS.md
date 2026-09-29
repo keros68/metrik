@@ -119,11 +119,11 @@ change.
   provider alias; a vendor's plain pay-as-you-go endpoint is not a plan and
   stays on the Hermes card. The Hermes card carries local usage only and
   never a quota.
-- Cursor carries usage only and never a quota window. Local bubble
-  `tokenCount` values are mostly zero and are not a source. Usage comes from
-  the cursor.com dashboard, so it is off by default and starts only after the
-  user enables it in settings; disabling it stops the requests and deletes the
-  fetched Cursor usage. The session Cursor stored in `state.vscdb` is read for
+- Cursor carries usage and one quota window: the remaining plan allowance for
+  the current billing cycle. Local bubble `tokenCount` values are mostly zero
+  and are not a source. Both come from the cursor.com dashboard, so they are
+  off by default and start only after the user enables them in settings;
+  disabling stops the requests and deletes the fetched Cursor usage and quota. The session Cursor stored in `state.vscdb` is read for
   each request and kept in memory only. Dashboard usage is account-wide, so it
   is never exported through multi-device sync. It carries no working
   directory; do not infer a project from a conversation id.

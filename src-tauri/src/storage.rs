@@ -108,7 +108,7 @@ fn reset_derived_ledger_connection(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// 删掉一个 Agent 的全部来源与事件。用于关闭需要联网的来源：关掉后不留它拉来的数据。
+/// 删掉一个 Agent 的全部来源、事件与配额。用于关闭需要联网的来源：关掉后不留它拉来的数据。
 pub fn remove_adapter_ledger(connection: &mut Connection, adapter_id: &str) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute(
@@ -123,6 +123,10 @@ pub fn remove_adapter_ledger(connection: &mut Connection, adapter_id: &str) -> R
     )?;
     transaction.execute(
         "DELETE FROM scan_source WHERE adapter_id = ?1",
+        [adapter_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM quota_snapshot WHERE adapter_id = ?1",
         [adapter_id],
     )?;
     transaction.commit()?;
@@ -637,6 +641,15 @@ mod tests {
         )
         .unwrap();
 
+        for adapter in ["cursor", "codex"] {
+            connection
+                .execute(
+                    "INSERT INTO quota_snapshot VALUES (?1,'monthly_cycle',40,NULL,1,'official_live','test')",
+                    [adapter],
+                )
+                .unwrap();
+        }
+
         remove_adapter_ledger(&mut connection, "cursor").unwrap();
 
         let count = |sql: &str| -> i64 { connection.query_row(sql, [], |row| row.get(0)).unwrap() };
@@ -653,6 +666,14 @@ mod tests {
             1
         );
         assert_eq!(count("SELECT COUNT(*) FROM event_observation"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM quota_snapshot WHERE adapter_id = 'cursor'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM quota_snapshot WHERE adapter_id = 'codex'"),
+            1
+        );
     }
 
     /// 解析器升级后的重扫：事件内容一模一样，只有项目归属从无到有。
