@@ -172,6 +172,11 @@ function demoSnapshot(period = "today") {
         agent: "grok",
         windows: [{ key: "seven_day", label: "每周", view: demoQuotaView(85, 1_440) }],
       },
+      // Cursor 套餐余量：按账单周期重置，开启 Cursor 用量来源后才有。
+      {
+        agent: "cursor",
+        windows: [{ key: "monthly_cycle", label: "月度周期", view: demoQuotaView(81, 21_600) }],
+      },
     ],
     agents: [
       demoAgentSummary("codex", codexTokens, totalTokens),

@@ -26,10 +26,11 @@ pub use zcode::ZcodeAdapter;
 pub use antigravity::fetch_antigravity_quota_snapshot;
 pub use grok::{fetch_grok_quota_snapshot, grok_home, grok_home_exists};
 
-// Cursor 用量默认关闭，设置开关与状态查询。
+// Cursor 用量与套餐余量默认关闭，设置开关与状态查询。
 pub use cursor::{
-    reset_runtime_state as reset_cursor_runtime_state, usage_status as cursor_usage_status,
-    CursorUsageStatus, USAGE_SETTING_KEY as CURSOR_USAGE_SETTING_KEY,
+    fetch_plan_quota as fetch_cursor_plan_quota, reset_runtime_state as reset_cursor_runtime_state,
+    usage_status as cursor_usage_status, CursorUsageStatus,
+    USAGE_SETTING_KEY as CURSOR_USAGE_SETTING_KEY,
 };
 
 use crate::domain::{stable_hash, ParsedSource};

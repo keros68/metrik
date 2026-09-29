@@ -193,6 +193,7 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         Box::new(CodexQuota),
         Box::new(ClaudeQuota),
         Box::new(GrokQuota),
+        Box::new(CursorQuota),
     ];
     for (adapter_id, fetch) in [
         (
@@ -258,6 +259,28 @@ impl QuotaProvider for GrokQuota {
     fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
         // 环境变量在这里解析一次；适配器本体接根目录参数，测试不碰全局状态。
         adapters::fetch_grok_quota_snapshot(&adapters::grok_home(), timeout)
+    }
+}
+
+/// Cursor：套餐余量取自 cursor.com 仪表盘，要用 Cursor 本机的登录会话，
+/// 与 Cursor 用量共用同一个默认关闭的开关。仪表盘按小时聚合，不必频繁重拉。
+struct CursorQuota;
+
+impl QuotaProvider for CursorQuota {
+    fn adapter_id(&self) -> &'static str {
+        "cursor"
+    }
+
+    fn policy(&self) -> QuotaPolicy {
+        QuotaPolicy::new(300, 300, 6)
+    }
+
+    fn is_available(&self, env: &ProviderEnv) -> bool {
+        env.flag(adapters::CURSOR_USAGE_SETTING_KEY) && adapters::cursor_state_db().exists()
+    }
+
+    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
+        adapters::fetch_cursor_plan_quota(timeout)
     }
 }
 
@@ -563,6 +586,7 @@ mod tests {
                 "antigravity",
                 "claude",
                 "codex",
+                "cursor",
                 "deepseek",
                 "grok",
                 "kimi",

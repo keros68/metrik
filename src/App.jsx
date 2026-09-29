@@ -262,8 +262,8 @@ const AGENT_META = {
     iconClass: "agent-icon--hermes",
   },
   cursor: {
-    // 只有用量、没有配额窗口：取 cursor.com 仪表盘的账号级逐次事件，需在
-    // 设置的数据来源页开启。
+    // 用量取 cursor.com 仪表盘的账号级逐次事件，配额取同一仪表盘的套餐余量
+    // （账单周期窗口）；两者都需在设置的数据来源页开启。
     label: "Cursor",
     // 官方图标是米白瓦片上的黑色立方体；强调色取暖灰褐，与 pi / hermes 的冷灰区分。
     accent: "#a08c6e",
@@ -3197,8 +3197,8 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
   );
 }
 
-// Cursor 不把逐次 token 写进本机，用量只能从 cursor.com 仪表盘拉取，要用到
-// Cursor 本机保存的登录会话，所以默认关闭，由用户在这里开启。
+// Cursor 不把逐次 token 写进本机，用量和套餐余量只能从 cursor.com 仪表盘拉取，
+// 要用到 Cursor 本机保存的登录会话，所以默认关闭，由用户在这里开启。
 function CursorUsageCard({ onSnapshotRefresh }) {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -3227,8 +3227,8 @@ function CursorUsageCard({ onSnapshotRefresh }) {
       setFeedback({
         tone: "success",
         message: enabled
-          ? "已开启。近 65 天的用量会在接下来几次刷新里补齐。"
-          : "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量已从本机账本删除。",
+          ? "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。"
+          : "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量与套餐余量已从本机账本删除。",
       });
       onSnapshotRefresh();
     } catch (error) {
@@ -3243,11 +3243,11 @@ function CursorUsageCard({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-card">
-      <h2>Cursor 用量</h2>
+      <h2>Cursor 用量与套餐余量</h2>
       <p className="settings-muted">
-        Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量。
-        会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读。
-        用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步；只记 Token，不读套餐余量。
+        Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量，以及当前账单周期的套餐余量。
+        会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读；套餐余量最多每 5 分钟读一次。
+        用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步。
       </p>
       {status?.demo && <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>}
       {status && !status.demo && (

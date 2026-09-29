@@ -28,7 +28,8 @@ Claude OAuth (opt-in) ────┤
 Grok CLI billing log ─────┤
 GLM/Kimi/Qoder/WorkBuddy ─┤
 DeepSeek/OpenCode Go ─────┤
-GLM key from pi auth ─────┘
+GLM key from pi auth ─────┤
+Cursor dashboard (opt-in) ┘
 ```
 
 The UI invokes one asynchronous Tauri command, `usage_snapshot(period)`. Blocking discovery, parsing, SQLite work, and the local quota subprocess run inside `spawn_blocking`, guarded by a single scan lock. On each request the engine:
@@ -100,7 +101,7 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   own cards; direct and custom APIs stay under Hermes. Attribution keys on the
   plan-specific billing base URL, never on the user-editable provider alias.
   The Hermes card carries local usage only, never a quota.
-- **Cursor**: usage only, no quota window, off until enabled in settings
+- **Cursor**: usage and one quota window, both off until enabled in settings
   (`cursor_usage_enabled`). Per-request tokens come from
   `get-filtered-usage-events` on cursor.com, authenticated with the session
   Cursor stores in `state.vscdb` (`cursorAuth/accessToken`), read for each
@@ -112,8 +113,12 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   up to the reported total arrived; an unfinished day keeps its pages in memory
   and resumes on the next snapshot. Failures back off (sign-in rejected 1 h,
   rate limit 15 min, other errors 5 min) until the session changes. Dashboard
-  usage is account-wide, so sync export skips `cursor` events. Disabling the
-  source deletes its sources and events.
+  usage is account-wide, so sync export skips `cursor` events. The quota is
+  `individualUsage.plan` from `GET /api/usage-summary` as one `monthly_cycle`
+  window that resets at `billingCycleEnd`; the used share is
+  `totalPercentUsed` (already a percentage), else `used / limit`, else the
+  enterprise member cap `overall`; an account without a limit has no window.
+  Disabling the source deletes its sources, events, and quota rows.
 - **Qwen**: removed. The Bailian personal Token Plan exposes its quota only
   behind the console's interactive login; its cookie stopped working within
   days on a real account, and the product has no programmable quota API
