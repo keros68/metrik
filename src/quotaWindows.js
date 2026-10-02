@@ -42,3 +42,15 @@ export function bindingWindow(windows) {
     window.view.remainingPercent < tightest.view.remainingPercent ? window : tightest,
   );
 }
+
+// 后端给的是带小数的分钟数：先整体取整再拆天/时/分，避免出现"1 小时 60 分"。
+export function formatReset(minutes) {
+  if (!Number.isFinite(minutes)) return "暂不可用";
+  const total = Math.max(0, Math.round(minutes));
+  if (total >= 1440) {
+    const days = Math.floor(total / 1440);
+    const hours = Math.floor((total % 1440) / 60);
+    return `${days} 天 ${hours} 小时`;
+  }
+  return `${Math.floor(total / 60)} 小时 ${total % 60} 分`;
+}
