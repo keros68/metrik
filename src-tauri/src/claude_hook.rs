@@ -226,15 +226,17 @@ pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
 
     let direct = split_delegate_command(delegate);
+    // 直接启动只认 .exe：`npx`、`ccstatusline` 这类 npm 包装是 .cmd，
+    // 只有 cmd.exe 会按 PATHEXT 解析，所以除显式 .exe/.com 外都交给 cmd。
     let needs_shell = command_has_shell_syntax(delegate)
-        || direct.is_some_and(|(executable, _)| {
-            matches!(
+        || direct.is_none_or(|(executable, _)| {
+            !matches!(
                 Path::new(executable)
                     .extension()
                     .and_then(|value| value.to_str())
                     .map(str::to_ascii_lowercase)
                     .as_deref(),
-                Some("bat" | "cmd")
+                Some("exe" | "com")
             )
         });
     let mut command = if needs_shell {
@@ -264,47 +266,6 @@ pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
     command
 }
 
-#[cfg(windows)]
-pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
-    use std::io::{Read, Write};
-
-    let Ok(mut child) = crate::child_process::spawn(
-        crate::child_process::Site::ClaudeStatuslineDelegate,
-        &mut delegate_process(delegate),
-    ) else {
-        return String::new();
-    };
-    let output = child.stdout.take();
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut output) = output {
-            let _ = output.read_to_end(&mut bytes);
-        }
-        bytes
-    });
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input);
-    }
-
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            _ => {
-                crate::child_process::terminate_process_tree(&mut child);
-                break;
-            }
-        }
-    }
-    let bytes = reader.join().unwrap_or_default();
-    String::from_utf8_lossy(&bytes)
-        .trim_end_matches(['\r', '\n'])
-        .to_owned()
-}
-
 /// 委托原文交给 `/bin/sh -c` 执行——与旧 Python 钩子的 `shell=True` 语义一致，
 /// 管道 `|`、`&&`、引号等都由 shell 解释。子进程放进自己的进程组，超时后按组
 /// 终止（`killpg`），对齐 Windows 的进程树终止：委托再拉起后代也不会残留。
@@ -332,7 +293,6 @@ fn terminate_process_group(pgid: i32) {
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
     use std::io::{Read, Write};
 
@@ -343,17 +303,23 @@ pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Dur
         return String::new();
     };
     // process_group(0) 让 pgid 等于子进程 pid。
+    #[cfg(unix)]
     let pgid = child.id() as i32;
     let output = child.stdout.take();
-    let reader = std::thread::spawn(move || {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut output) = output {
             let _ = output.read_to_end(&mut bytes);
         }
-        bytes
+        let _ = sender.send(bytes);
     });
+    // 写入放到线程里：不读 stdin 的委托写满管道缓冲时，超时判断不能被卡住。
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input);
+        let input = input.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
     }
 
     let deadline = std::time::Instant::now() + timeout;
@@ -364,13 +330,22 @@ pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Dur
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             _ => {
-                terminate_process_group(pgid);
-                let _ = child.wait();
+                #[cfg(windows)]
+                crate::child_process::terminate_process_tree(&mut child);
+                #[cfg(unix)]
+                {
+                    terminate_process_group(pgid);
+                    let _ = child.wait();
+                }
                 break;
             }
         }
     }
-    let bytes = reader.join().unwrap_or_default();
+    // 委托退出后若有后代仍占着 stdout，读线程会一直等 EOF；到期就放弃输出。
+    let grace = deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .max(std::time::Duration::from_millis(200));
+    let bytes = receiver.recv_timeout(grace).unwrap_or_default();
     String::from_utf8_lossy(&bytes)
         .trim_end_matches(['\r', '\n'])
         .to_owned()
@@ -601,7 +576,8 @@ impl ClaudeHook {
 
     fn write_settings(&self, settings: &Value) -> Result<()> {
         std::fs::create_dir_all(&self.claude_dir)?;
-        let path = self.settings_path();
+        // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
+        let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
         let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
         std::fs::write(&staged, serde_json::to_string_pretty(settings)?)?;
         let installed = std::fs::rename(&staged, &path);
@@ -879,8 +855,32 @@ mod tests {
                 .unwrap();
         assert!(settings.get("statusLine").is_none());
         assert_eq!(settings["model"], "opus");
+        // 用户文件的键序原样保留，不被重排成字母序。
+        let raw = fs::read_to_string(test.path().join("settings.json")).unwrap();
+        assert!(raw.find("\"model\"") < raw.find("\"env\""), "{raw}");
         assert!(!hook.script_path().exists());
         assert!(!hook.metadata_path().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_keeps_a_symlinked_settings_file_linked() {
+        let test = TestDirectory::new("symlink");
+        let dotfiles = test.path().join("dotfiles-settings.json");
+        fs::write(&dotfiles, r#"{"model": "opus"}"#).unwrap();
+        let claude_dir = test.path().join("claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, claude_dir.join("settings.json")).unwrap();
+
+        ClaudeHook::with_dir(claude_dir.clone()).install().unwrap();
+
+        assert!(fs::symlink_metadata(claude_dir.join("settings.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::read_to_string(&dotfiles)
+            .unwrap()
+            .contains("statusLine"));
     }
 
     /// 回归：statusLine 由 Git Bash 执行，命令必须是带引号的绝对路径。
