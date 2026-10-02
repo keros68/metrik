@@ -49,7 +49,8 @@ import workbuddyAppIcon from "./assets/workbuddy-app-icon.png";
 import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAppearance.js";
 import { modelDisplayName } from "./modelNames.js";
-import { QUOTA_LOW_REMAINING, bindingWindow, isBalanceWindow } from "./quotaWindows.js";
+import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
+import { agentPalette } from "./agentColors.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
 import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
@@ -411,18 +412,6 @@ function formatClock(isoString) {
     minute: "2-digit",
     hour12: false,
   });
-}
-
-function formatReset(minutes) {
-  if (!Number.isFinite(minutes)) return "暂不可用";
-  if (minutes >= 1440) {
-    const days = Math.floor(minutes / 1440);
-    const hours = Math.floor((minutes % 1440) / 60);
-    return `${days} 天 ${hours} 小时`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const rest = Math.max(0, Math.round(minutes % 60));
-  return `${hours} 小时 ${rest} 分`;
 }
 
 function formatQuotaAge(minutes) {
@@ -826,7 +815,11 @@ function PeriodControl({ period, onChange, compact = false, fullWidthArea = fals
 }
 
 function UsageChart({ snapshot, selectedAgent, dark = false }) {
-  const visibleAgents = selectedAgent === "all" ? AGENT_ORDER : [selectedAgent];
+  // 引用要稳定：UsagePlot 以它为依赖，每次渲染新建数组会重建整张图。
+  const visibleAgents = useMemo(
+    () => (selectedAgent === "all" ? AGENT_ORDER : [selectedAgent]),
+    [selectedAgent],
+  );
   // 图例与图中的线一致：只列周期内有数据的 Agent。
   const legendAgents = selectedAgent === "all"
     ? AGENT_ORDER.filter((agent) =>
@@ -852,7 +845,7 @@ function UsageChart({ snapshot, selectedAgent, dark = false }) {
       <div className="chart-legend" aria-label="图例">
         {(legendAgents.length ? legendAgents : visibleAgents.slice(0, 1)).map((agent) => (
           <span key={agent}>
-            <i className={`legend-line legend-line--${agent}`} />
+            <i className="legend-line" style={{ background: chartColor(agent) }} />
             {AGENT_META[agent]?.label || agent}
           </span>
         ))}
@@ -1822,16 +1815,11 @@ function CompactWidget({
   const desyncHealInFlightRef = useRef(false);
   useEffect(() => {
     if (!isDesktop()) return undefined;
-    let cancel = null;
-    onScaleFactorChanged(() => {
+    const stop = onScaleFactorChanged(() => {
       lastDesyncHealRef.current = 0;
       desyncHealAttemptRef.current = 0;
-    }).then((fn) => {
-      cancel = fn;
     });
-    return () => {
-      cancel?.();
-    };
+    return () => { stop.then((unlisten) => unlisten?.()); };
   }, []);
   // 一个观察器承担两条自愈：
   // 1) 宽度失配（zoom×物理尺寸失配，视口 < 320，右侧被裁）→ 按当前 DPI
@@ -3723,9 +3711,14 @@ function sessionDayLabel(ms) {
   return date.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
 }
 
+// 项目名、路径、模型名等文本可能以 = + - @ 开头，表格软件会当公式执行：
+// 非数值文本加 ' 前缀中和；数值（含负数）原样输出。
 function csvEscape(value) {
-  const text = String(value ?? "");
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  let text = String(value ?? "");
+  if (typeof value === "string" && /^[=+\-@\t\r]/.test(text) && !/^[-+]?\d+(\.\d+)?$/.test(text)) {
+    text = `'${text}`;
+  }
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 // 导出只含账本本就存储的统计字段，与隐私边界一致。
@@ -3970,10 +3963,16 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rules, setRules] = useState(null);
   const [rulesBusy, setRulesBusy] = useState(false);
+  const rulesRef = useRef(null);
+  const rulesQueueRef = useRef(Promise.resolve());
 
   useEffect(() => {
     if (rulesOpen && rules == null) {
-      getProjectRules().then((loaded) => setRules(loaded.loadError ? { roots: [], hidden: [] } : loaded));
+      getProjectRules().then((loaded) => {
+        const next = loaded.loadError ? { roots: [], hidden: [] } : loaded;
+        rulesRef.current ??= next;
+        setRules((current) => current ?? next);
+      });
     }
   }, [rulesOpen, rules]);
 
@@ -4002,6 +4001,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
     setRulesBusy(true);
     try {
       const saved = await setProjectRules(next);
+      rulesRef.current = saved;
       setRules(saved);
       onRulesChanged();
     } catch (error) {
@@ -4011,30 +4011,33 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
     }
   };
   const currentRules = async () => {
-    if (rules) return rules;
+    if (rulesRef.current) return rulesRef.current;
     const loaded = await getProjectRules();
     return loaded.loadError ? { roots: [], hidden: [] } : loaded;
   };
-  const pinProject = async (path) => {
-    const current = await currentRules();
-    await applyRules({ ...current, roots: [...current.roots, path] });
+  // 规则改动排队串行执行：每次都以上一次保存的结果为底，
+  // 连点两下不会读到同一份旧规则、后存的覆盖先存的。
+  const updateRules = (change) => {
+    const run = rulesQueueRef.current.then(async () => {
+      await applyRules(change(await currentRules()));
+    });
+    rulesQueueRef.current = run.catch(() => {});
+    return run;
   };
-  const removeRoot = async (path) => {
-    const current = await currentRules();
-    await applyRules({ ...current, roots: current.roots.filter((item) => item !== path) });
-  };
-  const removeHidden = async (path) => {
-    const current = await currentRules();
-    await applyRules({ ...current, hidden: current.hidden.filter((item) => item !== path) });
-  };
+  const pinProject = (path) => updateRules((current) => ({ ...current, roots: [...current.roots, path] }));
+  const removeRoot = (path) => updateRules((current) => ({
+    ...current, roots: current.roots.filter((item) => item !== path),
+  }));
+  const removeHidden = (path) => updateRules((current) => ({
+    ...current, hidden: current.hidden.filter((item) => item !== path),
+  }));
   // 登记与取消登记同一颗按钮：图钉状态可逆，按钮也不会中途从 DOM 消失。
   const togglePin = (project) => (
     project.pinned ? removeRoot(project.path) : pinProject(project.path)
   );
   // 隐藏会让这一行消失，就地留一个撤销入口；规则面板仍是长期的恢复位置。
   const hideProject = async (project) => {
-    const current = await currentRules();
-    await applyRules({ ...current, hidden: [...current.hidden, project.path] });
+    await updateRules((current) => ({ ...current, hidden: [...current.hidden, project.path] }));
     setNote({
       text: `已隐藏 ${project.label}`,
       undo: () => removeHidden(project.path),
@@ -4505,21 +4508,9 @@ function weekTickLabel(key) {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-// 图表专用降饱和配色：品牌色直接上图会显得"纯"，
-// 苹果式做法是柔和一档的同源色 + 平滑曲线 + 低透明面积。
-// 六个 Agent 各占一个色相（蓝/珊瑚/紫罗兰/青/品红/琥珀），
-// 任何叠加组合都可分辨——曾经 codex/kimi/antigravity 三个蓝挤在一起。
-const CHART_LINE_COLORS = {
-  codex: "#5586d4",
-  claude: "#d98663",
-  zcode: "#8b80d9",
-  opencode: "#4aa392",
-  kimi: "#c4719f",
-  antigravity: "#d1a34e",
-};
-
+// 配色表见 agentColors.js。
 function chartColor(id) {
-  return CHART_LINE_COLORS[id] || "#8a8c90";
+  return agentPalette(id).stroke;
 }
 
 // Catmull-Rom 平滑成三次贝塞尔路径。
