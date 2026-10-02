@@ -122,25 +122,22 @@ fn fetch_glm_once(
         GlmRegion::Bigmodel => GLM_BIGMODEL_URL,
         GlmRegion::Zai => GLM_ZAI_URL,
     };
-    let response = agent
+    let result = agent
         .get(url)
         // GLM 是裸 token，不带 Bearer 前缀（真机验证 Bearer 也认，保持裸即可）。
         .set("Authorization", &cred.token)
         .set("Accept", "application/json")
-        .call()
-        .map_err(|error| map_ureq_error("GLM", error))?;
-    let body = response.into_string().context("读取 GLM 配额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("GLM 配额响应不是预期的 JSON")?;
+        .call();
+    let json = response_json("GLM", "配额", result)?;
     // 该接口把业务错误放在 HTTP 200 的 body 里（认证失败是 code 1000）。
     // 不识别它就会误报成"缺少可用窗口"，把认证问题伪装成解析问题。
     if let Some(error) = glm_business_error(&json) {
         bail!(error);
     }
-    let samples = parse_glm_quota(&json, adapter_id);
-    if samples.is_empty() {
-        bail!("GLM 配额响应缺少可用窗口");
-    }
-    Ok(samples)
+    require_samples(
+        parse_glm_quota(&json, adapter_id),
+        "GLM 配额响应缺少可用窗口",
+    )
 }
 
 /// 成功时 `code` 是 200；其它值是业务错误（真机实测：错 key → HTTP 200 +
@@ -176,7 +173,7 @@ pub fn fetch_qoder_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
 }
 
 fn fetch_qoder_once(agent: &ureq::Agent, origin: &str, cookie: &str) -> Result<Vec<QuotaSample>> {
-    let response = agent
+    let result = agent
         .get(&format!("{origin}/api/v2/me/usages/big_model_credits"))
         // dashboard 内部接口按浏览器请求放行：UA/Origin/Referer/Bx-V 缺一不可
         // （参考实现一致携带；Bx-V 是阿里风控头）。
@@ -190,31 +187,22 @@ fn fetch_qoder_once(agent: &ureq::Agent, origin: &str, cookie: &str) -> Result<V
         .set("Referer", &format!("{origin}/account/usage"))
         .set("X-Requested-With", "XMLHttpRequest")
         .set("Bx-V", "2.5.35")
-        .call()
-        .map_err(|error| map_ureq_error("Qoder", error))?;
-    let body = response.into_string().context("读取 Qoder 配额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("Qoder 配额响应不是预期的 JSON")?;
-    let samples = parse_qoder_quota(&json);
-    if samples.is_empty() {
-        bail!("Qoder 配额响应缺少 totalQuota.quotaSummary");
-    }
-    Ok(samples)
+        .call();
+    let json = response_json("Qoder", "配额", result)?;
+    require_samples(
+        parse_qoder_quota(&json),
+        "Qoder 配额响应缺少 totalQuota.quotaSummary",
+    )
 }
 
 /// cookie 来源：设置页保存的本地文件优先，其次环境变量。由用户从浏览器
 /// dashboard 主动复制提供——Metrik 不碰浏览器 cookie 库，也不解密 QoderWork
 /// 的 auth.dat。本地文件明文、仅本机（不入账本、不进同步导出），随时可清除。
 fn resolve_qoder_cookie() -> Option<String> {
-    if let Some(cookie) = read_provider_cookie_file("qoder") {
-        return Some(cookie);
-    }
-    for name in ["QODER_COOKIE", "METRIK_QODER_COOKIE"] {
-        if let Some(cookie) = env_cookie(name) {
-            return Some(cookie);
-        }
-    }
-    None
+    read_qoder_cookie_file().or_else(|| QODER_COOKIE_ENVS.into_iter().find_map(env_cookie))
 }
+
+const QODER_COOKIE_ENVS: [&str; 2] = ["QODER_COOKIE", "METRIK_QODER_COOKIE"];
 
 fn env_cookie(name: &str) -> Option<String> {
     let raw = std::env::var(name).ok()?;
@@ -223,23 +211,19 @@ fn env_cookie(name: &str) -> Option<String> {
 }
 
 /// cookie 文件与应用数据库同目录（identifier 与 tauri.conf.json 一致）。
-/// 写与读走同一个 helper，路径自洽。各 provider 一份文件（当前只有 qoder）。
-fn provider_cookie_file(name: &str) -> Option<PathBuf> {
+/// 写与读走同一个 helper，路径自洽。
+fn qoder_cookie_file() -> Option<PathBuf> {
     Some(
         dirs::data_local_dir()?
             .join("app.metrik.desktop")
-            .join(format!("{name}-cookie.txt")),
+            .join("qoder-cookie.txt"),
     )
 }
 
-fn read_provider_cookie_file(name: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(provider_cookie_file(name)?).ok()?;
+fn read_qoder_cookie_file() -> Option<String> {
+    let raw = std::fs::read_to_string(qoder_cookie_file()?).ok()?;
     let trimmed = raw.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
-}
-
-pub fn read_qoder_cookie_file() -> Option<String> {
-    read_provider_cookie_file("qoder")
 }
 
 /// 宽容解析用户粘贴的内容：接受裸 cookie 值、带 `Cookie:` 前缀的单行、
@@ -317,9 +301,8 @@ pub fn normalize_qoder_cookie_input(raw: &str) -> Option<String> {
 }
 
 /// 保存（Some 且非空）或清除（None/空）本地 cookie 文件；返回保存后是否存在。
-/// 各 provider 共用同一套文件读写（当前只有 qoder）。
-pub fn write_provider_cookie_file(name: &str, cookie: Option<&str>) -> Result<bool> {
-    let path = provider_cookie_file(name).context("无法定位本地数据目录")?;
+pub fn write_qoder_cookie_file(cookie: Option<&str>) -> Result<bool> {
+    let path = qoder_cookie_file().context("无法定位本地数据目录")?;
     match cookie.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => {
             if let Some(parent) = path.parent() {
@@ -350,17 +333,13 @@ pub fn write_provider_cookie_file(name: &str, cookie: Option<&str>) -> Result<bo
     }
 }
 
-pub fn write_qoder_cookie_file(cookie: Option<&str>) -> Result<bool> {
-    write_provider_cookie_file("qoder", cookie)
-}
-
 /// 当前生效的 cookie 来源（设置页展示用）；None = 未配置。
 pub fn qoder_cookie_source() -> Option<&'static str> {
     if read_qoder_cookie_file().is_some() {
         return Some("file");
     }
-    ["QODER_COOKIE", "METRIK_QODER_COOKIE"]
-        .iter()
+    QODER_COOKIE_ENVS
+        .into_iter()
         .any(|name| env_cookie(name).is_some())
         .then_some("env")
 }
@@ -437,19 +416,13 @@ pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
         "未找到 Kimi 的凭据（~/.kimi-code 的 config.toml/credentials 或 OpenCode auth.json）",
     )?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    let response = agent
+    let result = agent
         .get(KIMI_USAGE_URL)
         .set("Authorization", &format!("Bearer {token}"))
         .set("Accept", "application/json")
-        .call()
-        .map_err(|error| map_ureq_error("Kimi", error))?;
-    let body = response.into_string().context("读取 Kimi 配额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("Kimi 配额响应不是预期的 JSON")?;
-    let samples = parse_kimi_quota(&json);
-    if samples.is_empty() {
-        bail!("Kimi 配额响应缺少可用窗口");
-    }
-    Ok(samples)
+        .call();
+    let json = response_json("Kimi", "配额", result)?;
+    require_samples(parse_kimi_quota(&json), "Kimi 配额响应缺少可用窗口")
 }
 
 /// Kimi Work（kimi-desktop 桌面 Agent）的官方配额：5h/7d 滚动限流窗外加
@@ -460,23 +433,18 @@ pub fn fetch_kimiwork_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
         "未找到 Kimi Work 的凭据（kimi-desktop 的 bridge-store/token-store.json，需先登录 Kimi Work）",
     )?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    let response = agent
+    let result = agent
         .post(KIMIWORK_STATS_URL)
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         // connect-RPC 的 JSON 模式：空对象 body。
-        .send_string("{}")
-        .map_err(|error| map_ureq_error("Kimi Work", error))?;
-    let body = response
-        .into_string()
-        .context("读取 Kimi Work 配额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("Kimi Work 配额响应不是预期的 JSON")?;
-    let samples = parse_kimiwork_quota(&json, chrono::Utc::now().timestamp_millis());
-    if samples.is_empty() {
-        bail!("Kimi Work 配额响应缺少可用窗口");
-    }
-    Ok(samples)
+        .send_string("{}");
+    let json = response_json("Kimi Work", "配额", result)?;
+    require_samples(
+        parse_kimiwork_quota(&json, chrono::Utc::now().timestamp_millis()),
+        "Kimi Work 配额响应缺少可用窗口",
+    )
 }
 
 // 腾讯 CodeBuddy / WorkBuddy 官方配额（Credits）。桌面客户端把 access token
@@ -532,13 +500,7 @@ fn fetch_workbuddy_once(
     if !cred.domain.is_empty() {
         request = request.set("X-Domain", &cred.domain);
     }
-    let response = request
-        .send_string(&body.to_string())
-        .map_err(|error| map_ureq_error("WorkBuddy", error))?;
-    let text = response
-        .into_string()
-        .context("读取 WorkBuddy 配额响应失败")?;
-    let json: Value = serde_json::from_str(&text).context("WorkBuddy 配额响应不是预期的 JSON")?;
+    let json = response_json("WorkBuddy", "配额", request.send_string(&body.to_string()))?;
     // 业务错误放在 HTTP 200 的 body：code 非 0 即失败。
     if let Some(code) = json.get("code").and_then(Value::as_i64) {
         if code != 0 {
@@ -549,11 +511,10 @@ fn fetch_workbuddy_once(
             bail!("WorkBuddy 配额接口返回业务错误 code {code}: {msg}");
         }
     }
-    let samples = parse_workbuddy_quota(&json);
-    if samples.is_empty() {
-        bail!("WorkBuddy 配额响应缺少可用套餐");
-    }
-    Ok(samples)
+    require_samples(
+        parse_workbuddy_quota(&json),
+        "WorkBuddy 配额响应缺少可用套餐",
+    )
 }
 
 /// 跨套餐（Accounts）求和当前周期的总量/剩余，得单一 Credits 窗口。
@@ -737,21 +698,16 @@ pub fn fetch_opencode_go_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
         "未找到 OpenCode Go 的 API key（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go provider）",
     )?;
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    let response = agent
+    let result = agent
         .get(OPENCODE_GO_USAGE_URL)
         .set("Authorization", &format!("Bearer {key}"))
         .set("Accept", "application/json")
-        .call()
-        .map_err(|error| map_ureq_error("OpenCode Go", error))?;
-    let body = response
-        .into_string()
-        .context("读取 OpenCode Go 配额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("OpenCode Go 配额响应不是预期的 JSON")?;
-    let samples = parse_opencode_go_quota(&json);
-    if samples.is_empty() {
-        bail!("OpenCode Go 配额响应缺少可用窗口");
-    }
-    Ok(samples)
+        .call();
+    let json = response_json("OpenCode Go", "配额", result)?;
+    require_samples(
+        parse_opencode_go_quota(&json),
+        "OpenCode Go 配额响应缺少可用窗口",
+    )
 }
 
 /// DeepSeek 官方余额（配额-only 卡片）：多个来源都可能有 key（环境变量、
@@ -773,19 +729,32 @@ pub fn fetch_deepseek_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
 }
 
 fn fetch_deepseek_once(agent: &ureq::Agent, key: &str) -> Result<Vec<QuotaSample>> {
-    let response = agent
+    let result = agent
         .get(DEEPSEEK_BALANCE_URL)
         .set("Authorization", &format!("Bearer {key}"))
         .set("Accept", "application/json")
-        .call()
-        .map_err(|error| map_ureq_error("DeepSeek", error))?;
-    let body = response
+        .call();
+    let json = response_json("DeepSeek", "余额", result)?;
+    require_samples(parse_deepseek_quota(&json), "DeepSeek 余额响应缺少可用窗口")
+}
+
+/// 请求结果 → JSON。`subject` 是响应的称呼（配额/余额），只进错误消息。
+fn response_json(
+    provider: &str,
+    subject: &str,
+    result: Result<ureq::Response, ureq::Error>,
+) -> Result<Value> {
+    let body = result
+        .map_err(|error| map_ureq_error(provider, error))?
         .into_string()
-        .context("读取 DeepSeek 余额响应失败")?;
-    let json: Value = serde_json::from_str(&body).context("DeepSeek 余额响应不是预期的 JSON")?;
-    let samples = parse_deepseek_quota(&json);
+        .with_context(|| format!("读取 {provider} {subject}响应失败"))?;
+    serde_json::from_str(&body).with_context(|| format!("{provider} {subject}响应不是预期的 JSON"))
+}
+
+/// 解析不出任何窗口按失败处理，`missing` 是给用户看的原因。
+fn require_samples(samples: Vec<QuotaSample>, missing: &str) -> Result<Vec<QuotaSample>> {
     if samples.is_empty() {
-        bail!("DeepSeek 余额响应缺少可用窗口");
+        bail!("{missing}");
     }
     Ok(samples)
 }

@@ -227,6 +227,11 @@ pub fn sane_resets_at_ms(window_key: &str, resets_at_ms: i64, collected_at_ms: i
     plausible.then_some(resets_at_ms)
 }
 
+/// 余额窗口（DeepSeek 的 balance_cny 等）存的是金额不是百分比。
+pub fn is_balance_window(window_key: &str) -> bool {
+    window_key.starts_with("balance")
+}
+
 /// Codex 的 primary/secondary 只是槽位，不是窗口语义：套餐不同，同一个槽位
 /// 可能是 5 小时窗也可能是周窗（prolite 的 primary 就是 10080 分钟的周窗）。
 /// 按窗口时长归类，槽位只作为缺时长时的回退，避免把周额度标成"5 小时"。

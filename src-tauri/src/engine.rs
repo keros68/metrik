@@ -71,10 +71,7 @@ struct StoredEvent {
     timestamp: i64,
     tokens: i64,
     model: Option<String>,
-    input_uncached: i64,
-    cache_read: i64,
-    cache_write: i64,
-    output: i64,
+    comps: TokenComponents,
     request_input_tokens: Option<i64>,
 }
 
@@ -106,10 +103,7 @@ struct StoredSessionEvent {
     session_id: String,
     timestamp: i64,
     model: Option<String>,
-    input_uncached: i64,
-    cache_read: i64,
-    cache_write: i64,
-    output: i64,
+    comps: TokenComponents,
     project: Option<String>,
     request_input_tokens: Option<i64>,
 }
@@ -452,16 +446,7 @@ fn sessions_at(
     requested_period: &str,
     local_now: chrono::DateTime<Local>,
 ) -> Result<UsageSessions> {
-    let period = match requested_period {
-        "week" | "month" => requested_period,
-        _ => "today",
-    };
-    let today = local_now.date_naive();
-    let start_date = match period {
-        "week" => today - Duration::days(6),
-        "month" => today - Duration::days(29),
-        _ => today,
-    };
+    let (period, start_date) = period_start(requested_period, local_now.date_naive());
     let start_ms = local_midnight(start_date)?.timestamp_millis();
     let end_ms = local_now.timestamp_millis() + 1;
 
@@ -490,12 +475,7 @@ fn sessions_at(
         agg.start_ms = agg.start_ms.min(event.timestamp);
         agg.end_ms = agg.end_ms.max(event.timestamp);
         agg.event_count += 1;
-        let comps = TokenComponents {
-            input_uncached: event.input_uncached,
-            cache_read: event.cache_read,
-            cache_write: event.cache_write,
-            output: event.output,
-        };
+        let comps = event.comps;
         agg.totals.add(&comps);
         let model = event
             .model
@@ -591,10 +571,7 @@ fn load_session_events(
             session_id: row.get(1)?,
             timestamp: row.get(2)?,
             model: row.get(3)?,
-            input_uncached: row.get(4)?,
-            cache_read: row.get(5)?,
-            cache_write: row.get(6)?,
-            output: row.get(7)?,
+            comps: token_components(row, 4)?,
             project: row.get(8)?,
             request_input_tokens: row.get(9)?,
         })
@@ -616,16 +593,7 @@ fn projects_at(
     requested_period: &str,
     local_now: chrono::DateTime<Local>,
 ) -> Result<UsageProjects> {
-    let period = match requested_period {
-        "week" | "month" => requested_period,
-        _ => "today",
-    };
-    let today = local_now.date_naive();
-    let start_date = match period {
-        "week" => today - Duration::days(6),
-        "month" => today - Duration::days(29),
-        _ => today,
-    };
+    let (period, start_date) = period_start(requested_period, local_now.date_naive());
     let start_ms = local_midnight(start_date)?.timestamp_millis();
     let end_ms = local_now.timestamp_millis() + 1;
 
@@ -640,12 +608,7 @@ fn projects_at(
         let Some(agent) = AGENT_IDS.iter().find(|agent| **agent == event.adapter) else {
             continue;
         };
-        let comps = TokenComponents {
-            input_uncached: event.input_uncached,
-            cache_read: event.cache_read,
-            cache_write: event.cache_write,
-            output: event.output,
-        };
+        let comps = event.comps;
         let Some(raw) = event
             .project
             .as_deref()
@@ -929,16 +892,9 @@ fn query_snapshot_at(
     report: ScanReport,
     local_now: chrono::DateTime<Local>,
 ) -> Result<UsageSnapshot> {
-    let period = match requested_period {
-        "week" | "month" => requested_period,
-        _ => "today",
-    };
     let today = local_now.date_naive();
-    let (start_date, comparison_days) = match period {
-        "week" => (today - Duration::days(6), 7_i64),
-        "month" => (today - Duration::days(29), 30_i64),
-        _ => (today, 7_i64),
-    };
+    let (period, start_date) = period_start(requested_period, today);
+    let comparison_days = if period == "month" { 30_i64 } else { 7_i64 };
     let bucket_count = period_bucket_count(period, local_now.hour());
     let start_ms = local_midnight(start_date)?.timestamp_millis();
     let end_ms = local_now.timestamp_millis() + 1;
@@ -977,16 +933,10 @@ fn query_snapshot_at(
         }
         buckets.get_mut(agent).expect("registered agent")[index] += event.tokens;
         *totals.entry(agent).or_default() += event.tokens;
-        let event_comps = TokenComponents {
-            input_uncached: event.input_uncached,
-            cache_read: event.cache_read,
-            cache_write: event.cache_write,
-            output: event.output,
-        };
         components
             .get_mut(agent)
             .expect("registered agent")
-            .add(&event_comps);
+            .add(&event.comps);
         let model = event
             .model
             .as_deref()
@@ -998,7 +948,7 @@ fn query_snapshot_at(
         agent_cost.get_mut(agent).expect("registered agent").add(
             model,
             event.timestamp,
-            &event_comps,
+            &event.comps,
             event.request_input_tokens,
         );
     }
@@ -1152,10 +1102,6 @@ fn average_prior_elapsed_windows(
     local_now: &chrono::DateTime<Local>,
     days: i64,
 ) -> Result<f64> {
-    if days <= 0 {
-        return Ok(0.0);
-    }
-
     let today = local_now.date_naive();
     let elapsed = local_now.signed_duration_since(local_midnight(today)?);
     let mut total = 0_i64;
@@ -1204,14 +1150,21 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
             timestamp: row.get(1)?,
             tokens: row.get(2)?,
             model: row.get(3)?,
-            input_uncached: row.get(4)?,
-            cache_read: row.get(5)?,
-            cache_write: row.get(6)?,
-            output: row.get(7)?,
+            comps: token_components(row, 4)?,
             request_input_tokens: row.get(8)?,
         })
     })?;
     Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// 从 `first` 起依次读未缓存输入、缓存读、缓存写、输出四列。
+fn token_components(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<TokenComponents> {
+    Ok(TokenComponents {
+        input_uncached: row.get(first)?,
+        cache_read: row.get(first + 1)?,
+        cache_write: row.get(first + 2)?,
+        output: row.get(first + 3)?,
+    })
 }
 
 fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<i64> {
@@ -1274,7 +1227,7 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
     }
     // DeepSeek 余额窗口（balance_cny 等）：存的是金额不是百分比，前端按
     // window_key 特判渲染成金额。
-    if key.starts_with("balance") {
+    if crate::domain::is_balance_window(key) {
         return "余额".into();
     }
     match key {
@@ -1307,22 +1260,22 @@ fn load_agent_quota_windows(
     adapter_id: &str,
     now_ms: i64,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
-    let mut statement =
-        connection.prepare("SELECT window_key FROM quota_snapshot WHERE adapter_id = ?1")?;
-    let mut keys = statement
-        .query_map([adapter_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    keys.sort_by_key(|key| quota_window_rank(key));
-
-    keys.into_iter()
-        .map(|key| {
+    let mut statement = connection.prepare(
+        "SELECT window_key, remaining_percent, resets_at_ms, source_label, quality, collected_at_ms
+         FROM quota_snapshot WHERE adapter_id = ?1 ORDER BY window_key",
+    )?;
+    let mut windows = statement
+        .query_map([adapter_id], |row| {
+            let key: String = row.get(0)?;
             Ok(crate::domain::AgentQuotaWindow {
                 label: quota_window_label(adapter_id, &key),
-                view: load_quota_as_of(connection, adapter_id, &key, now_ms)?,
+                view: quota_view_from_row(row, 1, now_ms)?,
                 key,
             })
-        })
-        .collect()
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    windows.sort_by_key(|window| quota_window_rank(&window.key));
+    Ok(windows)
 }
 
 fn quota_candidate_is_better(
@@ -1383,50 +1336,53 @@ pub(crate) fn load_visible_agent_quota_windows(
     Ok(windows)
 }
 
-fn load_quota_as_of(
-    connection: &Connection,
-    adapter_id: &str,
-    window_key: &str,
+/// 从 `first` 起依次读剩余量、重置时刻、来源、质量、采集时刻五列，按 `now_ms`
+/// 算新鲜度。
+fn quota_view_from_row(
+    row: &rusqlite::Row<'_>,
+    first: usize,
     now_ms: i64,
-) -> Result<QuotaView> {
+) -> rusqlite::Result<QuotaView> {
+    let remaining: f64 = row.get(first)?;
+    let reset: Option<i64> = row.get(first + 1)?;
+    let source: String = row.get(first + 2)?;
+    let quality: String = row.get(first + 3)?;
+    let collected_at_ms: i64 = row.get(first + 4)?;
+    let now = now_ms;
+    let age_minutes = ((now - collected_at_ms).max(0) as f64) / 60_000.0;
+    let reset_expired = reset.is_some_and(|value| value <= now);
+    let stale_after_minutes = if quality == "official_live" {
+        7.0
+    } else {
+        15.0
+    };
+    Ok(QuotaView {
+        available: true,
+        remaining_percent: remaining,
+        resets_in_minutes: reset
+            .filter(|value| *value > now)
+            .map(|value| (value - now) as f64 / 60_000.0),
+        age_minutes: Some(age_minutes),
+        stale: age_minutes > stale_after_minutes || reset_expired,
+        reset_expired,
+        source_label: source,
+        quality,
+    })
+}
+
+/// 单窗口读取的测试便利入口。真实路径（快照、CLI）必须捕获一次 `now_ms`
+/// 走 `load_agent_quota_windows`，保证同一次读取内所有窗口的新鲜度基准一致。
+#[cfg(test)]
+fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
     let row = connection.query_row(
         "SELECT remaining_percent, resets_at_ms, source_label, quality, collected_at_ms
          FROM quota_snapshot WHERE adapter_id = ?2 AND window_key = ?1",
         params![window_key, adapter_id],
-        |row| {
-            Ok((
-                row.get::<_, f64>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        },
+        |row| quota_view_from_row(row, 0, Utc::now().timestamp_millis()),
     );
 
     match row {
-        Ok((remaining, reset, source, quality, collected_at_ms)) => {
-            let now = now_ms;
-            let age_minutes = ((now - collected_at_ms).max(0) as f64) / 60_000.0;
-            let reset_expired = reset.is_some_and(|value| value <= now);
-            let stale_after_minutes = if quality == "official_live" {
-                7.0
-            } else {
-                15.0
-            };
-            Ok(QuotaView {
-                available: true,
-                remaining_percent: remaining,
-                resets_in_minutes: reset
-                    .filter(|value| *value > now)
-                    .map(|value| (value - now) as f64 / 60_000.0),
-                age_minutes: Some(age_minutes),
-                stale: age_minutes > stale_after_minutes || reset_expired,
-                reset_expired,
-                source_label: source,
-                quality,
-            })
-        }
+        Ok(view) => Ok(view),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(QuotaView {
             available: false,
             remaining_percent: 0.0,
@@ -1439,18 +1395,6 @@ fn load_quota_as_of(
         }),
         Err(error) => Err(error.into()),
     }
-}
-
-/// 单窗口读取的测试便利入口。真实路径（快照、CLI）必须捕获一次 `now_ms`
-/// 走 `load_quota_as_of`，保证同一次读取内所有窗口的新鲜度基准一致。
-#[cfg(test)]
-fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Result<QuotaView> {
-    load_quota_as_of(
-        connection,
-        adapter_id,
-        window_key,
-        Utc::now().timestamp_millis(),
-    )
 }
 
 fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<SourceView> {
@@ -1681,6 +1625,15 @@ fn coverage_detail(diagnostics: &AdapterDiagnostics, errors: usize) -> String {
         skipped.unwrap_or_default(),
         failed.unwrap_or_default()
     )
+}
+
+/// 统计周期归一化：未知值按 today 处理；返回周期名与起始日（含今天共 1/7/30 天）。
+fn period_start(requested_period: &str, today: NaiveDate) -> (&'static str, NaiveDate) {
+    match requested_period {
+        "week" => ("week", today - Duration::days(6)),
+        "month" => ("month", today - Duration::days(29)),
+        _ => ("today", today),
+    }
 }
 
 fn local_midnight(date: NaiveDate) -> Result<chrono::DateTime<Local>> {
