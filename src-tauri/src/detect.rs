@@ -53,14 +53,6 @@ fn kimi_code_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".kimi-code"))
 }
 
-/// Grok Build 的数据根：与 `GrokAdapter::detected()` / `grok_home()` 同源。
-fn grok_home_dir() -> PathBuf {
-    std::env::var_os("GROK_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| home().join(".grok"))
-}
-
 pub fn table() -> Vec<AgentProbe> {
     let home = home();
     vec![
@@ -119,7 +111,7 @@ pub fn table() -> Vec<AgentProbe> {
         },
         AgentProbe {
             id: "grok",
-            probe: Probe::Paths(vec![grok_home_dir()]),
+            probe: Probe::Paths(vec![crate::adapters::grok_home()]),
         },
         AgentProbe {
             // pi 与其同格式分支 Oh My Pi 各有一个数据根；与 PiAdapter::detected()
@@ -224,7 +216,7 @@ mod tests {
             ]
         );
         // grok 同样受 GROK_HOME 覆盖。
-        assert_eq!(paths(by_id("grok")), vec![grok_home_dir()]);
+        assert_eq!(paths(by_id("grok")), vec![crate::adapters::grok_home()]);
         // pi 与 OMP 的数据根与 PiAdapter::detected() 同源。
         assert_eq!(
             paths(by_id("pi")),

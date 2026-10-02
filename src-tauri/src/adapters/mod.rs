@@ -34,9 +34,14 @@ pub use cursor::{
 };
 
 use crate::domain::{stable_hash, ParsedSource};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Lines};
+use std::iter::Enumerate;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
@@ -138,16 +143,22 @@ pub trait AgentAdapter: Send + Sync {
 }
 
 pub fn discover_jsonl(roots: &[PathBuf], adapter_id: &str, cutoff_ms: i64) -> Vec<SourceCandidate> {
-    discover_files(roots, adapter_id, cutoff_ms, None)
+    discover_files(roots, adapter_id, cutoff_ms, |path| {
+        has_extension(path, "jsonl")
+    })
 }
 
-/// 与 `discover_jsonl` 相同，但可限定固定文件名：Grok 的 updates.jsonl 与
+fn has_extension(path: &Path, extension: &str) -> bool {
+    path.extension().and_then(|value| value.to_str()) == Some(extension)
+}
+
+/// 与 `discover_jsonl` 相同，但由调用方决定收哪些文件：Grok 的 updates.jsonl 与
 /// 同目录的 chat_history / events 共享 .jsonl 扩展名，全收会拖慢扫描队列。
 fn discover_files(
     roots: &[PathBuf],
     adapter_id: &str,
     cutoff_ms: i64,
-    filename: Option<&str>,
+    wanted: impl Fn(&Path) -> bool,
 ) -> Vec<SourceCandidate> {
     let mut found = Vec::new();
     for root in roots.iter().filter(|root| root.exists()) {
@@ -158,11 +169,7 @@ fn discover_files(
             .filter(|entry| entry.file_type().is_file())
         {
             let path = entry.into_path();
-            let name_matches = match filename {
-                Some(wanted) => path.file_name().and_then(|value| value.to_str()) == Some(wanted),
-                None => path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
-            };
-            if !name_matches {
+            if !wanted(&path) {
                 continue;
             }
             let Ok(metadata) = path.metadata() else {
@@ -209,13 +216,118 @@ pub fn opencode_session_directories(connection: &Connection) -> HashMap<String, 
         .collect()
 }
 
-fn normalize_locator(path: &Path) -> String {
+/// 逐行解析 JSONL 记录，产出 `(行号, 记录)`。空行跳过；读不出的行和解析失败
+/// 的行（活跃文件末尾可能是半行，下次扫描会重新读取）只计数，遍历完由
+/// `record_skipped` 计入诊断。
+pub(super) struct JsonlRecords<T> {
+    lines: Enumerate<Lines<BufReader<File>>>,
+    unreadable_lines: usize,
+    malformed_lines: usize,
+    record: PhantomData<T>,
+}
+
+impl<T> JsonlRecords<T> {
+    pub(super) fn open(path: &Path) -> Result<Self> {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        Ok(Self {
+            lines: BufReader::with_capacity(256 * 1024, file)
+                .lines()
+                .enumerate(),
+            unreadable_lines: 0,
+            malformed_lines: 0,
+            record: PhantomData,
+        })
+    }
+
+    /// 文件在 cutoff 之前就没再变过时（`track_skipped_lines` 为假），跳过的行不计。
+    pub(super) fn record_skipped(
+        &self,
+        diagnostics: &mut ScanDiagnostics,
+        track_skipped_lines: bool,
+    ) {
+        if track_skipped_lines {
+            diagnostics.unreadable_lines += self.unreadable_lines;
+            diagnostics.malformed_lines += self.malformed_lines;
+        }
+    }
+}
+
+impl<T: DeserializeOwned> Iterator for JsonlRecords<T> {
+    type Item = (usize, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for (line_index, line) in self.lines.by_ref() {
+            let Ok(line) = line else {
+                self.unreadable_lines += 1;
+                continue;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str(&line) {
+                Ok(record) => return Some((line_index, record)),
+                Err(_) => self.malformed_lines += 1,
+            }
+        }
+        None
+    }
+}
+
+pub(super) fn normalize_locator(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
         value.to_lowercase()
     } else {
         value
     }
+}
+
+/// 文件 mtime（纳秒）；拿不到记 0，让候选仍然成立（宁可多扫一次）。
+pub(super) fn file_mtime_ns(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+pub(super) fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
+}
+
+/// 单个 SQLite 库作为一个源。WAL 模式下写入先进 -wal，主库文件的 mtime/size
+/// 可能长期不变：把库与 -wal/-shm 的状态合并成一个变更指纹，任何一个变化都会
+/// 触发重扫。
+pub(super) fn sqlite_candidate(
+    database: &Path,
+    adapter_id: &str,
+    cutoff_ms: i64,
+) -> Vec<SourceCandidate> {
+    let Ok(metadata) = database.metadata() else {
+        return Vec::new();
+    };
+    let mut size = metadata.len();
+    let mut mtime_ns = file_mtime_ns(&metadata);
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        if let Ok(sidecar_meta) = std::fs::metadata(PathBuf::from(sidecar)) {
+            size += sidecar_meta.len();
+            mtime_ns = mtime_ns.max(file_mtime_ns(&sidecar_meta));
+        }
+    }
+    if mtime_ns / 1_000_000 < cutoff_ms {
+        return Vec::new();
+    }
+    let normalized = normalize_locator(database);
+    vec![SourceCandidate {
+        source_id: stable_hash(&format!("{adapter_id}|{normalized}")),
+        path: database.to_path_buf(),
+        size,
+        mtime_ns,
+    }]
 }
 
 pub fn timestamp_str_ms(value: Option<&str>) -> Option<i64> {

@@ -18,8 +18,6 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
-hex = "0.4"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 # 明确只用 ring provider：默认同时启用 ring 与 aws-lc-rs 时，rustls 0.23
 # 无法自动确定 CryptoProvider 会 panic（antigravity 自签 TLS 首次真机命中）。
@@ -84,6 +82,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 # 直接设置窗口级 NSAppearance（tao 的 set_theme 只动全应用外观，macOS 26 的
 # 标题栏不跟随它）。cocoa/objc 随 tauri-nspanel 已在依赖树中。
 objc = "0.2"
+# 菜单栏图标转 template image（仅 macos.rs 使用）。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(windows)'.dependencies]
 # 任务栏进度按钮 + Antigravity 钩子的 8.3 短名转换（GetShortPathNameW）；
