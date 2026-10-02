@@ -45,21 +45,21 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 不开 npm 缓存：它的 post 步骤会在 macOS 上失败，把已经构建成功、产物也传完
       # 的 job 标红（0.3.0、0.4.0 各误报一次）。发布不频繁，不值得为这点缓存收益
       # 换一个会骗人的红叉。setup-node v5+ 会在 package.json 含 packageManager 字段时
       # 自动开缓存——本仓库没有该字段，所以升级后仍是零缓存，与原意图一致。
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: dtolnay/rust-toolchain@9423510f11512992cb6c790b35e139796f7ac612 # 1.90.0
         with:
           targets: ${{ matrix.rust-targets }}
 
-      - uses: mozilla/sccache-action@v0.0.11
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       # target 目录的整目录缓存（rust-cache）仍然不用：通用构建的 target 布局
       # 曾让缓存校验在 post 步骤报错、把已成功的构建标红（见 npm 缓存注释）。
@@ -86,7 +86,7 @@ jobs:
       # 无法验证开发者），这是已知且在 README 声明的边界。下面这对密钥是
       # Tauri 更新器自己的 minisign 签名，只保证更新包在分发链路上没被掉包。
       # 同时会生成 latest.json（更新器的检查端点）并一并上传到 Release。
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

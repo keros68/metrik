@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 # 同一分支的旧运行在新提交到来时取消，避免排队。
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,7 +21,7 @@ jobs:
     steps:
       # 需要全部 tag 才能判断版本号是否已被占用；PR 检出真实的 head 提交而不是
       # 合并提交，否则 base 上的 tag 永远算祖先，撞车就检测不出来。
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -81,20 +84,20 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
       # 固定版本，与 README 声明的最低要求和开发机一致。滚动 stable 会让
       # 新版本引入的 lint 把 CI 变红，而本地无从复现。
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: dtolnay/rust-toolchain@9423510f11512992cb6c790b35e139796f7ac612 # 1.90.0
         with:
           components: clippy, rustfmt
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           key: ${{ matrix.platform }}
