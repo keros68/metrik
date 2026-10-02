@@ -14,12 +14,9 @@
 //! 与 pi 相同；账本层的分量最大值合并按事件键的 `hermes:` 前缀识别（hermes 的
 //! 用量行是累计值，每次扫描都会重新观察到更大的数，见 storage）。
 
-/// 把 hermes 一次用量记录的路由（billing_provider, billing_base_url）映射到
-/// 计量 Agent id。
-pub fn credited_agent(
-    billing_provider: Option<&str>,
-    billing_base_url: Option<&str>,
-) -> &'static str {
+/// 把 hermes 一次用量记录的路由（billing_base_url）映射到计量 Agent id。
+/// billing_provider 是用户起的名字，不参与判断。
+pub fn credited_agent(billing_base_url: Option<&str>) -> &'static str {
     let route = billing_base_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -46,7 +43,6 @@ pub fn credited_agent(
     if route.contains("chatgpt.com") && route.contains("/codex") {
         return "codex";
     }
-    let _ = billing_provider;
     "hermes"
 }
 
@@ -58,36 +54,24 @@ mod tests {
     fn coding_plan_endpoints_credit_their_own_cards() {
         // 本机真实路由（2026-08-31 核对）。
         assert_eq!(
-            credited_agent(
-                Some("custom"),
-                Some("https://open.bigmodel.cn/api/coding/paas/v4"),
-            ),
+            credited_agent(Some("https://open.bigmodel.cn/api/coding/paas/v4"),),
             "zcode"
         );
         assert_eq!(
-            credited_agent(
-                Some("custom:zai"),
-                Some("https://open.bigmodel.cn/api/coding/paas/v4")
-            ),
+            credited_agent(Some("https://open.bigmodel.cn/api/coding/paas/v4")),
             "zcode"
         );
         assert_eq!(
-            credited_agent(Some("zai"), Some("https://api.z.ai/api/coding/paas/v4")),
+            credited_agent(Some("https://api.z.ai/api/coding/paas/v4")),
             "zcode"
         );
         assert_eq!(
-            credited_agent(Some("custom:kimi"), Some("https://api.kimi.com/coding/v1")),
+            credited_agent(Some("https://api.kimi.com/coding/v1")),
             "kimi"
         );
+        assert_eq!(credited_agent(Some("https://api.kimi.com/coding")), "kimi");
         assert_eq!(
-            credited_agent(Some("kimi"), Some("https://api.kimi.com/coding")),
-            "kimi"
-        );
-        assert_eq!(
-            credited_agent(
-                Some("openai-codex"),
-                Some("https://chatgpt.com/backend-api/codex/"),
-            ),
+            credited_agent(Some("https://chatgpt.com/backend-api/codex/"),),
             "codex"
         );
     }
@@ -96,24 +80,20 @@ mod tests {
     fn plain_api_endpoints_and_unknown_routes_stay_on_hermes() {
         // 不带 /coding 的 bigmodel 按量端点不消耗套餐，不归属 GLM 卡。
         assert_eq!(
-            credited_agent(Some("custom"), Some("https://open.bigmodel.cn/api/paas/v4")),
+            credited_agent(Some("https://open.bigmodel.cn/api/paas/v4")),
             "hermes"
         );
         // 直连 API：DeepSeek、MiMo Token Plan、SenseNova、StepFun。
         assert_eq!(
-            credited_agent(
-                Some("custom"),
-                Some("https://token-plan-cn.xiaomimimo.com/v1")
-            ),
+            credited_agent(Some("https://token-plan-cn.xiaomimimo.com/v1")),
             "hermes"
         );
         assert_eq!(
-            credited_agent(Some("custom"), Some("https://api.stepfun.com/step_plan/v1")),
+            credited_agent(Some("https://api.stepfun.com/step_plan/v1")),
             "hermes"
         );
         // 早期记录没有路由：provider 名不可靠，一律留 hermes。
-        assert_eq!(credited_agent(Some("custom"), None), "hermes");
-        assert_eq!(credited_agent(Some(""), Some("  ")), "hermes");
-        assert_eq!(credited_agent(None, None), "hermes");
+        assert_eq!(credited_agent(None), "hermes");
+        assert_eq!(credited_agent(Some("  ")), "hermes");
     }
 }

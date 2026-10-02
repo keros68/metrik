@@ -140,19 +140,38 @@ fn quota_parts(payload: &StatusLinePayload) -> Vec<String> {
         .collect()
 }
 
-fn write_quota_atomically(path: &Path, payload: &StatusLinePayload) -> Result<()> {
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .context("Claude quota path has no file name")?;
-    let staged = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
-    std::fs::write(&staged, serde_json::to_vec(payload)?)
-        .context("unable to stage Claude quota snapshot")?;
+/// 读取钩子自己的 JSON 文件（额度快照、元数据、备份）；缺失或损坏返回 None。
+pub(crate) fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+}
+
+/// 先写同目录的 `<文件名>.tmp-<pid>` 再改名，读者永远看不到半个文件。
+/// 被终止的调用留下的暂存文件由 `sweep_stale_files` 按这个前缀清理。
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(format!(".tmp-{}", std::process::id()));
+    let staged = PathBuf::from(staged);
+    std::fs::write(&staged, bytes)?;
     let installed = std::fs::rename(&staged, path);
     if installed.is_err() {
         let _ = std::fs::remove_file(&staged);
     }
-    installed.context("unable to install Claude quota snapshot")
+    installed
+}
+
+/// 应用被移动/重装后绝对路径会变：命令仍以钩子旗标结尾且第一个 token 的
+/// 文件名是 metrik 可执行文件时，认作我们的，交给自愈改写。
+pub(crate) fn is_moved_metrik_command(command: &str, flag: &str) -> bool {
+    command.trim_end().ends_with(flag)
+        && first_command_token(command).is_some_and(|executable| {
+            Path::new(executable)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| {
+                    name.eq_ignore_ascii_case("metrik") || name.eq_ignore_ascii_case("metrik.exe")
+                })
+        })
 }
 
 pub(crate) fn sweep_stale_files(
@@ -354,7 +373,6 @@ pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Dur
 fn render_statusline(
     hook: &ClaudeHook,
     input: &[u8],
-    temp_dir: &Path,
     delegate_timeout: std::time::Duration,
 ) -> String {
     let metadata = hook.read_metadata();
@@ -362,13 +380,14 @@ fn render_statusline(
     let payload = data.as_ref().map(payload_from_input);
 
     if let (Some(metadata), Some(payload)) = (metadata.as_ref(), payload.as_ref()) {
-        let _ = write_quota_atomically(&metadata.quota_path, payload);
+        if let Ok(bytes) = serde_json::to_vec(payload) {
+            let _ = write_atomically(&metadata.quota_path, &bytes);
+        }
     }
 
     let stale_before = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(5 * 60))
         .unwrap_or(std::time::UNIX_EPOCH);
-    sweep_stale_files(temp_dir, "metrik-statusline-", stale_before);
     if let Some(quota_dir) = metadata
         .as_ref()
         .and_then(|metadata| metadata.quota_path.parent())
@@ -414,7 +433,6 @@ pub fn run_statusline() {
     let output = render_statusline(
         &ClaudeHook::detected(),
         &input,
-        &std::env::temp_dir(),
         std::time::Duration::from_secs(10),
     );
     if !output.is_empty() {
@@ -480,13 +498,11 @@ impl ClaudeHook {
     }
 
     fn read_backup(&self) -> Option<Value> {
-        let raw = std::fs::read_to_string(self.backup_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.backup_path())
     }
 
     fn read_metadata(&self) -> Option<StatusLineMetadata> {
-        let raw = std::fs::read_to_string(self.metadata_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.metadata_path())
     }
 
     fn expected_metadata(&self, delegate: String) -> Result<StatusLineMetadata> {
@@ -505,15 +521,8 @@ impl ClaudeHook {
     }
 
     fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        let path = self.metadata_path();
-        let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
-        std::fs::write(&staged, serde_json::to_vec_pretty(metadata)?)
-            .context("无法写入 statusLine 元数据")?;
-        let installed = std::fs::rename(&staged, &path);
-        if installed.is_err() {
-            let _ = std::fs::remove_file(&staged);
-        }
-        installed.context("无法安装 statusLine 元数据")
+        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?)
+            .context("无法写入 statusLine 元数据")
     }
 
     /// 备份文件是用户可见的普通文件，会被清理 `.claude`、同步工具或杀软
@@ -578,13 +587,8 @@ impl ClaudeHook {
         std::fs::create_dir_all(&self.claude_dir)?;
         // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
         let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
-        std::fs::write(&staged, serde_json::to_string_pretty(settings)?)?;
-        let installed = std::fs::rename(&staged, &path);
-        if installed.is_err() {
-            let _ = std::fs::remove_file(&staged);
-        }
-        installed.context("无法更新 ~/.claude/settings.json")
+        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes())
+            .context("无法更新 ~/.claude/settings.json")
     }
 
     fn status_line_is_ours(&self, settings: &Value) -> bool {
@@ -605,18 +609,7 @@ impl ClaudeHook {
         {
             return true;
         }
-        // 应用被移动/重装后绝对路径会变：命令仍以 `--statusline` 结尾且第一个
-        // token 的文件名是 metrik 可执行文件时，认作我们的，交给自愈改写。
-        command.trim_end().ends_with("--statusline")
-            && first_command_token(command).is_some_and(|executable| {
-                Path::new(executable)
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| {
-                        name.eq_ignore_ascii_case("metrik")
-                            || name.eq_ignore_ascii_case("metrik.exe")
-                    })
-            })
+        is_moved_metrik_command(command, "--statusline")
     }
 
     pub fn status(&self) -> Result<ClaudeHookStatus> {
@@ -760,8 +753,7 @@ impl ClaudeHook {
     }
 
     fn read_quota_file(&self) -> Option<QuotaFile> {
-        let raw = std::fs::read_to_string(self.quota_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.quota_path())
     }
 
     /// 把钩子落地的全部官方窗口转换成 QuotaSample（原始窗口名作 key）；
@@ -986,8 +978,8 @@ mod tests {
     }
 
     /// 在隔离环境里运行原生 statusLine 逻辑。
-    fn run_native(hook: &ClaudeHook, temp: &Path, payload: &[u8]) -> String {
-        render_statusline(hook, payload, temp, std::time::Duration::from_secs(10))
+    fn run_native(hook: &ClaudeHook, payload: &[u8]) -> String {
+        render_statusline(hook, payload, std::time::Duration::from_secs(10))
     }
 
     /// 回归：额度落盘位置必须是安装元数据保存的绝对路径。
@@ -997,8 +989,6 @@ mod tests {
     #[test]
     fn native_writes_quota_to_the_installed_absolute_path() {
         let test = TestDirectory::new("quotapath");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let hook = ClaudeHook::with_dir(test.path().join("cfg"));
         fs::create_dir_all(test.path().join("cfg")).unwrap();
         hook.install().unwrap();
@@ -1012,7 +1002,6 @@ mod tests {
         hook.write_metadata(&metadata).unwrap();
         let output = run_native(
             &hook,
-            &temp,
             br#"{"model":{"display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":19.6,"resets_at":1785197748}}}"#,
         );
         assert_eq!(output, "Sonnet | 5h 42% 7d 20%");
@@ -1040,8 +1029,6 @@ mod tests {
     #[test]
     fn windows_native_forwards_unparsable_input_to_delegate() {
         let test = TestDirectory::new("badjson");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
         fs::write(
             test.path().join("settings.json"),
@@ -1057,7 +1044,7 @@ mod tests {
         let hook = ClaudeHook::with_dir(test.path().to_path_buf());
         hook.install().unwrap();
 
-        let out = run_native(&hook, &temp, b"this is not json at all");
+        let out = run_native(&hook, b"this is not json at all");
         assert_eq!(out, "this is not json at all");
         assert!(!hook.quota_path().exists(), "无效 JSON 不应写入额度文件");
     }
@@ -1067,8 +1054,6 @@ mod tests {
     #[test]
     fn windows_native_preserves_multiline_delegate_layout() {
         let test = TestDirectory::new("multiline");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
         let settings = |command: String| {
             json!({
@@ -1090,7 +1075,7 @@ mod tests {
         .unwrap();
         let hook = ClaudeHook::with_dir(test.path().to_path_buf());
         hook.install().unwrap();
-        assert_eq!(run_native(&hook, &temp, payload), "ONE | 5h 7%");
+        assert_eq!(run_native(&hook, payload), "ONE | 5h 7%");
 
         let multiline_script = test.path().join("multiline.cmd");
         fs::write(
@@ -1102,7 +1087,7 @@ mod tests {
         let mut metadata = hook.read_metadata().unwrap();
         metadata.delegate = multiline;
         hook.write_metadata(&metadata).unwrap();
-        assert_eq!(run_native(&hook, &temp, payload), "FIRST\r\nSECOND");
+        assert_eq!(run_native(&hook, payload), "FIRST\r\nSECOND");
     }
 
     /// 回归：负载解析失败时，用户原有的 statusLine 仍然要渲染（Unix）。
@@ -1111,8 +1096,6 @@ mod tests {
     #[test]
     fn unix_native_forwards_unparsable_input_to_delegate() {
         let test = TestDirectory::new("badjson");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         fs::write(
             test.path().join("settings.json"),
             json!({ "statusLine": { "type": "command", "command": "cat" } }).to_string(),
@@ -1122,7 +1105,7 @@ mod tests {
         hook.install().unwrap();
 
         // `cat` 把 stdin 原样回显：解析失败也要把输入透传给委托。
-        let out = run_native(&hook, &temp, b"this is not json at all");
+        let out = run_native(&hook, b"this is not json at all");
         assert_eq!(out, "this is not json at all");
         assert!(!hook.quota_path().exists(), "无效 JSON 不应写入额度文件");
     }
@@ -1132,8 +1115,6 @@ mod tests {
     #[test]
     fn unix_native_preserves_multiline_delegate_layout() {
         let test = TestDirectory::new("multiline");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let payload = br#"{"rate_limits":{"five_hour":{"used_percentage":7}}}"#;
 
         fs::write(
@@ -1143,62 +1124,50 @@ mod tests {
         .unwrap();
         let hook = ClaudeHook::with_dir(test.path().to_path_buf());
         hook.install().unwrap();
-        assert_eq!(run_native(&hook, &temp, payload), "ONE | 5h 7%");
+        assert_eq!(run_native(&hook, payload), "ONE | 5h 7%");
 
         let mut metadata = hook.read_metadata().unwrap();
         // printf 把 `\n` 展开成换行：委托输出两行面板。
         metadata.delegate = "printf 'FIRST\\nSECOND\\n'".to_owned();
         hook.write_metadata(&metadata).unwrap();
-        assert_eq!(run_native(&hook, &temp, payload), "FIRST\nSECOND");
+        assert_eq!(run_native(&hook, payload), "FIRST\nSECOND");
     }
 
-    /// 回归：原生路径必须清理上一次调用被终止后留下的旧临时文件。
+    /// 回归：原生路径必须清理上一次调用被终止后留下的额度暂存文件。
     ///
     /// Claude Code 每次重渲染状态栏都会终止上一次调用，而串联一个委托要好几秒，
-    /// 所以绝大多数调用都是中途被终止的，`finally` 没有机会执行，临时文件永远留在
-    /// 盘上（真机实测 50 分钟残留 124 个）。
+    /// 所以绝大多数调用都是中途被终止的，改名那一步来不及执行，暂存文件会一直
+    /// 留在盘上。
     #[test]
     fn native_sweeps_temp_files_from_terminated_runs() {
         use std::time::{Duration, SystemTime};
 
         let test = TestDirectory::new("tempsweep");
-        let home = test.path().join("home");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(home.join(".claude")).unwrap();
-        fs::create_dir_all(&temp).unwrap();
-        let hook = ClaudeHook::with_dir(home.join(".claude"));
+        let claude_dir = test.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let hook = ClaudeHook::with_dir(claude_dir.clone());
         hook.install().unwrap();
 
         // 上一次被终止后留下的残留，以及一份正在被别的调用使用的新文件。
-        let orphans = [
-            temp.join("metrik-statusline-in-999999.json"),
-            temp.join("metrik-statusline-out-999999.txt"),
-            home.join(".claude").join("metrik-quota.json.tmp-999999"),
-        ];
-        let live = temp.join("metrik-statusline-in-111111.json");
-        for path in orphans.iter().chain([&live]) {
+        let orphan = claude_dir.join("metrik-quota.json.tmp-999999");
+        let live = claude_dir.join("metrik-quota.json.tmp-111111");
+        for path in [&orphan, &live] {
             fs::write(path, "{}").unwrap();
         }
-        let long_ago = SystemTime::now() - Duration::from_secs(30 * 60);
-        for path in &orphans {
-            fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_modified(long_ago)
-                .unwrap();
-        }
+        fs::File::options()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(30 * 60))
+            .unwrap();
 
         run_native(
             &hook,
-            &temp,
             br#"{"rate_limits":{"five_hour":{"used_percentage":7}}}"#,
         );
 
-        for path in &orphans {
-            assert!(!path.exists(), "过期的临时文件没被清掉: {}", path.display());
-        }
-        assert!(live.exists(), "还在用的临时文件不能被误删");
+        assert!(!orphan.exists(), "过期的暂存文件没被清掉");
+        assert!(live.exists(), "还在用的暂存文件不能被误删");
     }
 
     /// 回归：委托超过时限时要终止整个进程树，不能冻结状态栏或留下后代进程。
@@ -1209,8 +1178,6 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let test = TestDirectory::new("timeout");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let marker = test.path().join("descendant.txt");
         let script = test.path().join("delegate.ps1");
         fs::write(
@@ -1244,7 +1211,7 @@ Wait-Process -Id $child.Id
         // PowerShell and record the descendant before the process tree is terminated.
         let delegate_timeout = Duration::from_secs(10);
         let started = Instant::now();
-        let output = render_statusline(&hook, b"{}", &temp, delegate_timeout);
+        let output = render_statusline(&hook, b"{}", delegate_timeout);
         assert_eq!(output, "");
         assert!(started.elapsed() < delegate_timeout + Duration::from_secs(4));
 
@@ -1283,8 +1250,6 @@ Wait-Process -Id $child.Id
         use std::time::{Duration, Instant};
 
         let test = TestDirectory::new("timeout");
-        let temp = test.path().join("temp");
-        fs::create_dir_all(&temp).unwrap();
         let marker = test.path().join("descendant.pid");
         // 后台拉起 sleep 后代，记下它的 pid 再 wait 阻塞：超时后整组被 killpg。
         let delegate = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
@@ -1298,7 +1263,7 @@ Wait-Process -Id $child.Id
 
         let delegate_timeout = Duration::from_secs(3);
         let started = Instant::now();
-        let output = render_statusline(&hook, b"{}", &temp, delegate_timeout);
+        let output = render_statusline(&hook, b"{}", delegate_timeout);
         assert_eq!(output, "");
         assert!(started.elapsed() < delegate_timeout + Duration::from_secs(4));
 

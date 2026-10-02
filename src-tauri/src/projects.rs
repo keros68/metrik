@@ -125,29 +125,25 @@ impl ProjectResolver {
     fn resolve_uncached(&self, raw: &str) -> Resolution {
         // 用户规则：roots 与 hidden 一起取最长前缀，最具体的规则胜出。
         // 这样"隐藏 ~/code、但登记 ~/code/foo"能让 foo 独活。
-        let mut best: Option<(usize, bool)> = None; // (前缀长度, 是否项目根)
+        let mut best: Option<(usize, Option<&String>)> = None; // (前缀长度, 胜出的项目根)
         for root in &self.rules.roots {
             if is_within(raw, root) && best.is_none_or(|(len, _)| root.len() > len) {
-                best = Some((root.len(), true));
+                best = Some((root.len(), Some(root)));
             }
         }
         for hidden in &self.rules.hidden {
             if is_within(raw, hidden) && best.is_none_or(|(len, _)| hidden.len() > len) {
-                best = Some((hidden.len(), false));
+                best = Some((hidden.len(), None));
             }
         }
-        if let Some((length, is_root)) = best {
-            if is_root {
-                let path = self
-                    .rules
-                    .roots
-                    .iter()
-                    .find(|root| root.len() == length && is_within(raw, root))
-                    .cloned()
-                    .unwrap_or_else(|| raw.to_owned());
-                return Resolution::Project { path, pinned: true };
-            }
-            return Resolution::Hidden;
+        if let Some((_, winner)) = best {
+            return match winner {
+                Some(root) => Resolution::Project {
+                    path: root.clone(),
+                    pinned: true,
+                },
+                None => Resolution::Hidden,
+            };
         }
 
         if self.builtin_hidden(raw) {
@@ -207,11 +203,7 @@ fn is_within(path: &str, root: &str) -> bool {
 }
 
 fn path_equals(left: &str, right: &str) -> bool {
-    if path_compare_ignores_case() {
-        left.eq_ignore_ascii_case(right)
-    } else {
-        left == right
-    }
+    ascii_insensitive_eq(left.as_bytes(), right.as_bytes())
 }
 
 fn path_compare_ignores_case() -> bool {

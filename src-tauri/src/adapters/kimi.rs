@@ -1,10 +1,11 @@
-use super::{discover_jsonl, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
+use super::{
+    discover_files, non_empty, AgentAdapter, JsonlRecords, ParsedScan, ScanDiagnostics,
+    SourceCandidate,
+};
 use crate::domain::{ParsedSource, TokenVector, UsageEvent};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Kimi CLI / Kimi Code 的 wire 日志（JSONL）。两代格式并存：
@@ -210,18 +211,13 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
-        discover_jsonl(&self.roots, self.id(), cutoff_ms)
-            .into_iter()
-            .filter(|candidate| {
-                candidate.path.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
-            })
-            .collect()
+        discover_files(&self.roots, self.id(), cutoff_ms, |path| {
+            path.ends_with("wire.jsonl")
+        })
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let file = File::open(&candidate.path)
-            .with_context(|| format!("failed to open {}", candidate.path.display()))?;
-        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut records = JsonlRecords::<KimiRecord>::open(&candidate.path)?;
 
         let session_id = session_id_from_path(&candidate.path);
         let project = project_root_from_path(&candidate.path);
@@ -231,27 +227,7 @@ impl AgentAdapter for KimiAdapter {
         let mut diagnostics = ScanDiagnostics::default();
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => {
-                    if track_skipped_lines {
-                        diagnostics.unreadable_lines += 1;
-                    }
-                    continue;
-                }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<KimiRecord>(&line) else {
-                // 活跃文件末尾可能是半行，下次扫描会重新读取。
-                if track_skipped_lines {
-                    diagnostics.malformed_lines += 1;
-                }
-                continue;
-            };
-
+        for (_, record) in records.by_ref() {
             // 新版：只认单轮增量记录。
             if record.record_type.as_deref() == Some("usage.record") {
                 // scope 缺失时不猜（可能是未来新增的累计口径），跳过并标记部分覆盖。
@@ -327,14 +303,9 @@ impl AgentAdapter for KimiAdapter {
             let entry = legacy
                 .entry(key)
                 .or_insert((timestamp, TokenVector::default()));
-            entry.1 = TokenVector {
-                input_uncached: entry.1.input_uncached.max(tokens.input_uncached),
-                cache_read: entry.1.cache_read.max(tokens.cache_read),
-                cache_write: entry.1.cache_write.max(tokens.cache_write),
-                output: entry.1.output.max(tokens.output),
-                reasoning_output: 0,
-            };
+            entry.1.component_max(&tokens);
         }
+        records.record_skipped(&mut diagnostics, track_skipped_lines);
 
         events.extend(legacy.into_iter().map(|(message_id, (timestamp, tokens))| {
             UsageEvent::new(
@@ -365,13 +336,10 @@ impl AgentAdapter for KimiAdapter {
     }
 }
 
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.filter(|model| !model.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     fn candidate_for(path: &Path) -> SourceCandidate {

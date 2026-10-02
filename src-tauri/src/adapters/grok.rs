@@ -13,7 +13,10 @@
 //! `billing: fetched credits config` 最新一条，质量标 `official_snapshot`。
 //! 不做 OAuth 实时拉取（避免误用订阅凭据；后续可单独 opt-in）。
 
-use super::{discover_files, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
+use super::{
+    discover_files, non_empty, timestamp_str_ms, AgentAdapter, JsonlRecords, ParsedScan,
+    ScanDiagnostics, SourceCandidate,
+};
 use crate::domain::{sane_resets_at_ms, ParsedSource, QuotaSample, TokenVector, UsageEvent};
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -22,7 +25,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 pub struct GrokAdapter {
     roots: Vec<PathBuf>,
@@ -121,13 +123,13 @@ impl AgentAdapter for GrokAdapter {
     }
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
-        discover_files(&self.roots, self.id(), cutoff_ms, Some("updates.jsonl"))
+        discover_files(&self.roots, self.id(), cutoff_ms, |path| {
+            path.ends_with("updates.jsonl")
+        })
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let file = File::open(&candidate.path)
-            .with_context(|| format!("failed to open {}", candidate.path.display()))?;
-        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut records = JsonlRecords::<GrokUpdateLine>::open(&candidate.path)?;
 
         let fallback_session = candidate
             .path
@@ -160,25 +162,7 @@ impl AgentAdapter for GrokAdapter {
         let mut diagnostics = ScanDiagnostics::default();
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => {
-                    if track_skipped_lines {
-                        diagnostics.unreadable_lines += 1;
-                    }
-                    continue;
-                }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<GrokUpdateLine>(&line) else {
-                if track_skipped_lines {
-                    diagnostics.malformed_lines += 1;
-                }
-                continue;
-            };
+        for (_, record) in records.by_ref() {
             if record.method.as_deref() != Some("_x.ai/session/update") {
                 continue;
             }
@@ -265,6 +249,7 @@ impl AgentAdapter for GrokAdapter {
                 },
             );
         }
+        records.record_skipped(&mut diagnostics, track_skipped_lines);
 
         let mut events: Vec<UsageEvent> = by_prompt
             .into_values()
@@ -312,10 +297,6 @@ struct PendingUsage {
     tokens: TokenVector,
 }
 
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.filter(|value| !value.is_empty())
-}
-
 fn load_summary(session_dir: Option<&Path>) -> Option<SummaryFile> {
     let path = session_dir?.join("summary.json");
     let text = std::fs::read_to_string(path).ok()?;
@@ -327,7 +308,7 @@ fn load_summary(session_dir: Option<&Path>) -> Option<SummaryFile> {
 /// 根目录由调用点解析（quota.rs 传 `grok_home()`，测试直接传临时目录），
 /// 本函数不读环境变量。`timeout` 仅用于限制读尾部的最长阻塞（本地文件，
 /// 正常远小于此）。
-pub fn fetch_grok_quota_snapshot(root: &Path, _timeout: Duration) -> Result<Vec<QuotaSample>> {
+pub fn fetch_grok_quota_snapshot(root: &Path) -> Result<Vec<QuotaSample>> {
     let path = root.join("logs").join("unified.jsonl");
     if !path.exists() {
         anyhow::bail!("未找到 Grok 用量日志（~/.grok/logs/unified.jsonl）；先运行过 grok 会话后才会有配额快照");
@@ -366,7 +347,8 @@ pub fn fetch_grok_quota_snapshot(root: &Path, _timeout: Duration) -> Result<Vec<
             _ => continue,
         };
         // 缺 ts 的账单行无法定位采集时刻，会被当成"最新"盖掉真正的快照，跳过。
-        let Some(collected_at_ms) = parse_log_ts(value.get("ts").and_then(Value::as_str)) else {
+        let Some(collected_at_ms) = timestamp_str_ms(value.get("ts").and_then(Value::as_str))
+        else {
             continue;
         };
         let period = config.get("currentPeriod");
@@ -384,7 +366,7 @@ pub fn fetch_grok_quota_snapshot(root: &Path, _timeout: Duration) -> Result<Vec<
             .and_then(Value::as_str)
             .or_else(|| config.get("billingPeriodEnd").and_then(Value::as_str));
         let resets_at_ms =
-            parse_log_ts(end).and_then(|ms| sane_resets_at_ms(window_key, ms, collected_at_ms));
+            timestamp_str_ms(end).and_then(|ms| sane_resets_at_ms(window_key, ms, collected_at_ms));
 
         let candidate = LogQuota {
             window_key: window_key.to_owned(),
@@ -420,19 +402,6 @@ struct LogQuota {
     remaining_percent: f64,
     resets_at_ms: Option<i64>,
     collected_at_ms: i64,
-}
-
-fn parse_log_ts(value: Option<&str>) -> Option<i64> {
-    let value = value?;
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
-        .or_else(|| {
-            // 允许无偏移的 ISO 形态
-            chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.fZ")
-                .ok()
-                .map(|dt| dt.timestamp_millis())
-        })
 }
 
 /// 读文件末尾最多 `max_bytes`，避免 unified.jsonl 增长后全量扫描。
@@ -605,7 +574,7 @@ mod tests {
         drop(file);
 
         // 根目录直接传临时目录，不改环境变量：并行测试不会互相干扰。
-        let samples = fetch_grok_quota_snapshot(&dir, Duration::from_secs(1)).unwrap();
+        let samples = fetch_grok_quota_snapshot(&dir).unwrap();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].adapter_id, "grok");
         assert_eq!(samples[0].window_key, "seven_day");
@@ -637,7 +606,7 @@ mod tests {
         .unwrap();
         drop(file);
 
-        let samples = fetch_grok_quota_snapshot(&dir, Duration::from_secs(1)).unwrap();
+        let samples = fetch_grok_quota_snapshot(&dir).unwrap();
         assert_eq!(samples.len(), 1);
         // 90% 用量的无时间戳行被跳过，留下的最新样本是 10% 用量那条。
         assert!((samples[0].remaining_percent - 90.0).abs() < 0.01);

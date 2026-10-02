@@ -2220,7 +2220,6 @@ dependencies = [
  "dirs 6.0.0",
  "gdkx11",
  "gtk",
- "hex",
  "image",
  "libc",
  "objc",

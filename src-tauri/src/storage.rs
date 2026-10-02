@@ -253,7 +253,7 @@ pub fn replace_source(
     delete_orphan_events(&transaction, &previously_observed)?;
 
     for quota in &source.quotas {
-        upsert_quota_tx(&transaction, quota)?;
+        upsert_quota(&transaction, quota)?;
     }
 
     transaction.commit()?;
@@ -462,32 +462,6 @@ fn insert_or_merge_usage_event(
 
 pub fn upsert_quota(connection: &Connection, quota: &QuotaSample) -> Result<()> {
     connection.execute(
-        "INSERT INTO quota_snapshot (
-            adapter_id, window_key, remaining_percent, resets_at_ms,
-            collected_at_ms, quality, source_label
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(adapter_id, window_key) DO UPDATE SET
-            remaining_percent = excluded.remaining_percent,
-            resets_at_ms = excluded.resets_at_ms,
-            collected_at_ms = excluded.collected_at_ms,
-            quality = excluded.quality,
-            source_label = excluded.source_label
-        WHERE excluded.collected_at_ms >= quota_snapshot.collected_at_ms",
-        params![
-            quota.adapter_id,
-            quota.window_key,
-            quota.remaining_percent,
-            quota.resets_at_ms,
-            quota.collected_at_ms,
-            quota.quality,
-            quota.source_label,
-        ],
-    )?;
-    Ok(())
-}
-
-fn upsert_quota_tx(transaction: &Transaction<'_>, quota: &QuotaSample) -> Result<()> {
-    transaction.execute(
         "INSERT INTO quota_snapshot (
             adapter_id, window_key, remaining_percent, resets_at_ms,
             collected_at_ms, quality, source_label
