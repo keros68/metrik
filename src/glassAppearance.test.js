@@ -6,7 +6,6 @@ import {
   glassShellAppearance,
   nextGlassTint,
   resolveGlassMode,
-  resolveWindowsGlassComposition,
 } from "./glassAppearance.js";
 
 test("the user-facing component appearance cycles through exactly three tints", () => {
@@ -16,42 +15,16 @@ test("the user-facing component appearance cycles through exactly three tints", 
   assert.equal(nextGlassTint("off"), "dark");
 });
 
-test("Windows glass keeps one alpha composition mode for every tint", () => {
-  for (const tintStyle of ["dark", "light", "clear"]) {
-    assert.equal(
-      resolveGlassMode({
-        enabled: true,
-        tintStyle,
-        nativeAvailable: false,
-        trueAlphaAvailable: true,
-      }),
-      GLASS_MODES.alpha,
-    );
-  }
-});
-
-test("Windows glass transitions never reset WebView or mutate the native backdrop", () => {
-  for (const state of [
-    { enabled: true, tintStyle: "clear" },
-    { enabled: false, tintStyle: "clear" },
-    { enabled: true, tintStyle: "dark" },
-    { enabled: true, tintStyle: "light" },
-    { enabled: true, tintStyle: "clear" },
-  ]) {
-    const decision = resolveWindowsGlassComposition(state);
-    assert.equal(
-      decision.mode,
-      state.enabled ? GLASS_MODES.alpha : GLASS_MODES.off,
-    );
-    assert.equal(decision.resetWebviewBackground, false);
-    assert.equal(decision.mutateNativeBackdrop, false);
-  }
+test("glass mode is alpha where true alpha exists, CSS otherwise, and off when disabled", () => {
+  assert.equal(resolveGlassMode({ enabled: true, trueAlphaAvailable: true }), GLASS_MODES.alpha);
+  assert.equal(resolveGlassMode({ enabled: true }), GLASS_MODES.css);
+  assert.equal(resolveGlassMode({ enabled: false, trueAlphaAvailable: true }), GLASS_MODES.off);
+  assert.equal(resolveGlassMode({ enabled: false }), GLASS_MODES.off);
 });
 
 test("every Windows tint keeps alpha classes free of the CSS fallback", () => {
   for (const glassTint of ["dark", "light", "clear"]) {
     const appearance = glassShellAppearance("widget", {
-      transparent: true,
       glassMode: GLASS_MODES.alpha,
       glassTint,
     });
@@ -65,7 +38,6 @@ test("every Windows tint keeps alpha classes free of the CSS fallback", () => {
 test("compact and strip clear glass share one true-alpha appearance", () => {
   for (const kind of ["widget", "strip"]) {
     const appearance = glassShellAppearance(kind, {
-      transparent: true,
       glassMode: GLASS_MODES.alpha,
       glassTint: "clear",
       glassAlpha: 0.82,
@@ -90,8 +62,8 @@ test("compact and strip clear glass share one true-alpha appearance", () => {
 });
 
 test("strip orientation is explicit so horizontal and vertical can share material without sharing layout", () => {
-  const horizontal = glassShellAppearance("strip", { transparent: true });
-  const vertical = glassShellAppearance("strip", { transparent: true, vertical: true });
+  const horizontal = glassShellAppearance("strip");
+  const vertical = glassShellAppearance("strip", { vertical: true });
 
   assert.match(horizontal.className, /strip-shell--horizontal/);
   assert.doesNotMatch(horizontal.className, /strip-shell--vertical/);
@@ -102,7 +74,7 @@ test("strip orientation is explicit so horizontal and vertical can share materia
 test("the clear tint pairs each ink colour with the backdrop that can carry it", () => {
   for (const kind of ["widget", "strip"]) {
     const prefix = kind === "widget" ? "widget-shell" : "strip-shell";
-    const base = { transparent: true, glassMode: GLASS_MODES.alpha, glassTint: "clear" };
+    const base = { glassMode: GLASS_MODES.alpha, glassTint: "clear" };
 
     // 深色字 → 白霜，沿用浅色档整套前景。
     const ink = glassShellAppearance(kind, { ...base, glassInk: "dark" });
@@ -120,7 +92,6 @@ test("the clear tint pairs each ink colour with the backdrop that can carry it",
 test("the ink choice only applies to the clear tint", () => {
   for (const glassTint of ["dark", "light"]) {
     const appearance = glassShellAppearance("widget", {
-      transparent: true,
       glassMode: GLASS_MODES.alpha,
       glassTint,
       glassInk: "light",
@@ -131,7 +102,6 @@ test("the ink choice only applies to the clear tint", () => {
 
 test("browser clear fallback keeps the edge interaction without claiming true alpha", () => {
   const appearance = glassShellAppearance("widget", {
-    transparent: true,
     glassMode: GLASS_MODES.css,
     glassTint: "clear",
   });
@@ -144,7 +114,6 @@ test("browser clear fallback keeps the edge interaction without claiming true al
 
 test("macOS ignores a stored Windows clear tint", () => {
   const appearance = glassShellAppearance("widget", {
-    transparent: true,
     glassMode: GLASS_MODES.native,
     glassTint: "clear",
     isMac: true,

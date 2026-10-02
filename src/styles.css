@@ -842,482 +842,6 @@ button:focus-visible {
 
 .widget-shell--transparent .widget-expand:hover { background: rgba(255, 255, 255, 0.22); }
 
-/* ============ macOS 桌面组件：Focus Dial ============
-   320 × 312 固定设计尺寸。原生窗口使用 UnderWindowBackground vibrancy；这里的表面只负责
-   可调 scrim、层次与浅/深桌面的可读性，不模拟系统模糊。 */
-html:has(.desktop-widget-shell),
-html:has(.desktop-widget-shell) body,
-html:has(.desktop-widget-shell) #root {
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: transparent;
-  border-radius: 28px;
-}
-
-.desktop-widget-shell {
-  --desktop-scrim: clamp(0.11, calc((var(--glass-alpha, 0.82) - 0.6) * 1.25 + 0.11), 0.56);
-  display: grid;
-  width: min(320px, 100vw);
-  height: min(312px, 100dvh);
-  grid-template-rows: 42px minmax(0, 1fr);
-  overflow: hidden;
-  color: rgba(255, 255, 255, 0.94);
-  background:
-    radial-gradient(125% 95% at 12% 0%, rgba(130, 169, 225, 0.12), transparent 55%),
-    linear-gradient(160deg, rgb(34 40 52 / calc(var(--desktop-scrim) * 0.92)), rgb(15 18 25 / var(--desktop-scrim)));
-  border-radius: 28px;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
-    inset 0 1px rgba(255, 255, 255, 0.18),
-    0 18px 48px rgba(15, 18, 25, 0.18);
-}
-
-.desktop-widget-shell--glass-css {
-  background:
-    radial-gradient(125% 95% at 12% 0%, rgba(130, 169, 225, 0.12), transparent 55%),
-    linear-gradient(160deg, rgba(35, 41, 54, 0.93), rgba(16, 19, 26, 0.96));
-}
-
-/* 原生模式在最低浓度时完全撤掉 CSS tint，真正的模糊和桌面取色交给
-   NSVisualEffectView(underWindowBackground)。高浓度再连续加回可读性罩层。 */
-.desktop-widget-shell--glass-native {
-  --desktop-native-scrim: calc(
-    clamp(0, calc(var(--glass-alpha, 0) * 0.282), 0.231)
-    + clamp(0, calc((var(--glass-alpha, 0) - 0.82) * 1.064), 0.149)
-  );
-  background: rgb(18 23 30 / var(--desktop-native-scrim));
-  box-shadow:
-    inset 0 0 0 0.75px rgba(255, 255, 255, 0.16),
-    inset 0 1px rgba(255, 255, 255, 0.2);
-}
-
-.desktop-widget-header {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 3px 9px 3px 17px;
-  cursor: move;
-  box-shadow: 0 1px rgba(255, 255, 255, 0.075);
-}
-
-.desktop-widget-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 17px;
-  font-weight: 590;
-  letter-spacing: -0.055em;
-}
-
-.desktop-widget-brand .status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.desktop-widget-refresh {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  color: rgba(255, 255, 255, 0.58);
-  background: transparent;
-  border: 0;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: color 180ms var(--motion), background-color 180ms var(--motion), transform 180ms var(--motion);
-}
-
-.desktop-widget-refresh:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
-.desktop-widget-refresh:active { transform: scale(0.94); }
-.desktop-widget-refresh:disabled { cursor: default; opacity: 0.62; }
-.desktop-widget-refresh:disabled svg { animation: widget-refresh-spin 0.9s linear infinite; }
-
-.desktop-widget-content {
-  display: grid;
-  min-height: 0;
-  grid-template-rows: minmax(0, 1fr) 80px 30px;
-  gap: 4px;
-  padding: 0 13px 8px;
-  transition: opacity 220ms var(--motion);
-}
-
-.desktop-widget-shell.is-loading .desktop-widget-content { opacity: 0.82; }
-
-.desktop-widget-focus {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 174px minmax(0, 1fr);
-  align-items: center;
-}
-
-.desktop-quota-ring {
-  position: relative;
-  width: 150px;
-  height: 128px;
-  margin-left: 1px;
-}
-
-.desktop-quota-ring svg {
-  position: absolute;
-  top: 0;
-  left: 4px;
-  width: 128px;
-  height: 128px;
-  overflow: visible;
-  transform: rotate(132deg);
-}
-
-.desktop-quota-ring circle {
-  fill: none;
-  stroke-linecap: round;
-  stroke-width: 8;
-}
-
-.desktop-quota-ring-track {
-  stroke: rgba(255, 255, 255, 0.14);
-  stroke-dasharray: 86 14;
-}
-
-.desktop-quota-ring-value {
-  stroke: color-mix(in srgb, var(--quota-accent) 82%, #fff);
-  filter: drop-shadow(0 1px 5px color-mix(in srgb, var(--quota-accent) 32%, transparent));
-  transition: stroke-dasharray 700ms var(--motion), opacity 220ms var(--motion);
-}
-
-.desktop-quota-ring.is-stale .desktop-quota-ring-value { opacity: 0.56; }
-
-.desktop-quota-ring-copy {
-  position: absolute;
-  top: 24.5px;
-  left: 4px;
-  display: grid;
-  width: 128px;
-  grid-template-columns: minmax(0, 1fr);
-  justify-items: center;
-  text-align: center;
-}
-
-.desktop-quota-ring-copy > strong {
-  overflow: hidden;
-  width: 100%;
-  font-size: 10.5px;
-  font-weight: 560;
-  line-height: 1.05;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-quota-ring-copy > span {
-  margin-top: 2px;
-  color: rgba(255, 255, 255, 0.56);
-  font-size: 8.5px;
-  line-height: 1.05;
-}
-
-.desktop-quota-ring-copy > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  margin-top: 3px;
-}
-
-/* 数字与百分号作为一个完整读数居中。此前让百分号悬挂虽然能对齐数字主体，
-   但完整的 “95%” 会持续显得右重。 */
-.desktop-quota-ring-copy > div.has-percent { transform: none; }
-
-.desktop-quota-ring-copy em {
-  font-family: "Newsreader", Georgia, serif;
-  font-size: 34px;
-  font-style: normal;
-  font-weight: 400;
-  font-variant-numeric: lining-nums tabular-nums;
-  letter-spacing: -0.06em;
-  line-height: 0.96;
-}
-
-.desktop-quota-ring-copy div small {
-  margin-left: 1px;
-  font-family: "Instrument Serif", Georgia, serif;
-  font-size: 13px;
-}
-
-.desktop-quota-ring-copy p {
-  width: 88px;
-  max-width: 100%;
-  margin: 3px 0 0;
-  overflow: hidden;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 7.5px;
-  line-height: 1.15;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-widget-tokens {
-  display: grid;
-  min-width: 0;
-  align-content: center;
-  justify-items: start;
-  padding-left: 16px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.desktop-widget-tokens .agent-icon {
-  width: 31px;
-  height: 31px;
-  margin: 0 0 8px;
-  border-radius: 10px;
-}
-
-.desktop-widget-tokens > span {
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 9px;
-}
-
-.desktop-widget-tokens > strong {
-  max-width: 118px;
-  margin-top: 2px;
-  overflow: hidden;
-  font-family: "Newsreader", Georgia, serif;
-  font-size: 31px;
-  font-weight: 400;
-  font-variant-numeric: lining-nums tabular-nums;
-  letter-spacing: -0.055em;
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-widget-tokens > small {
-  margin-top: 1px;
-  color: rgba(255, 255, 255, 0.54);
-  font-family: "Instrument Serif", Georgia, serif;
-  font-size: 10px;
-}
-
-.desktop-widget-agents {
-  min-height: 0;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.055);
-  border-radius: 16px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.085), inset 0 1px rgba(255, 255, 255, 0.07);
-}
-
-.desktop-widget-agents button {
-  position: relative;
-  display: grid;
-  width: 100%;
-  height: 40px;
-  grid-template-columns: 3px 31px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  padding: 3px 13px 3px 0;
-  color: rgba(255, 255, 255, 0.9);
-  text-align: left;
-  background: transparent;
-  border: 0;
-  box-shadow: 0 1px rgba(255, 255, 255, 0.07);
-  cursor: pointer;
-  transition: background-color 180ms var(--motion), transform 180ms var(--motion);
-}
-
-.desktop-widget-agents button:last-child { box-shadow: none; }
-.desktop-widget-agents button:hover { background: rgba(255, 255, 255, 0.07); }
-.desktop-widget-agents button:active { transform: scale(0.985); }
-
-.desktop-widget-agents button > i {
-  width: 3px;
-  height: 26px;
-  background: var(--agent-accent);
-  border-radius: 0 3px 3px 0;
-  opacity: 0.35;
-  transform: scaleY(0.46);
-  transition: opacity 180ms var(--motion), transform 180ms var(--motion);
-}
-
-.desktop-widget-agents button.is-selected > i { opacity: 0.95; transform: scaleY(1); }
-
-.desktop-widget-agents .agent-icon {
-  width: 29px;
-  height: 29px;
-  margin: 0;
-  border-radius: 9px;
-}
-
-.desktop-widget-agents button > span {
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 560;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-widget-agents button > em {
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 590;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 3–6 个已选 Agent 在固定的两行高度内完整呈现。 */
-.desktop-widget-agents.is-grid {
-  display: grid;
-  grid-template-rows: repeat(2, 40px);
-}
-
-.desktop-widget-agents.is-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.desktop-widget-agents.is-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-
-.desktop-widget-agents.is-grid button {
-  height: 40px;
-  grid-template-columns: 3px 27px minmax(0, 1fr) auto;
-  gap: 6px;
-  padding-right: 8px;
-  box-shadow:
-    inset -1px 0 rgba(255, 255, 255, 0.07),
-    inset 0 -1px rgba(255, 255, 255, 0.07);
-}
-
-.desktop-widget-agents.is-grid .agent-icon {
-  width: 25px;
-  height: 25px;
-  border-radius: 8px;
-}
-
-.desktop-widget-agents.is-grid button > span { font-size: 10px; }
-.desktop-widget-agents.is-grid button > em { font-size: 9.5px; }
-
-.desktop-widget-agents.is-grid--3 button {
-  grid-template-columns: 3px 22px minmax(0, 1fr);
-  grid-template-rows: 1fr 1fr;
-  gap: 0 5px;
-  padding-right: 5px;
-}
-
-.desktop-widget-agents.is-grid--3 button > i,
-.desktop-widget-agents.is-grid--3 .agent-icon { grid-row: 1 / -1; }
-
-.desktop-widget-agents.is-grid--3 .agent-icon {
-  width: 21px;
-  height: 21px;
-  border-radius: 7px;
-}
-
-.desktop-widget-agents.is-grid--3 button > span {
-  grid-column: 3;
-  grid-row: 1;
-  align-self: end;
-  font-size: 8.5px;
-  line-height: 1;
-}
-
-.desktop-widget-agents.is-grid--3 button > em {
-  grid-column: 3;
-  grid-row: 2;
-  align-self: start;
-  margin-top: 2px;
-  color: currentColor;
-  font-size: 8px;
-  line-height: 1;
-  opacity: 0.68;
-}
-
-.desktop-widget-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.desktop-widget-footer > span {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-widget-footer > span > i {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  background: #70b962;
-  border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(112, 185, 98, 0.08);
-}
-
-.desktop-widget-footer > span.is-warning > i { background: #e0a748; box-shadow: 0 0 0 3px rgba(224, 167, 72, 0.08); }
-
-.desktop-widget-footer button {
-  display: inline-flex;
-  min-height: 26px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  color: rgba(255, 255, 255, 0.74);
-  font-size: 9.5px;
-  background: transparent;
-  border: 0;
-  border-radius: 9px;
-  cursor: pointer;
-  transition: color 180ms var(--motion), background-color 180ms var(--motion), transform 180ms var(--motion);
-}
-
-.desktop-widget-footer button:hover { color: #fff; background: rgba(255, 255, 255, 0.09); }
-.desktop-widget-footer button:active { transform: scale(0.96); }
-
-@media (prefers-color-scheme: light) {
-  .desktop-widget-shell {
-    color: rgba(27, 30, 35, 0.94);
-    background:
-      radial-gradient(125% 95% at 12% 0%, rgb(255 255 255 / calc(var(--desktop-scrim) * 1.22)), transparent 55%),
-      linear-gradient(160deg, rgb(250 251 253 / var(--desktop-scrim)), rgb(228 233 240 / calc(var(--desktop-scrim) * 0.86)));
-    box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.72),
-      inset 0 1px rgba(255, 255, 255, 0.95),
-      0 18px 48px rgba(39, 48, 61, 0.14);
-  }
-
-  .desktop-widget-shell .desktop-widget-header {
-    box-shadow: 0 1px rgba(36, 42, 51, 0.08);
-  }
-  .desktop-widget-shell .desktop-widget-refresh { color: rgba(41, 45, 51, 0.55); }
-  .desktop-widget-shell .desktop-widget-refresh:hover { color: #1f2226; background: rgba(31, 36, 43, 0.065); }
-  .desktop-widget-shell .desktop-quota-ring-track { stroke: rgba(36, 43, 53, 0.1); }
-  .desktop-widget-shell .desktop-quota-ring-copy > span,
-  .desktop-widget-shell .desktop-quota-ring-copy p,
-  .desktop-widget-shell .desktop-widget-tokens > span,
-  .desktop-widget-shell .desktop-widget-tokens > small,
-  .desktop-widget-shell .desktop-widget-footer > span { color: rgba(40, 44, 50, 0.57); }
-  .desktop-widget-shell .desktop-widget-tokens { border-left-color: rgba(36, 42, 51, 0.1); }
-  .desktop-widget-shell .desktop-widget-agents {
-    background: rgba(255, 255, 255, 0.38);
-    box-shadow: inset 0 0 0 1px rgba(36, 42, 51, 0.08), inset 0 1px rgba(255, 255, 255, 0.72);
-  }
-  .desktop-widget-shell .desktop-widget-agents button {
-    color: rgba(27, 30, 35, 0.92);
-    box-shadow: 0 1px rgba(36, 42, 51, 0.075);
-  }
-  .desktop-widget-shell .desktop-widget-agents button:hover { background: rgba(255, 255, 255, 0.46); }
-  .desktop-widget-shell .desktop-widget-footer button { color: rgba(35, 39, 45, 0.65); }
-  .desktop-widget-shell .desktop-widget-footer button:hover { color: #17191d; background: rgba(31, 36, 43, 0.06); }
-  .desktop-widget-shell.desktop-widget-shell--glass-native {
-    background: rgb(248 250 252 / var(--desktop-native-scrim));
-    box-shadow:
-      inset 0 0 0 0.75px rgba(255, 255, 255, 0.74),
-      inset 0 1px rgba(255, 255, 255, 0.86);
-  }
-}
-
 /* ============ 胶囊条（strip 第三形态） ============
    近实心深色玻璃拟态（窗口本身透明，圆角由 CSS 画）；
    不启用原生方形背板，避免从胶囊圆角外露出。 */
@@ -2683,8 +2207,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .nav-button:active,
 .icon-button:active,
 .period-control button:active,
-.agent-row:active,
-.empty-section button:active { transform: scale(0.96); }
+.agent-row:active { transform: scale(0.96); }
 
 .nav-button--active,
 .nav-button--active:hover { color: var(--blue); }
@@ -3295,8 +2818,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
     inset 0 1px rgba(255, 255, 255, 0.94);
 }
 
-.eyebrow { display: block; color: #74767a; font-size: 14px; letter-spacing: -0.01em; }
-
 .quota-groups {
   display: grid;
   gap: 14px;
@@ -3478,18 +2999,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .agent-icon--qoder,
 .agent-icon--deepseek { color: inherit; }
 .agent-icon--grok { color: inherit; }
-
-.agent-monogram {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  place-items: center;
-  color: #fff;
-  font-size: 15px;
-  font-style: normal;
-  font-weight: 620;
-  letter-spacing: 0.01em;
-}
 
 .agent-copy {
   display: grid;
@@ -3741,61 +3250,11 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .privacy-note svg { flex: 0 0 auto; color: var(--green); }
 .privacy-note p { margin: 0; font-size: 12px; line-height: 1.55; text-wrap: pretty; }
 
-.ledger-recovery {
-  margin-top: 18px;
-  padding: 18px;
-  background: rgba(36, 107, 219, 0.035);
-  border-radius: 21px;
-  box-shadow:
-    0 0 0 1px rgba(31, 33, 36, 0.055),
-    inset 0 1px rgba(255, 255, 255, 0.82);
-}
-
-.ledger-recovery-heading {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 13px;
-  align-items: start;
-}
-
-.ledger-recovery-icon {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  color: #5d6065;
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 13px;
-  box-shadow: 0 1px 2px rgba(31, 33, 36, 0.08), inset 0 1px rgba(255, 255, 255, 0.9);
-}
-
-.ledger-recovery h3 {
-  margin: 1px 0 0;
-  color: #2b2d31;
-  font-size: 14px;
-  font-weight: 580;
-  letter-spacing: -0.015em;
-  text-wrap: balance;
-}
-
-.ledger-recovery-heading p,
 .ledger-confirmation p {
   margin: 6px 0 0;
   color: #74767a;
   font-size: 11px;
   line-height: 1.55;
-  text-wrap: pretty;
-}
-
-.ledger-demo-note {
-  margin: 14px 0 0;
-  padding: 10px 12px;
-  color: #7d611f;
-  font-size: 11px;
-  line-height: 1.5;
-  background: rgba(199, 147, 50, 0.1);
-  border-radius: 12px;
-  box-shadow: inset 0 0 0 1px rgba(199, 147, 50, 0.08);
   text-wrap: pretty;
 }
 
@@ -3827,17 +3286,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   cursor: wait;
   opacity: 0.62;
 }
-
-.ledger-button--rebuild {
-  display: inline-flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 15px;
-}
-
-.ledger-button--busy svg { animation: ledger-spin 1.2s linear infinite; }
 
 .ledger-confirmation {
   margin-top: 15px;
@@ -3872,18 +3320,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   background: #181a1d;
   box-shadow: 0 3px 10px rgba(31, 33, 36, 0.18);
 }
-
-.ledger-rebuild-status {
-  margin: 12px 1px 0;
-  color: #6c6f73;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-  text-wrap: pretty;
-}
-
-.ledger-rebuild-status--success { color: #4a7a43; }
-.ledger-rebuild-status--error { color: #a1573d; }
 
 .settings-section {
   grid-column: 2 / 4;
@@ -3975,8 +3411,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 }
 
 /* 行内元素在窄列里不许撑破列宽，否则 auto-fit 退回单列。 */
-.settings-agent-toggle li { min-width: 0; }
-.settings-agent-toggle label { min-width: 0; }
 .settings-agent-toggle label > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4057,50 +3491,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 }
 
 .desktop-widget-setting h2 { margin-bottom: 8px; }
-
-.desktop-widget-setting-toggle {
-  display: inline-flex;
-  min-height: 38px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 9px;
-  padding: 0 13px 0 8px;
-  color: #55575b;
-  font-size: 12px;
-  font-weight: 560;
-  background: rgba(255, 255, 255, 0.72);
-  border: 0;
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgba(31, 33, 36, 0.08), 0 0 0 1px rgba(31, 33, 36, 0.065);
-  cursor: pointer;
-  transition: color 180ms var(--motion), background-color 180ms var(--motion), transform 180ms var(--motion);
-}
-
-.desktop-widget-setting-toggle > span {
-  position: relative;
-  width: 28px;
-  height: 17px;
-  background: rgba(31, 33, 36, 0.16);
-  border-radius: 999px;
-  transition: background-color 180ms var(--motion);
-}
-
-.desktop-widget-setting-toggle > span > i {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 11px;
-  height: 11px;
-  background: #fff;
-  border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(31, 33, 36, 0.22);
-  transition: transform 180ms var(--motion);
-}
-
-.desktop-widget-setting-toggle.is-enabled { color: #245fbd; background: rgba(36, 107, 219, 0.085); }
-.desktop-widget-setting-toggle.is-enabled > span { background: var(--blue); }
-.desktop-widget-setting-toggle.is-enabled > span > i { transform: translateX(11px); }
-.desktop-widget-setting-toggle:active { transform: scale(0.97); }
 
 .desktop-widget-native-badge {
   flex: 0 0 auto;
@@ -4258,6 +3648,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
   margin: 0;
   padding: 9px 12px;
   font-size: 13.5px;
@@ -4287,6 +3678,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .settings-agent-toggle li > label { flex: 1; }
@@ -4379,8 +3771,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   padding: 13px 4px;
   box-shadow: 0 1px rgba(31, 33, 36, 0.07);
 }
-
-.session-row > em { text-align: right; }
 
 /* 固定列宽 + 内容左对齐：多行芯片左缘齐平。 */
 .session-id-chip {
@@ -4815,6 +4205,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   font-style: normal;
   font-weight: 580;
   font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -5124,53 +4515,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .donut-total { fill: #17181a; font-family: "Newsreader", Georgia, serif; font-size: 26px; }
 .donut-caption { fill: #83858a; font-size: 10px; }
 
-.empty-section {
-  grid-column: 2 / 4;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 100dvh;
-  padding: 64px;
-  text-align: center;
-}
-
-.empty-section > span {
-  display: grid;
-  width: 64px;
-  height: 64px;
-  place-items: center;
-  color: var(--blue);
-  background: rgba(36, 107, 219, 0.07);
-  border-radius: 21px;
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.8);
-}
-
-.empty-section h1 { margin: 22px 0 0; font-size: 30px; letter-spacing: -0.04em; }
-
-.empty-section p {
-  max-width: 450px;
-  margin: 13px 0 0;
-  color: #75777b;
-  font-size: 14px;
-  line-height: 1.6;
-  text-wrap: pretty;
-}
-
-.empty-section button {
-  min-height: 42px;
-  margin-top: 24px;
-  padding: 0 20px;
-  color: #fff;
-  background: #242529;
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-  transition-property: transform, background-color;
-  transition-duration: 260ms;
-  transition-timing-function: var(--motion);
-}
-
 /* 后台刷新不再调暗整页（否则像蒙了层灰膜）；
    加载状态由侧栏状态点与"正在更新"文案指示。 */
 
@@ -5190,8 +4534,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   from { opacity: 0.45; transform: scale(0.85); }
   to { opacity: 1; transform: scale(1); }
 }
-
-@keyframes ledger-spin { to { transform: rotate(-360deg); } }
 
 @media (max-width: 1120px) {
   .app-shell { grid-template-columns: 92px minmax(0, 1fr) 350px; }
@@ -5227,13 +4569,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
     min-height: calc(100dvh - 96px);
     padding: 35px 25px 20px;
   }
-  .quota-track { margin-top: 18px; }
-  .secondary-quota { margin-top: 15px; padding: 12px 14px 11px; }
-  .secondary-quota-head strong { font-size: 24px; }
-  .secondary-quota > small { margin-top: 7px; }
-  .reset-row { min-height: 106px; margin-top: 17px; padding-block: 18px; }
-  .reset-row > div { gap: 17px; }
-  .reset-row strong { font-size: 30px; }
   .agent-list { margin-top: 14px; }
   .agent-row { min-height: 91px; }
   .traceability { padding-top: 17px; }
@@ -5284,7 +4619,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   .chart-legend { flex-wrap: wrap; margin-left: 0; }
   .inspector-zone { padding: 0 16px 32px; }
   .inspector { min-height: 650px; }
-  .empty-section { min-height: calc(100dvh - 72px); padding: 36px 20px; }
 }
 
 @media (max-width: 520px) {
@@ -5604,7 +4938,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
     0 20px 56px rgba(0, 0, 0, 0.5),
     inset 0 1px rgba(255, 255, 255, 0.045);
 }
-:root[data-theme="dark"] .eyebrow { color: var(--d-muted); }
 :root[data-theme="dark"] .quota-group {
   background: var(--d-card);
   box-shadow: var(--d-card-shadow);
@@ -5693,23 +5026,7 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 }
 
 /* --- 账本重建卡 --- */
-:root[data-theme="dark"] .ledger-recovery {
-  background: rgba(111, 155, 240, 0.06);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px rgba(255, 255, 255, 0.04);
-}
-:root[data-theme="dark"] .ledger-recovery-icon {
-  color: var(--d-ink-3);
-  background: var(--d-raised);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 1px rgba(255, 255, 255, 0.05);
-}
-:root[data-theme="dark"] .ledger-recovery h3 { color: var(--d-ink-2); }
-:root[data-theme="dark"] .ledger-recovery-heading p,
 :root[data-theme="dark"] .ledger-confirmation p { color: var(--d-muted); }
-:root[data-theme="dark"] .ledger-demo-note {
-  color: #e0c67c;
-  background: rgba(220, 166, 72, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(220, 166, 72, 0.14);
-}
 :root[data-theme="dark"] .ledger-button {
   color: var(--d-ink-2);
   background: var(--d-raised);
@@ -5735,9 +5052,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 :root[data-theme="dark"] .ledger-confirmation strong { color: var(--d-ink-2); }
-:root[data-theme="dark"] .ledger-rebuild-status { color: var(--d-muted); }
-:root[data-theme="dark"] .ledger-rebuild-status--success { color: #83c471; }
-:root[data-theme="dark"] .ledger-rebuild-status--error { color: #e6906f; }
 
 /* --- 设置页 --- */
 :root[data-theme="dark"] .settings-header p { color: var(--d-muted); }
@@ -5786,14 +5100,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   background: var(--d-raised);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
-:root[data-theme="dark"] .desktop-widget-setting-toggle {
-  color: var(--d-ink-3);
-  background: var(--d-raised);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-:root[data-theme="dark"] .desktop-widget-setting-toggle > span { background: rgba(255, 255, 255, 0.2); }
-:root[data-theme="dark"] .desktop-widget-setting-toggle.is-enabled { color: #9ec1f5; background: rgba(74, 132, 222, 0.15); }
-:root[data-theme="dark"] .desktop-widget-setting-toggle.is-enabled > span { background: #4f86dd; }
 :root[data-theme="dark"] .settings-agent-move {
   color: var(--d-ink-2);
   background: var(--d-raised);
@@ -5943,24 +5249,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 :root[data-theme="dark"] .trend-label { fill: var(--d-faint); stroke: var(--d-card); }
 :root[data-theme="dark"] .donut-total { fill: var(--d-strong); }
 :root[data-theme="dark"] .donut-caption { fill: var(--d-faint); }
-
-/* --- 历史索引横幅 --- */
-:root[data-theme="dark"] .indexing-banner {
-  border-color: var(--d-hairline);
-  background: var(--d-raised);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  color: var(--d-muted);
-}
-:root[data-theme="dark"] .indexing-banner strong { color: var(--d-strong); }
-
-/* --- 空状态 --- */
-:root[data-theme="dark"] .empty-section > span {
-  color: var(--blue);
-  background: rgba(111, 155, 240, 0.12);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.06);
-}
-:root[data-theme="dark"] .empty-section p { color: var(--d-muted); }
-:root[data-theme="dark"] .empty-section button { color: #fff; background: #3a63c9; }
 
 /* --- 展开窗口自绘按钮条与刷新按钮（仅 Windows；macOS 完整视图用原生标题栏） --- */
 :root[data-theme="dark"] .expanded-refresh {

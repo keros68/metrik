@@ -5,9 +5,10 @@ import "@fontsource/instrument-serif/400.css";
 import "@fontsource/newsreader/400.css";
 import "uplot/dist/uPlot.min.css";
 import { App } from "./App.jsx";
+import { isDesktop } from "./platformDetection.js";
 import "./styles.css";
 
-document.documentElement.dataset.runtime = window.__TAURI_INTERNALS__ ? "desktop" : "browser";
+document.documentElement.dataset.runtime = isDesktop() ? "desktop" : "browser";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>

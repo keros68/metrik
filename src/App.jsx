@@ -49,6 +49,7 @@ import workbuddyAppIcon from "./assets/workbuddy-app-icon.png";
 import zcodeAppIcon from "./assets/zcode-app-icon.png";
 import { glassShellAppearance, nextGlassTint, resolveGlassMode } from "./glassAppearance.js";
 import { modelDisplayName } from "./modelNames.js";
+import { compactTokens } from "./tokenFormat.js";
 import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 import { agentPalette } from "./agentColors.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
@@ -372,14 +373,6 @@ function statusDotTitle(loading, loadError) {
   return loading ? "正在更新数据…" : "数据正常";
 }
 
-// 位数自适应：数值越大小数越少，保证任何量级都不超过 4 个有效字符
-// （紧凑态 41px 大字的容器只有约 5 字符宽）。
-function scaledUnit(amount, divisor, unit) {
-  const value = amount / divisor;
-  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(decimals).replace(/\.0+$/, "")}${unit}`;
-}
-
 // 小组件窗口高度跟随 Agent 行数。内容自然高 = 各行 getBoundingClientRect
 // 实测之和（行高固定 52px，见 styles.css 的 .widget-agent-list grid-auto-rows）；
 // 非列表部分（标题栏/双块/页脚/间距）也是实测（shell.clientHeight - list.clientHeight）。
@@ -389,15 +382,6 @@ const COMPACT_LIST_MIN_HEIGHT = 52;
 // 卡片窗口高度下限：非列表实测部分约 208px + 单行 52px，留少量余量取 260，
 // 与 windowClient 的 WINDOW_SIZES.compact.minHeight 一致。
 const COMPACT_MIN_WINDOW_HEIGHT = 260;
-
-function compactTokens(value) {
-  const amount = Number(value || 0);
-  // 阈值取 999.5 个单位，避免四舍五入出现 "1000M" 这类五位结果。
-  if (amount >= 999_500_000) return scaledUnit(amount, 1_000_000_000, "B");
-  if (amount >= 999_500) return scaledUnit(amount, 1_000_000, "M");
-  if (amount >= 1_000) return scaledUnit(amount, 1_000, "K");
-  return amount.toLocaleString("zh-CN");
-}
 
 function exactTokens(value) {
   return Number(value || 0).toLocaleString("zh-CN");
@@ -989,11 +973,7 @@ function AgentMark({ agentId }) {
   const meta = AGENT_META[agentId];
   return (
     <span className={`agent-icon ${meta.iconClass}`} aria-hidden="true">
-      {meta.iconSrc ? (
-        <img src={meta.iconSrc} alt="" draggable="false" />
-      ) : (
-        <i className="agent-monogram" style={{ backgroundColor: meta.accent }}>{meta.monogram}</i>
-      )}
+      <img src={meta.iconSrc} alt="" draggable="false" />
     </span>
   );
 }
@@ -1176,7 +1156,7 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
   );
 }
 
-function WindowActions({ mode, pinned, transparent = false, glassTint = "dark", macMinimal = false, theme, darkTheme, onThemeChange, onToggleMode, onTogglePinned, onToggleTransparent }) {
+function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, theme, darkTheme, onThemeChange, onToggleMode, onTogglePinned, onToggleTransparent }) {
   const glassName = (id) =>
     GLASS_TINT_OPTIONS.find((option) => option.id === id)?.label || "深色";
   const glassCurrent = normalizeGlassTint(glassTint);
@@ -1221,12 +1201,12 @@ function WindowActions({ mode, pinned, transparent = false, glassTint = "dark", 
       {mode === "compact" && !macMinimal && (
         <button
           type="button"
-          className={`window-action ${transparent ? "window-action--active" : ""}`}
+          className="window-action window-action--active"
           onClick={onToggleTransparent}
           aria-label={`外观：${glassLabel}`}
           title={`外观：${glassLabel}`}
         >
-          <CircleHalfTilt size={16} weight={transparent ? "fill" : "light"} aria-hidden="true" />
+          <CircleHalfTilt size={16} weight="fill" aria-hidden="true" />
         </button>
       )}
       {!macMinimal && mode !== "expanded" && (
@@ -1310,7 +1290,6 @@ function StripBar({
   agents,
   pinned,
   loading,
-  transparent,
   glassAlpha = 0.82,
   glassMode = "css",
   glassTint = "dark",
@@ -1330,7 +1309,7 @@ function StripBar({
   }));
   const vertical = orientation === "vertical";
   // 透明档的真实桌面背景变化很大，控制图标加粗以稳定识别。
-  const buttonWeight = transparent && glassTint === "clear" ? "bold" : "regular";
+  const buttonWeight = glassTint === "clear" ? "bold" : "regular";
   const shellRef = useRef(null);
   const railRef = useRef(null);
   const detailCardRef = useRef(null);
@@ -1389,7 +1368,6 @@ function StripBar({
     return () => { stop.then((unlisten) => unlisten?.()); };
   }, []);
   const shellAppearance = glassShellAppearance("strip", {
-    transparent,
     glassMode,
     glassTint,
     glassInk,
@@ -1781,7 +1759,6 @@ function CompactWidget({
   visibleTokens,
   loading,
   pinned,
-  transparent,
   glassMode = "css",
   glassTint = "dark",
   glassInk = "dark",
@@ -1919,7 +1896,6 @@ function CompactWidget({
   const partial = snapshotIsPartial(snapshot);
   const sourceStatus = sourceStatusCopy(snapshot, loading, partial);
   const shellAppearance = glassShellAppearance("widget", {
-    transparent,
     glassMode,
     glassTint,
     glassInk,
@@ -1970,7 +1946,6 @@ function CompactWidget({
           <WindowActions
             mode="compact"
             pinned={pinned}
-            transparent={transparent}
             glassTint={glassTint}
             macMinimal={IS_MAC}
             onToggleMode={onExpand}
@@ -2343,14 +2318,26 @@ function formatSyncTime(ms) {
   return value.toLocaleString("zh-CN", { hour12: false });
 }
 
-function ClaudeHookCard({ onSnapshotRefresh }) {
+// 官方配额的 statusLine 钩子：只提取额度窗口，不碰对话与凭据。Antigravity
+// CLI（agy）内嵌 language server 的 csrf 只在进程内部，外部无法直连，官方口子
+// 同样是 statusLine 钩子（会话 JSON 经 stdin 推给命令）。
+function HookCard({
+  title,
+  description,
+  getStatus,
+  setHook,
+  installedMessage,
+  waitingLabel,
+  onSnapshotRefresh,
+  children,
+}) {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    getClaudeHookStatus()
+    getStatus()
       .then((value) => {
         if (!cancelled) setStatus(value);
       })
@@ -2360,19 +2347,17 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getStatus]);
 
   const toggle = async (enabled) => {
     setBusy(true);
     setFeedback(null);
     try {
-      const next = await setClaudeHook(enabled);
+      const next = await setHook(enabled);
       setStatus(next);
       setFeedback({
         tone: "success",
-        message: enabled
-          ? "钩子已安装。下次 Claude Code 刷新状态栏后，此处显示官方 5h/7d 剩余额度。"
-          : "钩子已卸载，statusLine 设置已恢复。",
+        message: enabled ? installedMessage : "钩子已卸载，statusLine 设置已恢复。",
       });
       onSnapshotRefresh();
     } catch (error) {
@@ -2384,11 +2369,8 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-card">
-      <h2>Claude Code 官方配额</h2>
-      <p className="settings-muted">
-        安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。
-        已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。
-      </p>
+      <h2>{title}</h2>
+      <p className="settings-muted">{description}</p>
       {status?.demo ? (
         <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
       ) : status && (
@@ -2411,7 +2393,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
                   ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
                       status.lastDataAtMs
                         ? `${status.stale ? "数据已过期" : "最近数据"} ${formatSyncTime(status.lastDataAtMs)}`
-                        : "等待 Claude Code 下次刷新状态栏"
+                        : waitingLabel
                     }`
                   : status.conflict
                     ? "未安装 · 现有 statusLine 缺少 command 字段，无法串联"
@@ -2431,103 +2413,7 @@ function ClaudeHookCard({ onSnapshotRefresh }) {
           {feedback.message}
         </p>
       )}
-      <ClaudeOauthBlock onSnapshotRefresh={onSnapshotRefresh} />
-    </div>
-  );
-}
-
-// Antigravity CLI（agy）官方配额：CLI 内嵌 language server 的 csrf 只在进程
-// 内部，外部无法直连；官方口子是 statusLine 钩子（会话 JSON 经 stdin 推给
-// 命令）。与 Claude 钩子同一模式：只提取额度窗口，不碰对话与凭据。
-function AntigravityHookCard({ onSnapshotRefresh }) {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getAntigravityHookStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "钩子状态读取失败。" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const toggle = async (enabled) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await setAntigravityHook(enabled);
-      setStatus(next);
-      setFeedback({
-        tone: "success",
-        message: enabled
-          ? "钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"
-          : "钩子已卸载，statusLine 设置已恢复。",
-      });
-      onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="settings-card">
-      <h2>Antigravity CLI 官方配额</h2>
-      <p className="settings-muted">
-        仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子
-        （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留；
-        卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。
-      </p>
-      {status?.demo ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
-      ) : status && (
-        <>
-          <div className="settings-directory-row">
-            <button
-              type="button"
-              className={`ledger-button ${status.installed ? "ledger-button--secondary" : "ledger-button--primary"}`}
-              disabled={busy || (!status.installed && status.conflict)}
-              onClick={() => toggle(!status.installed)}
-            >
-              {status.installed ? "卸载钩子" : status.replaced ? "重新串联" : "安装钩子"}
-            </button>
-          </div>
-          <dl className="settings-status">
-            <div>
-              <dt>状态</dt>
-              <dd>
-                {status.installed
-                  ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
-                      status.lastDataAtMs
-                        ? `${status.stale ? "数据已过期" : "最近数据"} ${formatSyncTime(status.lastDataAtMs)}`
-                        : "等待 Antigravity CLI 下次刷新状态"
-                    }`
-                  : status.conflict
-                    ? "未安装 · 现有 statusLine 缺少 command 字段，无法串联"
-                    : status.replaced
-                      ? "已被其他 statusLine 替换 · 可重新串联当前命令"
-                    : "未安装"}
-              </dd>
-            </div>
-          </dl>
-        </>
-      )}
-      {feedback && (
-        <p
-          className={`settings-feedback settings-feedback--${feedback.tone}`}
-          role={feedback.tone === "error" ? "alert" : "status"}
-        >
-          {feedback.message}
-        </p>
-      )}
+      {children}
     </div>
   );
 }
@@ -3554,8 +3440,37 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         )}
         {activeTab.id === "sources" && (
           <>
-            <ClaudeHookCard onSnapshotRefresh={onSnapshotRefresh} />
-            <AntigravityHookCard onSnapshotRefresh={onSnapshotRefresh} />
+            <HookCard
+              title="Claude Code 官方配额"
+              description={
+                <>
+                  安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。
+                  已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。
+                </>
+              }
+              getStatus={getClaudeHookStatus}
+              setHook={setClaudeHook}
+              installedMessage="钩子已安装。下次 Claude Code 刷新状态栏后，此处显示官方 5h/7d 剩余额度。"
+              waitingLabel="等待 Claude Code 下次刷新状态栏"
+              onSnapshotRefresh={onSnapshotRefresh}
+            >
+              <ClaudeOauthBlock onSnapshotRefresh={onSnapshotRefresh} />
+            </HookCard>
+            <HookCard
+              title="Antigravity CLI 官方配额"
+              description={
+                <>
+                  仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子
+                  （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留；
+                  卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。
+                </>
+              }
+              getStatus={getAntigravityHookStatus}
+              setHook={setAntigravityHook}
+              installedMessage="钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"
+              waitingLabel="等待 Antigravity CLI 下次刷新状态"
+              onSnapshotRefresh={onSnapshotRefresh}
+            />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
             <CursorUsageCard onSnapshotRefresh={onSnapshotRefresh} />
             <CodexCreditsCard />
@@ -3721,6 +3636,11 @@ function csvEscape(value) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+// 带 BOM，Excel 才能正确识别 UTF-8。
+function toCsv(header, rows) {
+  return `﻿${[header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n")}`;
+}
+
 // 导出只含账本本就存储的统计字段，与隐私边界一致。
 function buildSessionsCsv(sessions) {
   const header = ["date", "start", "end", "agent", "model", "project", "project_path", "tokens", "input_uncached", "cache_read", "cache_write", "output", "estimated_usd", "events", "session_id"];
@@ -3741,8 +3661,7 @@ function buildSessionsCsv(sessions) {
     session.eventCount,
     session.sessionId,
   ]);
-  // 带 BOM，Excel 才能正确识别 UTF-8。
-  return `﻿${[header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n")}`;
+  return toCsv(header, rows);
 }
 
 async function saveCsv(fileName, csv) {
@@ -3886,7 +3805,7 @@ function buildProjectsCsv(projects) {
     project.eventCount,
     new Date(project.lastMs).toLocaleString("sv-SE"),
   ]);
-  return `﻿${[header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n")}`;
+  return toCsv(header, rows);
 }
 
 async function exportProjectsCsv(projects) {
@@ -3902,23 +3821,39 @@ function ProjectShareDonut({ projects, colorByPath, onOpen }) {
   const total = projects.reduce((sum, project) => sum + project.tokens, 0) || 1;
   const top = projects.slice(0, PROJECT_COLOR_COUNT);
   const otherTokens = projects.slice(PROJECT_COLOR_COUNT).reduce((sum, project) => sum + project.tokens, 0);
+  const segment = (key, label, tokens, color, onClick) => ({
+    key,
+    tokens,
+    color,
+    className: onClick ? "project-donut-segment" : undefined,
+    onClick,
+    title: `${label} · ${compactTokens(tokens)} · ${((tokens / total) * 100).toFixed(1)}%`,
+  });
   const segments = [
-    ...top.map((project) => ({
-      key: project.path,
-      label: project.label,
-      tokens: project.tokens,
-      color: colorByPath.get(project.path),
-      selectable: true,
-    })),
-    ...(otherTokens > 0
-      ? [{ key: "__other", label: "其他", tokens: otherTokens, color: "var(--viz-other)", selectable: false }]
-      : []),
+    ...top.map((project) =>
+      segment(project.path, project.label, project.tokens, colorByPath.get(project.path), () => onOpen(project.path)),
+    ),
+    ...(otherTokens > 0 ? [segment("__other", "其他", otherTokens, "var(--viz-other)")] : []),
   ];
+  return (
+    <ShareDonut
+      className="project-donut"
+      ariaLabel="项目用量占比环形图"
+      segments={segments}
+      total={total}
+      centerTokens={total}
+      caption="tokens"
+    />
+  );
+}
+
+// 占比环形图：段间留白 2.5，从 12 点方向顺时针排列。
+function ShareDonut({ className, ariaLabel, segments, total, centerTokens, caption }) {
   const radius = 74;
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   return (
-    <svg className="project-donut" viewBox="0 0 200 200" role="img" aria-label="项目用量占比环形图">
+    <svg className={className} viewBox="0 0 200 200" role="img" aria-label={ariaLabel}>
       {segments.map((segment) => {
         const dash = (segment.tokens / total) * circumference;
         const rendered = (
@@ -3933,10 +3868,10 @@ function ProjectShareDonut({ projects, colorByPath, onOpen }) {
             strokeDasharray={`${Math.max(0, dash - 2.5)} ${circumference - Math.max(0, dash - 2.5)}`}
             strokeDashoffset={-offset}
             transform="rotate(-90 100 100)"
-            className={segment.selectable ? "project-donut-segment" : undefined}
-            onClick={segment.selectable ? () => onOpen(segment.key) : undefined}
+            className={segment.className}
+            onClick={segment.onClick}
           >
-            <title>{`${segment.label} · ${compactTokens(segment.tokens)} · ${((segment.tokens / total) * 100).toFixed(1)}%`}</title>
+            {segment.title && <title>{segment.title}</title>}
           </circle>
         );
         offset += dash;
@@ -3944,8 +3879,8 @@ function ProjectShareDonut({ projects, colorByPath, onOpen }) {
       })}
       {/* 两行合起来在环心居中：基线放 96/114 时墨迹只到 77.4~114（数字与
           "tokens" 都没有下伸部），视觉中心落在 95.7，整体偏高约 4px。 */}
-      <text x="100" y="100" textAnchor="middle" className="donut-total">{compactTokens(total)}</text>
-      <text x="100" y="118" textAnchor="middle" className="donut-caption">tokens</text>
+      <text x="100" y="100" textAnchor="middle" className="donut-total">{compactTokens(centerTokens)}</text>
+      <text x="100" y="118" textAnchor="middle" className="donut-caption">{caption}</text>
     </svg>
   );
 }
@@ -4137,6 +4072,21 @@ ${session.sessionId}`}
     </section>
   ));
 
+  const noteBanner = note && (
+    <p className="usage-note" role="status">
+      {note.text}
+      {note.undo && (
+        <button
+          type="button"
+          disabled={rulesBusy}
+          onClick={() => { setNote(null); note.undo(); }}
+        >
+          撤销
+        </button>
+      )}
+    </p>
+  );
+
   // ── 项目详情视图 ──
   if (detail) {
     const detailMeta = detail.type === "project"
@@ -4197,20 +4147,7 @@ ${session.sessionId}`}
           </button>
         </div>
 
-        {note && (
-        <p className="usage-note" role="status">
-          {note.text}
-          {note.undo && (
-            <button
-              type="button"
-              disabled={rulesBusy}
-              onClick={() => { setNote(null); note.undo(); }}
-            >
-              撤销
-            </button>
-          )}
-        </p>
-      )}
+        {noteBanner}
         {groups.length === 0 && <p className="settings-muted">本周期内暂无可显示的会话。</p>}
         {groups.length > 0 && <div className="report-card session-board">{renderSessionRows(groups)}</div>}
       </main>
@@ -4272,20 +4209,7 @@ ${session.sessionId}`}
         </button>
       </div>
 
-      {note && (
-        <p className="usage-note" role="status">
-          {note.text}
-          {note.undo && (
-            <button
-              type="button"
-              disabled={rulesBusy}
-              onClick={() => { setNote(null); note.undo(); }}
-            >
-              撤销
-            </button>
-          )}
-        </p>
-      )}
+      {noteBanner}
 
       {rulesOpen && (
         <ProjectRulesCard
@@ -4627,36 +4551,19 @@ function ReportShareDonut({ agents, totalTokens, weeksCount }) {
     return <p className="settings-muted">所选时间段内暂无已索引的用量。</p>;
   }
   const total = rows.reduce((sum, agent) => sum + agent.tokens, 0) || 1;
-  const radius = 74;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
   return (
     <div className="report-donut">
-      <svg viewBox="0 0 200 200" role="img" aria-label={`近 ${weeksCount} 周内各 Agent 用量占比环形图`}>
-        {rows.map((agent) => {
-          const fraction = agent.tokens / total;
-          const dash = fraction * circumference;
-          const segment = (
-            <circle
-              key={agent.id}
-              cx="100"
-              cy="100"
-              r={radius}
-              fill="none"
-              stroke={AGENT_META[agent.id]?.accent || "#74767a"}
-              strokeWidth="21"
-              strokeDasharray={`${Math.max(0, dash - 2.5)} ${circumference - Math.max(0, dash - 2.5)}`}
-              strokeDashoffset={-offset}
-              transform="rotate(-90 100 100)"
-            />
-          );
-          offset += dash;
-          return segment;
-        })}
-        {/* 基线与项目环形保持一致，见 ProjectShareDonut 的说明。 */}
-        <text x="100" y="100" textAnchor="middle" className="donut-total">{compactTokens(totalTokens)}</text>
-        <text x="100" y="118" textAnchor="middle" className="donut-caption">{`tokens · 近 ${weeksCount} 周`}</text>
-      </svg>
+      <ShareDonut
+        ariaLabel={`近 ${weeksCount} 周内各 Agent 用量占比环形图`}
+        segments={rows.map((agent) => ({
+          key: agent.id,
+          tokens: agent.tokens,
+          color: AGENT_META[agent.id]?.accent || "#74767a",
+        }))}
+        total={total}
+        centerTokens={totalTokens}
+        caption={`tokens · 近 ${weeksCount} 周`}
+      />
       <ul className="comp-legend">
         {rows.map((agent) => (
           <li key={agent.id}>
@@ -4942,19 +4849,6 @@ function ReportsSection({ report }) {
   );
 }
 
-function EmptySection({ section, onReturn }) {
-  const item = NAV_ITEMS.find((entry) => entry.id === section);
-  const Icon = item?.icon || ChartLineUp;
-  return (
-    <main className="empty-section">
-      <span><Icon size={30} weight="light" /></span>
-      <h1>{item?.label || "功能"}</h1>
-      <p>该功能将在后续版本提供。</p>
-      <button type="button" onClick={onReturn}>返回概览</button>
-    </main>
-  );
-}
-
 function initialWindowMode() {
   if (typeof window === "undefined") return "compact";
   if (new URLSearchParams(window.location.search).get("view") === "expanded") return "expanded";
@@ -5003,9 +4897,6 @@ export function App() {
     setPinnedHoverOpacity(value);
     localStorage.setItem("metrik:pinnedHoverOpacity", String(value));
   }, []);
-  // 卡片与胶囊固定使用玻璃材质，用户只在深色、浅色和透明三种外观间选择。
-  // expanded 仍通过 viewMode 单独关闭玻璃绘制。
-  const transparent = true;
   // 胶囊条方向：横条 / 竖条，用户手动选，记住选择。
   const [stripOrientation, setStripOrientation] = useState(() =>
     localStorage.getItem("metrik:stripOrientation") === "vertical" ? "vertical" : "horizontal",
@@ -5337,24 +5228,20 @@ export function App() {
     };
   }, []);
 
+  // 卡片与胶囊固定使用玻璃材质，用户只在深色、浅色和透明三种外观间选择；
+  // 只有 expanded 关闭玻璃绘制。
   // Windows 小组件终身保持创建期透明窗口，不在运行时切换 DWM backdrop。
   // 桌面端初始直接选 alpha，避免 WebView 背景确认前闪一帧 CSS fallback。
   const [glassMode, setGlassMode] = useState(() =>
     resolveGlassMode({
-      enabled: transparent && viewMode !== "expanded",
-      tintStyle: glassTint,
-      nativeAvailable: false,
+      enabled: viewMode !== "expanded",
       trueAlphaAvailable: isDesktop() && isWindowsPlatform(),
     }),
   );
   useEffect(() => {
     let cancelled = false;
     const apply = () => {
-      setWindowGlass(
-        transparent && viewMode !== "expanded",
-        viewMode === "strip" ? 20 : 14,
-        glassTint,
-      )
+      setWindowGlass(viewMode !== "expanded", viewMode === "strip" ? 20 : 14)
         .then((mode) => {
           if (!cancelled) setGlassMode(mode);
         })
@@ -5362,9 +5249,7 @@ export function App() {
           console.warn("Unable to update the desktop window.", error);
           if (!cancelled) {
             setGlassMode(resolveGlassMode({
-              enabled: transparent && viewMode !== "expanded",
-              tintStyle: glassTint,
-              nativeAvailable: false,
+              enabled: viewMode !== "expanded",
               trueAlphaAvailable: isDesktop() && isWindowsPlatform(),
             }));
           }
@@ -5377,7 +5262,7 @@ export function App() {
       cancelled = true;
       media?.removeEventListener?.("change", apply);
     };
-  }, [transparent, viewMode, glassTint]);
+  }, [viewMode]);
 
   // 深色档的 0.55 下限是白色文字的可读下限，不是历史补偿：白字压在 0.55 深底
   // 上、透出亮壁纸时对比度 4.2:1，降到 0.22 就只剩 1.9:1。浅色档同理。
@@ -5883,7 +5768,6 @@ export function App() {
           agents={stripAgents}
           pinned={pinned}
           loading={appBusy}
-          transparent={transparent}
           glassAlpha={shellGlassAlpha}
           glassMode={glassMode}
           glassTint={glassTint}
@@ -5910,7 +5794,6 @@ export function App() {
           visibleTokens={visibleTokens}
           loading={appBusy}
           pinned={pinned}
-          transparent={transparent}
           glassMode={glassMode}
           glassTint={glassTint}
           glassInk={glassInk}
@@ -6078,7 +5961,7 @@ export function App() {
           />
         ) : activeNav === "reports" ? (
           <ReportsSection report={report} />
-        ) : activeNav === "usage" ? (
+        ) : (
           <>
             <PeriodControl period={period} onChange={setPeriod} fullWidthArea />
             <UsageSection
@@ -6088,8 +5971,6 @@ export function App() {
               onRulesChanged={() => setUsageReloadNonce((value) => value + 1)}
             />
           </>
-        ) : (
-          <EmptySection section={activeNav} onReturn={() => setActiveNav("overview")} />
         )}
       </div>
 

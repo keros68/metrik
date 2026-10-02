@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
 import uPlot from "uplot";
 import { agentPalette } from "./agentColors.js";
+import { compactTokens } from "./tokenFormat.js";
 
 const AXIS_FONT = '12px "Geist Variable", "Segoe UI Variable", sans-serif';
-
-function shortTokens(value) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
-  return String(Math.round(value));
-}
 
 // 坐标轴/网格用中性灰，随主题切换取值：canvas 由 JS 绘制，收不到 CSS 变量。
 const AXIS_COLORS = {
@@ -91,7 +86,7 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
               const step = Math.max(1, Math.ceil(max / 5 / 10_000) * 10_000);
               return Array.from({ length: Math.ceil(max / step) + 1 }, (_, index) => index * step);
             },
-            values: (_u, values) => values.map(shortTokens),
+            values: (_u, values) => values.map(compactTokens),
           },
         ],
         series: [
