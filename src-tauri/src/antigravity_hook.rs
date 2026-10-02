@@ -1,6 +1,8 @@
 #[cfg(not(windows))]
 use crate::claude_hook::shell_single_quote;
-use crate::claude_hook::{first_command_token, run_delegate, sweep_stale_files};
+use crate::claude_hook::{
+    is_moved_metrik_command, read_json_file, run_delegate, sweep_stale_files, write_atomically,
+};
 use crate::domain::{sane_resets_at_ms, QuotaSample};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -148,21 +150,6 @@ fn capitalize(model: &str) -> String {
         .unwrap_or_default()
 }
 
-fn write_quota_atomically(path: &Path, payload: &QuotaFile) -> Result<()> {
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .context("Antigravity quota path has no file name")?;
-    let staged = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
-    std::fs::write(&staged, serde_json::to_vec(payload)?)
-        .context("unable to stage Antigravity quota snapshot")?;
-    let installed = std::fs::rename(&staged, path);
-    if installed.is_err() {
-        let _ = std::fs::remove_file(&staged);
-    }
-    installed.context("unable to install Antigravity quota snapshot")
-}
-
 /// 现有非 Metrik statusLine 的 command 原文（可串联时返回）。
 fn foreign_command(settings: &Value) -> Option<String> {
     settings
@@ -221,13 +208,11 @@ impl AntigravityHook {
     }
 
     fn read_backup(&self) -> Option<Value> {
-        let raw = std::fs::read_to_string(self.backup_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.backup_path())
     }
 
     fn read_metadata(&self) -> Option<StatusLineMetadata> {
-        let raw = std::fs::read_to_string(self.metadata_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.metadata_path())
     }
 
     fn expected_metadata(&self, delegate: String) -> Result<StatusLineMetadata> {
@@ -246,15 +231,8 @@ impl AntigravityHook {
     }
 
     fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        let path = self.metadata_path();
-        let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
-        std::fs::write(&staged, serde_json::to_vec_pretty(metadata)?)
-            .context("无法写入 statusLine 元数据")?;
-        let installed = std::fs::rename(&staged, &path);
-        if installed.is_err() {
-            let _ = std::fs::remove_file(&staged);
-        }
-        installed.context("无法安装 statusLine 元数据")
+        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?)
+            .context("无法写入 statusLine 元数据")
     }
 
     /// 备份文件可能被清理工具删掉；元数据还在时从元数据回读 delegate，
@@ -308,13 +286,8 @@ impl AntigravityHook {
         std::fs::create_dir_all(&self.cli_dir)?;
         // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
         let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
-        std::fs::write(&staged, serde_json::to_string_pretty(settings)?)?;
-        let installed = std::fs::rename(&staged, &path);
-        if installed.is_err() {
-            let _ = std::fs::remove_file(&staged);
-        }
-        installed.context("无法更新 ~/.gemini/antigravity-cli/settings.json")
+        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes())
+            .context("无法更新 ~/.gemini/antigravity-cli/settings.json")
     }
 
     fn status_line_is_ours(&self, settings: &Value) -> bool {
@@ -331,18 +304,7 @@ impl AntigravityHook {
         {
             return true;
         }
-        // 应用被移动/重装后绝对路径会变：命令仍以钩子旗标结尾且第一个 token
-        // 的文件名是 metrik 可执行文件时，认作我们的，交给自愈改写。
-        command.trim_end().ends_with(HOOK_FLAG)
-            && first_command_token(command).is_some_and(|executable| {
-                Path::new(executable)
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| {
-                        name.eq_ignore_ascii_case("metrik")
-                            || name.eq_ignore_ascii_case("metrik.exe")
-                    })
-            })
+        is_moved_metrik_command(command, HOOK_FLAG)
     }
 
     pub fn status(&self) -> Result<AntigravityHookStatus> {
@@ -469,8 +431,7 @@ impl AntigravityHook {
     }
 
     fn read_quota_file(&self) -> Option<QuotaFile> {
-        let raw = std::fs::read_to_string(self.quota_path()).ok()?;
-        serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
+        read_json_file(&self.quota_path())
     }
 
     /// 把钩子落地的全部官方窗口转换成 QuotaSample；文件缺失或格式异常返回空，
@@ -544,7 +505,6 @@ pub fn run_hook() {
     let output = render_hook_statusline(
         &AntigravityHook::detected(),
         &input,
-        &std::env::temp_dir(),
         std::time::Duration::from_secs(10),
     );
     if !output.is_empty() {
@@ -557,7 +517,6 @@ pub fn run_hook() {
 fn render_hook_statusline(
     hook: &AntigravityHook,
     input: &[u8],
-    temp_dir: &Path,
     delegate_timeout: std::time::Duration,
 ) -> String {
     let metadata = hook.read_metadata();
@@ -567,13 +526,14 @@ fn render_hook_statusline(
         .map(|value| payload_from_input(value, now_ms()));
 
     if let (Some(metadata), Some(payload)) = (metadata.as_ref(), payload.as_ref()) {
-        let _ = write_quota_atomically(&metadata.quota_path, payload);
+        if let Ok(bytes) = serde_json::to_vec(payload) {
+            let _ = write_atomically(&metadata.quota_path, &bytes);
+        }
     }
 
     let stale_before = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(5 * 60))
         .unwrap_or(std::time::UNIX_EPOCH);
-    sweep_stale_files(temp_dir, "metrik-antigravity-statusline-", stale_before);
     if let Some(quota_dir) = metadata
         .as_ref()
         .and_then(|metadata| metadata.quota_path.parent())
