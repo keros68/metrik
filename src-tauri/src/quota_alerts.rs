@@ -77,17 +77,7 @@ pub fn check(
         {
             continue;
         }
-        let name = match quota.agent.as_str() {
-            "codex" => "Codex",
-            "claude" => "Claude",
-            "zcode" => "GLM",
-            "kimi" => "Kimi",
-            "qoder" => "Qoder",
-            "workbuddy" => "WorkBuddy",
-            "grok" => "Grok",
-            "antigravity" => "Antigravity",
-            other => other,
-        };
+        let name = crate::domain::agent_label(&quota.agent);
         send(&format!(
             "{name} · {}：剩余 {:.1}%",
             window.label, window.view.remaining_percent

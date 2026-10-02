@@ -200,7 +200,10 @@ fn is_within(path: &str, root: &str) -> bool {
     if path_equals(path, root) {
         return true;
     }
-    path.len() > root.len() && starts_with_ci(path, root) && path.as_bytes()[root.len()] == b'/'
+    // 盘符根与 `/` 规范化后自带结尾斜杠，其余规则按目录边界匹配。
+    path.len() > root.len()
+        && starts_with_ci(path, root)
+        && (root.ends_with('/') || path.as_bytes()[root.len()] == b'/')
 }
 
 fn path_equals(left: &str, right: &str) -> bool {
@@ -383,6 +386,14 @@ mod tests {
                 pinned: true
             }
         );
+    }
+
+    #[test]
+    fn a_drive_or_filesystem_root_rule_covers_its_children() {
+        assert!(is_within("D:/work/app", "D:/"));
+        assert!(is_within("/home/me", "/"));
+        assert!(!is_within("D:/workshop", "D:/work"));
+        assert!(is_within("D:/work/app", "D:/work"));
     }
 
     #[test]

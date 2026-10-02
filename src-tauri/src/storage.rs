@@ -234,7 +234,8 @@ pub fn replace_source(
     )?;
 
     for event in &source.events {
-        let write_outcome = insert_or_merge_usage_event(&transaction, event, &source.locator)?;
+        let write_outcome =
+            insert_or_merge_usage_event(&transaction, event, source.adapter_id, &source.locator)?;
         if write_outcome == EventWriteOutcome::RejectedClaudeModelConflict {
             outcome.rejected_events += 1;
             continue;
@@ -271,6 +272,7 @@ fn observed_event_ids(transaction: &Transaction<'_>, source_id: &str) -> Result<
 fn insert_or_merge_usage_event(
     transaction: &Transaction<'_>,
     event: &UsageEvent,
+    source_adapter: &str,
     locator: &Path,
 ) -> Result<EventWriteOutcome> {
     let stored = transaction
@@ -355,8 +357,11 @@ fn insert_or_merge_usage_event(
     // new session file: the copied observation carries the new session id in its
     // payload, so strict matching would reject the copy as a collision. Merge
     // component-wise maxima (identical copies are no-ops) and reject only a
-    // contradictory model, exactly like Claude.
-    let mergeable_pi_entry = event.adapter_id == "pi";
+    // contradictory model, exactly like Claude. Pi credits each event to the
+    // billing agent (GLM, Qwen, ...), so recognise it by the source adapter.
+    let mergeable_pi_entry = source_adapter == "pi";
+    // WorkBuddy 同一身份渐进更新（见 adapters::workbuddy），跨扫描同样取分量最大值。
+    let mergeable_workbuddy_message = event.adapter_id == "workbuddy";
     // Hermes 的用量行是累计计数器（per-API-call 增量累加），每次扫描都会重新
     // 观察到更大的数——与 Antigravity 的活会话快照同型。归属可能记到别的卡片
     // （见 hermes_providers），所以按事件键的 `hermes:` 前缀识别，不按 adapter。
@@ -365,11 +370,12 @@ fn insert_or_merge_usage_event(
     let mergeable = mergeable_claude_message
         || mergeable_antigravity_response
         || mergeable_pi_entry
+        || mergeable_workbuddy_message
         || mergeable_hermes_usage;
     // A contradictory model makes the provider message ambiguous. Reject only
     // this observation; the caller will commit the source's other valid events
     // and surface partial coverage through scan diagnostics.
-    if mergeable_claude_message || mergeable_pi_entry {
+    if mergeable_claude_message || mergeable_pi_entry || mergeable_workbuddy_message {
         if let (Some(stored_model), Some(candidate_model)) =
             (stored.model.as_deref(), event.model.as_deref())
         {
@@ -516,7 +522,8 @@ pub fn prune_missing_sources(connection: &mut Connection) -> Result<()> {
     })?;
     let missing: Vec<String> = rows
         .filter_map(Result::ok)
-        .filter(|(_, locator)| !locator.exists())
+        // `antigravity://` 这类 RPC 定位符不在磁盘上，存在性判断对它们无意义。
+        .filter(|(_, locator)| !locator.to_string_lossy().contains("://") && !locator.exists())
         .map(|(source_id, _)| source_id)
         .collect();
     drop(statement);
@@ -676,6 +683,54 @@ mod tests {
         );
     }
 
+    /// Antigravity 的来源是 RPC 会话，定位符不是磁盘路径；按文件存在性清理
+    /// 会把刚落库的用量当孤儿删掉。
+    #[test]
+    fn pruning_keeps_sources_whose_locator_is_not_a_file() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let event = |adapter: &'static str, key: &str| {
+            UsageEvent::new(
+                adapter,
+                key.into(),
+                1_000,
+                "session".into(),
+                None,
+                TokenVector {
+                    output: 5,
+                    ..Default::default()
+                },
+                "exact",
+            )
+        };
+        let mut cascade = source(
+            "cascade",
+            "antigravity",
+            vec![event("antigravity", "response:a")],
+        );
+        cascade.locator = PathBuf::from("antigravity://cascade/abc");
+        replace_source(&mut connection, &cascade, 0).unwrap();
+        replace_source(
+            &mut connection,
+            &source("gone-file", "codex", vec![event("codex", "x")]),
+            0,
+        )
+        .unwrap();
+
+        prune_missing_sources(&mut connection).unwrap();
+
+        let adapters: Vec<String> = connection
+            .prepare("SELECT adapter_id FROM usage_event")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(adapters, vec!["antigravity".to_string()]);
+    }
+
     /// 解析器升级后的重扫：事件内容一模一样，只有项目归属从无到有。
     /// 它不参与 payload_hash，所以必须由这条单独的补写路径落库；非合并型
     /// adapter（这里是 Codex）不能因此被判为身份冲突。
@@ -821,6 +876,13 @@ mod tests {
     /// 身份冲突把整个源打掉。
     #[test]
     fn pi_fork_copy_observes_one_event() {
+        // pi 按计费方归属：GLM 套餐的用量记在 zcode 名下，同样要合并。
+        for credited in ["pi", "zcode"] {
+            pi_fork_copy_merges_for(credited);
+        }
+    }
+
+    fn pi_fork_copy_merges_for(credited: &'static str) {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
@@ -832,7 +894,7 @@ mod tests {
             ..Default::default()
         };
         let original = UsageEvent::new(
-            "pi",
+            credited,
             "response:resp-1".into(),
             100,
             "session-parent".into(),
@@ -841,7 +903,7 @@ mod tests {
             "exact",
         );
         let copied = UsageEvent::new(
-            "pi",
+            credited,
             "response:resp-1".into(),
             100,
             "session-fork".into(),

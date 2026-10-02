@@ -26,15 +26,19 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # 拉取 LiteLLM 数据和跑 cargo test 期间 .git/config 里不留写权限 token；
+      # 只在最后开 PR 的那一步临时接上凭据。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: dtolnay/rust-toolchain@9423510f11512992cb6c790b35e139796f7ac612 # 1.90.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           key: pricing-refresh
@@ -86,6 +90,8 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 检出时没有保存凭据，push 改由 gh 用本步骤的 GH_TOKEN 认证。
+          gh auth setup-git
           git add src-tauri/src/pricing_table.rs
           git commit -m "chore: 刷新价格表至 ${as_of}"
           # 固定分支名 + 强推：上一次没合的刷新直接被这一次取代，不攒一堆 PR。
