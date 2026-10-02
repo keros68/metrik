@@ -189,19 +189,17 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("codex-auto-review", "gpt-5.4"),
 ];
 
+/// 不带单次请求输入量的定价，即只按基础档计。
+#[cfg(test)]
+pub fn price_for(model: &str, occurred_at_ms: i64) -> Option<Pricing> {
+    price_for_request(model, occurred_at_ms, None)
+}
+
 /// 返回 `model` 在 `occurred_at_ms` 时刻的定价；表里没有则返回 `None`
 /// （调用方归入 unpriced，不得臆造价格）。见模块文档：只精确匹配，日期快照
 /// 后缀与订阅别名除外。时间戳只对 OFF_PEAK_HALF_PRICE 里的模型有影响，
 /// 其余模型全天一价。
-pub fn price_for(model: &str, occurred_at_ms: i64) -> Option<Pricing> {
-    let (canonical, price) = resolve(model)?;
-    Some(if in_off_peak(canonical, occurred_at_ms) {
-        price.halved()
-    } else {
-        price
-    })
-}
-
+///
 /// https://developers.openai.com/api/docs/pricing (2026-09-23).
 /// Only validated request sizes select the long-context tier; missing evidence
 /// retains the base estimate rather than using cumulative session counters.
@@ -210,8 +208,12 @@ pub fn price_for_request(
     occurred_at_ms: i64,
     request_input_tokens: Option<i64>,
 ) -> Option<Pricing> {
-    let mut price = price_for(model, occurred_at_ms)?;
-    let canonical = resolve(model)?.0;
+    let (canonical, base) = resolve(model)?;
+    let mut price = if in_off_peak(canonical, occurred_at_ms) {
+        base.halved()
+    } else {
+        base
+    };
     let input = request_input_tokens.unwrap_or_default();
     if input > 272_000 && matches!(canonical, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna") {
         price.input *= 2.0;

@@ -1,4 +1,5 @@
 use crate::domain::{stable_hash, SyncDeviceView, SyncView};
+use crate::storage::{get_app_setting as get_setting, set_app_setting as set_setting};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -37,26 +38,6 @@ struct ExportEvent {
     agent: String,
     at: i64,
     tokens: i64,
-}
-
-fn get_setting(connection: &Connection, key: &str) -> Result<Option<String>> {
-    connection
-        .query_row(
-            "SELECT value FROM app_setting WHERE key = ?1",
-            [key],
-            |row| row.get(0),
-        )
-        .optional()
-        .with_context(|| format!("failed to read setting {key}"))
-}
-
-fn set_setting(connection: &Connection, key: &str, value: &str) -> Result<()> {
-    connection.execute(
-        "INSERT INTO app_setting (key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
-    )?;
-    Ok(())
 }
 
 fn delete_setting(connection: &Connection, key: &str) -> Result<()> {
