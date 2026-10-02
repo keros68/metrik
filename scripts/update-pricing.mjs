@@ -58,6 +58,9 @@ if (localPath) {
 const perMillion = (value) =>
   value == null ? 0 : Math.round(value * 1e6 * 1e6) / 1e6;
 
+const SAFE_MODEL_NAME = /^[A-Za-z0-9._:@\/-]+$/;
+let rejectedNames = 0;
+
 const rows = Object.entries(raw)
   .filter(([key, entry]) => {
     if (typeof entry !== "object" || entry === null) return false;
@@ -91,11 +94,22 @@ const rows = Object.entries(raw)
     cache_write: perMillion(entry.cache_creation_input_token_cost),
     output: perMillion(entry.output_cost_per_token),
   }))
+  // 模型名原样写进 Rust 字符串字面量；含引号、反斜杠等字符的上游键直接丢弃，
+  // 不让外部数据改写生成的源码。
+  .filter((row) => {
+    if (SAFE_MODEL_NAME.test(row.model)) return true;
+    rejectedNames += 1;
+    return false;
+  })
   // 剥前缀后可能撞名（provider/x 与裸 x 同名）：先到先得，绝不两行同名，
   // 否则 price_for 的二分查找行为未定义。
   .filter((row, index, all) => all.findIndex((other) => other.model === row.model) === index)
   // price_for 用二分查找，表必须按模型名有序。
   .sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
+
+if (rejectedNames) {
+  console.log(`跳过 ${rejectedNames} 个含非法字符的模型名`);
+}
 
 if (!rows.length) {
   throw new Error("LiteLLM 价格表里没有匹配到任何第一方 provider 模型，拒绝生成空表");
