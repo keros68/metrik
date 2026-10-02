@@ -306,7 +306,8 @@ impl AntigravityHook {
 
     fn write_settings(&self, settings: &Value) -> Result<()> {
         std::fs::create_dir_all(&self.cli_dir)?;
-        let path = self.settings_path();
+        // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
+        let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
         let staged = path.with_extension(format!("json.metrik-{}", std::process::id()));
         std::fs::write(&staged, serde_json::to_string_pretty(settings)?)?;
         let installed = std::fs::rename(&staged, &path);

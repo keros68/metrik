@@ -15,6 +15,8 @@ const EXPORT_FORMAT_VERSION: i64 = 1;
 const EXPORT_HORIZON_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const SYNC_INTERVAL_MS: i64 = 5 * 60 * 1000;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// 单条远端事件的 token 上限，远超任何真实请求；挡住畸形值让 SQLite 求和溢出。
+const MAX_EVENT_TOKENS: i64 = 10_000_000_000;
 
 /// 同步导出只包含派生统计字段：事件标识、Agent、时间与处理量。
 /// 对话正文、Prompt、模型输出、凭据与源文件路径都不在导出边界内。
@@ -149,6 +151,13 @@ fn export_file_name(device_id: &str) -> String {
     format!("metrik-usage-{device_id}.json")
 }
 
+/// 设备标识来自共享目录里的文件内容，会被拼进删除路径，只接受字母数字。
+fn is_valid_device_id(device_id: &str) -> bool {
+    !device_id.is_empty()
+        && device_id.len() <= 64
+        && device_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 /// 校验并保存同步目录；传 `None` 时关闭同步并清空已合并的远端统计，
 /// 避免不再刷新的数字冒充当前值。原始 Agent 日志与本机账本不受影响。
 pub fn configure(connection: &mut Connection, directory: Option<String>) -> Result<SyncView> {
@@ -197,6 +206,9 @@ pub fn remove_device(connection: &mut Connection, device_id: &str) -> Result<Syn
     let (own_device_id, _) = device_identity(connection)?;
     if device_id == own_device_id {
         bail!("无法删除本机设备");
+    }
+    if !is_valid_device_id(device_id) {
+        bail!("设备标识无效");
     }
 
     if let Some(dir) = sync_directory(connection)? {
@@ -368,8 +380,15 @@ fn import_one_file(
     if file.version != EXPORT_FORMAT_VERSION {
         bail!("unsupported sync export version {}", file.version);
     }
-    if file.device_id.is_empty() || file.device_id == own_device_id {
+    if file.device_id == own_device_id {
         return Ok(());
+    }
+    // 设备身份绑定文件名：删除设备时按标识拼出的文件名删文件。
+    if !is_valid_device_id(&file.device_id)
+        || path.file_name().and_then(|name| name.to_str())
+            != Some(export_file_name(&file.device_id).as_str())
+    {
+        bail!("sync export device id does not match its file name");
     }
 
     let already_imported: Option<i64> = connection
@@ -395,7 +414,7 @@ fn import_one_file(
              ) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for event in &file.events {
-            if event.tokens < 0 {
+            if !(0..=MAX_EVENT_TOKENS).contains(&event.tokens) {
                 continue;
             }
             insert.execute(params![
@@ -675,6 +694,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(imported, 1);
+    }
+
+    /// 共享目录里的文件不可信：伪造的设备标识不能借"移除设备"删到目录外，
+    /// 畸形 token 值不能进入账本。
+    #[test]
+    fn untrusted_remote_files_cannot_escape_the_sync_directory() {
+        let shared = TestDirectory::new("untrusted");
+        let now = Utc::now().timestamp_millis();
+        let mut local = open_test_db();
+        set_setting(&local, SETTING_SYNC_DIR, &shared.path().to_string_lossy()).unwrap();
+        fs::write(
+            shared.path().join("metrik-usage-evil.json"),
+            r#"{"version":1,"deviceId":"/../../victim","label":"x","exportedAtMs":1,
+                "events":[{"id":"e1","agent":"codex","at":1,"tokens":5}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            shared.path().join("metrik-usage-huge.json"),
+            r#"{"version":1,"deviceId":"huge","label":"x","exportedAtMs":1,
+                "events":[{"id":"h1","agent":"codex","at":1,"tokens":9223372036854775807},
+                          {"id":"h2","agent":"codex","at":1,"tokens":7}]}"#,
+        )
+        .unwrap();
+
+        run_sync(&mut local, now);
+
+        let rows: Vec<(String, i64)> = local
+            .prepare("SELECT device_id, processed_tokens FROM remote_usage_event")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![("huge".into(), 7)]);
+        assert!(sync_view(&local).unwrap().last_error.is_some());
+        assert!(remove_device(&mut local, "/../../victim").is_err());
     }
 
     #[test]

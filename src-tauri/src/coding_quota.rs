@@ -325,7 +325,18 @@ pub fn write_provider_cookie_file(name: &str, cookie: Option<&str>) -> Result<bo
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).context("创建数据目录失败")?;
             }
-            std::fs::write(&path, value).context("写入 Cookie 文件失败")?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            // 会话 cookie 等同登录凭据，Unix 上只给当前用户读写；mode 只作用于新建，
+            // 已存在的旧文件在写完后补设权限。
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options
+                .open(&path)
+                .and_then(|mut file| std::io::Write::write_all(&mut file, value.as_bytes()))
+                .context("写入 Cookie 文件失败")?;
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
             Ok(true)
         }
         None => {
@@ -939,7 +950,7 @@ fn resolve_pi_glm_credentials() -> Vec<GlmCredential> {
 }
 
 /// 只认 z.ai 的 coding-plan provider：`zai-coding-cn` 是国内 bigmodel 端点，
-/// `zai` 是国际端点。同一把 key 只留一次；qwen-token-plan* 是百炼的另一
+/// `zai-coding` 与 `zai` 是国际端点（与 `pi_providers` 的用量归属同一组）。同一把 key 只留一次；qwen-token-plan* 是百炼的另一
 /// 产品，明确不用。
 fn pi_glm_credentials_from_auth_json(raw: &str) -> Vec<GlmCredential> {
     let map = parse_provider_key_map(raw);
@@ -952,8 +963,10 @@ fn pi_glm_credentials_from_auth_json(raw: &str) -> Vec<GlmCredential> {
     if let Some(token) = nonempty(map.get("zai-coding-cn")) {
         push(token, GlmRegion::Bigmodel);
     }
-    if let Some(token) = nonempty(map.get("zai")) {
-        push(token, GlmRegion::Zai);
+    for provider in ["zai-coding", "zai"] {
+        if let Some(token) = nonempty(map.get(provider)) {
+            push(token, GlmRegion::Zai);
+        }
     }
     credentials
 }
@@ -1233,15 +1246,18 @@ fn first_quoted(text: &str) -> Option<String> {
 
 // ── 响应解析（纯函数，可测试） ─────────────────────────────────
 
-/// GLM：`data.limits[]` 里取 `TOKENS_LIMIT` 两条（5 小时 + 每周），按下次重置
-/// 时间升序 → 短窗在前。`percentage` 是已用百分比。`TIME_LIMIT`（月度 MCP 次数）
-/// 单位不同，跳过。`adapter_id` 决定样本落库到哪张卡片（zcode / pi）。
+/// GLM：`data.limits[]` 里取 `TOKENS_LIMIT`（5 小时 + 每周），`percentage` 是
+/// 已用百分比。窗口长度由 `unit`/`number` 标明（真机抓包：`3,5` = 5 小时、
+/// `6,1` = 每周）；不带这两个字段的旧形状按下次重置时间升序补位，短窗在前。
+/// 认不出的长度不贴标签。`TIME_LIMIT`（月度 MCP 次数）单位不同，跳过。
+/// `adapter_id` 决定样本落库到哪张卡片（zcode / pi）。
 fn parse_glm_quota(value: &Value, adapter_id: &'static str) -> Vec<QuotaSample> {
     let data = value.get("data").unwrap_or(value);
     let Some(limits) = data.get("limits").and_then(Value::as_array) else {
         return Vec::new();
     };
-    let mut windows: Vec<(Option<i64>, f64)> = limits
+    // (显式窗口, 重置时间, 已用%)；显式窗口为 None 表示响应没标长度。
+    let mut windows: Vec<(Option<&'static str>, Option<i64>, f64)> = limits
         .iter()
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("TOKENS_LIMIT"))
         .filter_map(|item| {
@@ -1250,10 +1266,18 @@ fn parse_glm_quota(value: &Value, adapter_id: &'static str) -> Vec<QuotaSample> 
                 item,
                 &["nextResetTime", "resetTime", "reset_at", "reset_time"],
             );
-            Some((reset, used))
+            let unit = item.get("unit").and_then(Value::as_i64);
+            let number = item.get("number").and_then(Value::as_i64);
+            let key = match (unit, number) {
+                (Some(3), Some(5)) => Some("five_hour"),
+                (Some(6), Some(1)) => Some("seven_day"),
+                (None, _) | (_, None) => None,
+                _ => return None,
+            };
+            Some((key, reset, used))
         })
         .collect();
-    windows.sort_by(|left, right| match (left.0, right.0) {
+    windows.sort_by(|left, right| match (left.1, right.1) {
         (Some(a), Some(b)) => a.cmp(&b),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
@@ -1261,20 +1285,30 @@ fn parse_glm_quota(value: &Value, adapter_id: &'static str) -> Vec<QuotaSample> 
     });
 
     let now = chrono::Utc::now().timestamp_millis();
-    windows
+    let mut unlabeled = ["five_hour", "seven_day"]
         .into_iter()
-        .take(2)
-        .enumerate()
-        .map(|(index, (reset, used))| QuotaSample {
+        .filter(|key| !windows.iter().any(|window| window.0 == Some(*key)))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let mut samples: Vec<QuotaSample> = Vec::new();
+    for (key, reset, used) in windows {
+        let Some(key) = key.or_else(|| unlabeled.next()) else {
+            continue;
+        };
+        if samples.iter().any(|sample| sample.window_key == key) {
+            continue;
+        }
+        samples.push(QuotaSample {
             adapter_id,
-            window_key: if index == 0 { "five_hour" } else { "seven_day" }.to_owned(),
+            window_key: key.to_owned(),
             remaining_percent: (100.0 - used).clamp(0.0, 100.0),
             resets_at_ms: reset,
             collected_at_ms: now,
             source_label: "GLM 官方配额".into(),
             quality: "official_live",
-        })
-        .collect()
+        });
+    }
+    samples
 }
 
 /// Kimi：`limits[]` 每条是一个限流窗口——长度在 `window`（`duration` +
@@ -1561,6 +1595,20 @@ mod tests {
         assert_eq!(samples[0].adapter_id, "zcode");
     }
 
+    /// 只有每周窗口时，按 unit/number 标成每周，不能因为排第一就当成 5 小时。
+    #[test]
+    fn glm_quota_labels_windows_by_their_declared_length() {
+        let json: Value = serde_json::from_str(
+            r#"{"data":{"limits":[
+                {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":22,"nextResetTime":1784688031980}
+            ]}}"#,
+        )
+        .unwrap();
+        let samples = parse_glm_quota(&json, "zcode");
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].window_key, "seven_day");
+    }
+
     #[test]
     fn glm_quota_empty_without_token_limits() {
         let json: Value =
@@ -1669,6 +1717,11 @@ mod tests {
         )
         .is_empty());
         assert!(pi_glm_credentials_from_auth_json("{}").is_empty());
+        assert!(pi_glm_credentials_from_auth_json(
+            r#"{"zai-coding": {"type": "api_key", "key": "coding-key"}}"#
+        )
+        .iter()
+        .any(|cred| cred.token == "coding-key" && matches!(cred.region, GlmRegion::Zai)));
         assert!(pi_glm_credentials_from_auth_json("not json").is_empty());
     }
 

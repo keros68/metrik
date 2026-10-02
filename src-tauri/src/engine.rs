@@ -33,7 +33,9 @@ const REPORT_WINDOW_DAYS: i64 = 182;
 /// 切到「30 天」时把此前只按 8 天窗口解析过的日志全部整份重扫，代价整个压在
 /// 一次前台请求里（实测本机 691 个文件、约 2GB JSONL）。固定视界的代价是每个
 /// 文件只在新增或变化时解析一次，切周期退化为纯 SQL 查询。
-const RETENTION_DAYS: i64 = 65;
+///
+/// 与报告窗口取同一值：账本里没有的日子，26 周热力图只能显示为 0。
+const RETENTION_DAYS: i64 = REPORT_WINDOW_DAYS;
 
 /// 每次快照分给日志解析的时间预算。待解析的源按 mtime 倒序排队（最近改动的先做，
 /// 当前周期的数字最先准确），超预算的留给下一次刷新，剩余量记进 `backfill_pending`。
@@ -1455,262 +1457,174 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
     let discovered = |id: &str| report.discovered.get(id).copied().unwrap_or(0);
     let refreshed = |id: &str| report.refreshed.get(id).copied().unwrap_or(0);
     let errors = |id: &str| report.errors.get(id).copied().unwrap_or(0);
-    let diagnostics = |id: &str| report.diagnostics.get(id).cloned().unwrap_or_default();
-    let codex_diagnostics = diagnostics("codex");
-    let claude_diagnostics = diagnostics("claude");
-    let opencode_diagnostics = diagnostics("opencode");
-    let kimi_diagnostics = diagnostics("kimi");
-    let codex_partial = codex_diagnostics.partial_sources > 0 || errors("codex") > 0;
-    let claude_partial = claude_diagnostics.partial_sources > 0 || errors("claude") > 0;
+    let scanned = |adapter: &str, found: &str, unit: &str| {
+        format!(
+            "发现 {} {found}，本次更新 {} {unit}。",
+            discovered(adapter),
+            refreshed(adapter)
+        )
+    };
     // 读不了的存储形态（如 OpenCode 1.2+ 的 SQLite）也是覆盖缺口：
     // 此时的 0 是"读不到"而非"没用过"，必须标数据不完整。
-    let opencode_gaps = report
-        .coverage_gaps
-        .get("opencode")
-        .cloned()
-        .unwrap_or_default();
-    let opencode_partial = opencode_diagnostics.partial_sources > 0
-        || errors("opencode") > 0
-        || !opencode_gaps.is_empty();
-    let kimi_partial = kimi_diagnostics.partial_sources > 0 || errors("kimi") > 0;
-    let cursor_diagnostics = diagnostics("cursor");
-    let cursor_gaps = report
-        .coverage_gaps
-        .get("cursor")
-        .cloned()
-        .unwrap_or_default();
-    let cursor_partial =
-        cursor_diagnostics.partial_sources > 0 || errors("cursor") > 0 || !cursor_gaps.is_empty();
+    let local = |adapter: &str, id: &str, label: &str, scanned: String, note: &str| {
+        let diagnostics = report.diagnostics.get(adapter).cloned().unwrap_or_default();
+        let errors = errors(adapter);
+        let gaps = report
+            .coverage_gaps
+            .get(adapter)
+            .cloned()
+            .unwrap_or_default();
+        let partial = diagnostics.partial_sources > 0 || errors > 0 || !gaps.is_empty();
+        let gaps = if gaps.is_empty() {
+            String::new()
+        } else {
+            format!("{}。", gaps.join("；"))
+        };
+        SourceView {
+            id: id.into(),
+            kind: "local".into(),
+            label: label.into(),
+            detail: format!(
+                "{scanned}{}{gaps}{note}",
+                coverage_detail(&diagnostics, errors)
+            ),
+            quality: if partial { "partial" } else { "exact" }.into(),
+            quality_label: if partial {
+                "数据不完整"
+            } else {
+                "精确解析"
+            }
+            .into(),
+        }
+    };
+    let official = |id: &str, label: &str, detail: &str| SourceView {
+        id: id.into(),
+        kind: "official".into(),
+        label: label.into(),
+        detail: detail.into(),
+        quality: "official".into(),
+        quality_label: "官方".into(),
+    };
     let mut views = vec![
-        SourceView {
-            id: "codex-quota".into(),
-            kind: "official".into(),
-            label: "ChatGPT / Codex 官方配额".into(),
-            detail: "采集主、次官方滚动窗口；桌面小组件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "codex-local".into(),
-            kind: "local".into(),
-            label: "ChatGPT / Codex 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个近期会话，本次更新 {} 个。{}累计快照按正增量入账；总量包含未缓存输入、缓存读取与输出，子项不重复相加。",
-                discovered("codex"),
-                refreshed("codex"),
-                coverage_detail(&codex_diagnostics, errors("codex"))
-            ),
-            quality: if codex_partial { "partial" } else { "exact" }.into(),
-            quality_label: if codex_partial {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
-        SourceView {
-            id: "claude-local".into(),
-            kind: "local".into(),
-            label: "Claude Code 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个近期会话，本次更新 {} 个。{}重复消息跨会话按消息标识合并；总量包含缓存读取，配额不推算。",
-                discovered("claude"),
-                refreshed("claude"),
-                coverage_detail(&claude_diagnostics, errors("claude"))
-            ),
-            quality: if claude_partial { "partial" } else { "exact" }.into(),
-            quality_label: if claude_partial {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
-        SourceView {
-            id: "zcode-local".into(),
-            kind: "local".into(),
-            label: "GLM 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个用量库，本次更新 {} 个。{}只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
-                discovered("zcode"),
-                refreshed("zcode"),
-                coverage_detail(&diagnostics("zcode"), errors("zcode"))
-            ),
-            quality: if diagnostics("zcode").partial_sources > 0 || errors("zcode") > 0 {
-                "partial"
-            } else {
-                "exact"
-            }
-            .into(),
-            quality_label: if diagnostics("zcode").partial_sources > 0 || errors("zcode") > 0 {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
-        SourceView {
-            id: "opencode-local".into(),
-            kind: "local".into(),
-            label: "OpenCode 本地 Token".into(),
-            detail: format!(
-                "发现 {} 条近期消息，本次更新 {} 条。{}{}读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
-                discovered("opencode"),
-                refreshed("opencode"),
-                coverage_detail(&opencode_diagnostics, errors("opencode")),
-                if opencode_gaps.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}。", opencode_gaps.join("；"))
-                },
-            ),
-            quality: if opencode_partial { "partial" } else { "exact" }.into(),
-            quality_label: if opencode_partial {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
-        SourceView {
-            id: "kimi-local".into(),
-            kind: "local".into(),
-            label: "Kimi 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个 wire.jsonl，本次更新 {} 个。{}只计单轮增量（usageScope=turn）与旧版 StatusUpdate（按 message_id 取分量最大值）；Kimi Work 桌面版内嵌同源内核，其会话目录一并扫描，项目归属取自各自的会话索引；未安装时保持为 0，不做推算。",
-                discovered("kimi"),
-                refreshed("kimi"),
-                coverage_detail(&kimi_diagnostics, errors("kimi"))
-            ),
-            quality: if kimi_partial { "partial" } else { "exact" }.into(),
-            quality_label: if kimi_partial { "数据不完整" } else { "精确解析" }.into(),
-        },
-        SourceView {
-            id: "antigravity-quota".into(),
-            kind: "official".into(),
-            label: "Antigravity 官方配额".into(),
-            detail: "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "antigravity-live".into(),
-            kind: "local".into(),
-            label: "Antigravity 用量".into(),
-            detail: format!(
-                "发现 {} 个活跃会话，本次更新 {} 个。{}用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
-                discovered("antigravity"),
-                refreshed("antigravity"),
-                coverage_detail(&diagnostics("antigravity"), errors("antigravity"))
-            ),
-            quality: "exact".into(),
-            quality_label: "精确解析".into(),
-        },
-        SourceView {
-            id: "qoder-quota".into(),
-            kind: "official".into(),
-            label: "Qoder 官方配额".into(),
-            detail: "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "opencode-go-quota".into(),
-            kind: "official".into(),
-            label: "OpenCode Go 官方配额".into(),
-            detail: "从本机凭据（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go key）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，2026-09-19 真机核验读数准确。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "deepseek-quota".into(),
-            kind: "official".into(),
-            label: "DeepSeek 官方余额".into(),
-            detail: "官方 user/balance 接口，Bearer 鉴权；余额是金额不是百分比窗口（按币种分列，不参与低额度告警）；凭据依次尝试 DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 与 pi auth.json 的 deepseek key。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "grok-local".into(),
-            kind: "local".into(),
-            label: "Grok Build 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个 updates.jsonl，本次更新 {} 个。{}只计 `_x.ai/session/update` 中带 usage 的单轮记录（按 prompt_id 去重取最后一次）；未安装 Grok Build 时保持为 0，不做推算。",
-                discovered("grok"),
-                refreshed("grok"),
-                coverage_detail(&diagnostics("grok"), errors("grok"))
-            ),
-            quality: if diagnostics("grok").partial_sources > 0 || errors("grok") > 0 {
-                "partial"
-            } else {
-                "exact"
-            }
-            .into(),
-            quality_label: if diagnostics("grok").partial_sources > 0 || errors("grok") > 0 {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
-        SourceView {
-            id: "grok-quota".into(),
-            kind: "official".into(),
-            label: "Grok Build 官方配额".into(),
-            detail: "读取 Grok CLI 统一日志中的 billing credits 快照（creditUsagePercent + 周期结束时间）；质量为官方快照，非实时 HTTP 拉取。未运行过 grok 或日志无账单记录时显示不可用。".into(),
-            quality: "official".into(),
-            quality_label: "官方".into(),
-        },
-        SourceView {
-            id: "pi-local".into(),
-            kind: "local".into(),
-            label: "Pi 本地 Token".into(),
-            detail: format!(
-                "发现 {} 个会话文件，本次更新 {} 个。{}pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
-                discovered("pi"),
-                refreshed("pi"),
-                coverage_detail(&diagnostics("pi"), errors("pi"))
-            ),
-            quality: if diagnostics("pi").partial_sources > 0 || errors("pi") > 0 {
-                "partial"
-            } else {
-                "exact"
-            }
-            .into(),
-            quality_label: if diagnostics("pi").partial_sources > 0 || errors("pi") > 0 {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        },
+        official(
+            "codex-quota",
+            "ChatGPT / Codex 官方配额",
+            "采集主、次官方滚动窗口；桌面小组件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。",
+        ),
+        local(
+            "codex",
+            "codex-local",
+            "ChatGPT / Codex 本地 Token",
+            scanned("codex", "个近期会话", "个"),
+            "累计快照按正增量入账；总量包含未缓存输入、缓存读取与输出，子项不重复相加。",
+        ),
+        local(
+            "claude",
+            "claude-local",
+            "Claude Code 本地 Token",
+            scanned("claude", "个近期会话", "个"),
+            "重复消息跨会话按消息标识合并；总量包含缓存读取，配额不推算。",
+        ),
+        local(
+            "zcode",
+            "zcode-local",
+            "GLM 本地 Token",
+            scanned("zcode", "个用量库", "个"),
+            "只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
+        ),
+        local(
+            "opencode",
+            "opencode-local",
+            "OpenCode 本地 Token",
+            scanned("opencode", "条近期消息", "条"),
+            "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
+        ),
+        local(
+            "kimi",
+            "kimi-local",
+            "Kimi 本地 Token",
+            scanned("kimi", "个 wire.jsonl", "个"),
+            "只计单轮增量（usageScope=turn）与旧版 StatusUpdate（按 message_id 取分量最大值）；Kimi Work 桌面版内嵌同源内核，其会话目录一并扫描，项目归属取自各自的会话索引；未安装时保持为 0，不做推算。",
+        ),
+        official(
+            "antigravity-quota",
+            "Antigravity 官方配额",
+            "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。",
+        ),
+        local(
+            "antigravity",
+            "antigravity-live",
+            "Antigravity 用量",
+            scanned("antigravity", "个活跃会话", "个"),
+            "用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
+        ),
+        official(
+            "qoder-quota",
+            "Qoder 官方配额",
+            "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。",
+        ),
+        official(
+            "opencode-go-quota",
+            "OpenCode Go 官方配额",
+            "从本机凭据（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go key）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，2026-09-19 真机核验读数准确。",
+        ),
+        official(
+            "deepseek-quota",
+            "DeepSeek 官方余额",
+            "官方 user/balance 接口，Bearer 鉴权；余额是金额不是百分比窗口（按币种分列，不参与低额度告警）；凭据依次尝试 DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 与 pi auth.json 的 deepseek key。",
+        ),
+        local(
+            "grok",
+            "grok-local",
+            "Grok Build 本地 Token",
+            scanned("grok", "个 updates.jsonl", "个"),
+            "只计 `_x.ai/session/update` 中带 usage 的单轮记录（按 prompt_id 去重取最后一次）；未安装 Grok Build 时保持为 0，不做推算。",
+        ),
+        official(
+            "grok-quota",
+            "Grok Build 官方配额",
+            "读取 Grok CLI 统一日志中的 billing credits 快照（creditUsagePercent + 周期结束时间）；质量为官方快照，非实时 HTTP 拉取。未运行过 grok 或日志无账单记录时显示不可用。",
+        ),
+        local(
+            "pi",
+            "pi-local",
+            "Pi 本地 Token",
+            scanned("pi", "个会话文件", "个"),
+            "pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
+        ),
+        local(
+            "workbuddy",
+            "workbuddy-local",
+            "WorkBuddy 本地 Token",
+            scanned("workbuddy", "个会话文件", "个"),
+            "读取 CodeBuddy Code 与 WorkBuddy 的会话转录，只计已完成的回复与工具调用，同一消息按标识取分量最大值；未安装时保持为 0，不做推算。",
+        ),
+        local(
+            "hermes",
+            "hermes-local",
+            "Hermes 本地 Token",
+            scanned("hermes", "个用量库", "个"),
+            "只读取 state.db 的用量统计表，不读消息内容；走其他家套餐的用量按路由记到对应计量卡片，其余留在 Hermes。",
+        ),
     ];
 
     // 默认关闭：没开启时不列这一行，免得把"未开启"误读成"没用过"。
-    if discovered("cursor") > 0 || !cursor_gaps.is_empty() {
-        views.push(SourceView {
-            id: "cursor-local".into(),
-            kind: "local".into(),
-            label: "Cursor Token（账号级）".into(),
-            detail: format!(
-                "近 {} 天按日读取，本次更新 {} 天。{}{}用量来自 cursor.com 仪表盘的逐次事件，含这个账号在所有设备上的用量，不参与多设备同步；已过去的日子只拉一次，今天和昨天每 15 分钟重拉。登录会话每次从 Cursor 的本机状态库现读，不落库。接口不带工作目录，用量不归入项目；价目表没有的模型计入未计价。",
+    let cursor_has_gaps = report
+        .coverage_gaps
+        .get("cursor")
+        .is_some_and(|gaps| !gaps.is_empty());
+    if discovered("cursor") > 0 || cursor_has_gaps {
+        views.push(local(
+            "cursor",
+            "cursor-local",
+            "Cursor Token（账号级）",
+            format!(
+                "近 {} 天按日读取，本次更新 {} 天。",
                 discovered("cursor"),
-                refreshed("cursor"),
-                coverage_detail(&cursor_diagnostics, errors("cursor")),
-                if cursor_gaps.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}。", cursor_gaps.join("；"))
-                },
+                refreshed("cursor")
             ),
-            quality: if cursor_partial { "partial" } else { "exact" }.into(),
-            quality_label: if cursor_partial {
-                "数据不完整"
-            } else {
-                "精确解析"
-            }
-            .into(),
-        });
+            "用量来自 cursor.com 仪表盘的逐次事件，含这个账号在所有设备上的用量，不参与多设备同步；已过去的日子只拉一次，今天和昨天每 15 分钟重拉。登录会话每次从 Cursor 的本机状态库现读，不落库。接口不带工作目录，用量不归入项目；价目表没有的模型计入未计价。",
+        ));
     }
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
@@ -1773,9 +1687,15 @@ fn local_midnight(date: NaiveDate) -> Result<chrono::DateTime<Local>> {
     let naive = date
         .and_hms_opt(0, 0, 0)
         .context("invalid local midnight")?;
+    // 夏令时在午夜跳表的地区（智利、巴拉圭等）当天没有 00:00，取跳过后的第一刻。
     Local
         .from_local_datetime(&naive)
         .earliest()
+        .or_else(|| {
+            Local
+                .from_local_datetime(&(naive + Duration::hours(1)))
+                .earliest()
+        })
         .context("local midnight is unavailable")
 }
 

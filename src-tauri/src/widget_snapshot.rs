@@ -14,6 +14,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -217,10 +219,42 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// 上次交给发布器的内容（不含 generated_at）、时刻与落点。
+struct Published {
+    content: Vec<u8>,
+    at: Instant,
+    path: PathBuf,
+}
+
+static LAST_PUBLISHED: Mutex<Option<Published>> = Mutex::new(None);
+
+/// 内容没变时也定期重发一次，让小组件上的生成时间不至于停太久。
+const REPUBLISH_AFTER: Duration = Duration::from_secs(5 * 60);
+
 pub fn persist(snapshot: &UsageSnapshot, agent_filter: Option<&[String]>) -> Result<PathBuf> {
-    let bytes = serde_json::to_vec(&make_payload(snapshot, agent_filter))?;
+    let mut payload = make_payload(snapshot, agent_filter);
+    let bytes = serde_json::to_vec(&payload)?;
     let path = if let Some(helper) = publisher_path() {
-        publish_with_helper(&helper, &bytes)?
+        // 每次发布都要起一个辅助进程；稳态快照内容不变时跳过（见子进程预算）。
+        payload.generated_at = "";
+        let content = serde_json::to_vec(&payload)?;
+        let mut last = LAST_PUBLISHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(published) = last
+            .as_ref()
+            .filter(|published| published.content == content)
+            .filter(|published| published.at.elapsed() < REPUBLISH_AFTER)
+        {
+            return Ok(published.path.clone());
+        }
+        let path = publish_with_helper(&helper, &bytes)?;
+        *last = Some(Published {
+            content,
+            at: Instant::now(),
+            path: path.clone(),
+        });
+        path
     } else {
         // Cargo tests and unbundled development builds have no signed helper.
         // Keep a readable preview copy without pretending it is an App Group.

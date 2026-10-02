@@ -739,6 +739,8 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
                 other => other,
             })
             .collect();
+        // 扩展名固定为 .csv：内容来自 WebView，不能借文件名落成可执行类型。
+        let safe_name = format!("{}.csv", safe_name.trim_end_matches(".csv"));
         let directory = dirs::download_dir()
             .or_else(dirs::home_dir)
             .ok_or_else(|| "无法定位下载目录".to_owned())?;
@@ -1474,7 +1476,8 @@ fn update_macos_status_items(
         if agents.len() != remaining.len() || agents.len() != stale.len() {
             return Err("macOS 菜单栏状态项参数长度不一致".into());
         }
-        let saved = storage::open_database(&state.database_path)
+        // 主线程上的轮询：只读打开，不跑建表，也不和写入方抢锁。
+        let saved = storage::open_database_read_only(&state.database_path)
             .and_then(|connection| {
                 storage::get_app_setting(&connection, widget_snapshot::AGENT_FILTER_SETTING_KEY)
             })

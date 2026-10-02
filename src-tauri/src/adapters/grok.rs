@@ -18,7 +18,7 @@ use crate::domain::{sane_resets_at_ms, ParsedSource, QuotaSample, TokenVector, U
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -66,7 +66,8 @@ struct GrokUsage {
     #[serde(default)]
     reasoning_tokens: i64,
     #[serde(default)]
-    model_usage: HashMap<String, Value>,
+    // 有序：多模型请求取第一个键当模型名，结果必须每次一致。
+    model_usage: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize, Default)]

@@ -1,6 +1,6 @@
 use crate::child_process::{self, Site};
 use crate::domain::QuotaSample;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -112,12 +112,15 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
 
     let deadline = Instant::now() + timeout;
     let mut sent_request = false;
-    let mut result = None;
+    let mut response = None;
 
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let Ok(line) = receiver.recv_timeout(remaining.min(Duration::from_millis(250))) else {
-            continue;
+        let line = match receiver.recv_timeout(remaining.min(Duration::from_millis(250))) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            // 读线程已退出（子进程关了 stdout），不会再有输出。
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if std::env::var_os("METRIK_DEBUG").is_some() {
             eprintln!("app-server << {line}");
@@ -134,7 +137,7 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
             )?;
             sent_request = true;
         } else if id == Some(3) {
-            result = value.get("result").cloned();
+            response = Some(value);
             break;
         }
     }
@@ -144,8 +147,18 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
     child.terminate();
     drop(stdin);
 
-    let result = result.context("codex app-server quota request timed out")?;
-    Ok(result)
+    quota_result(response)
+}
+
+fn quota_result(response: Option<Value>) -> Result<Value> {
+    let mut response = response.context("codex app-server quota request timed out")?;
+    match response.get_mut("result").map(Value::take) {
+        Some(result) => Ok(result),
+        None => Err(anyhow!(
+            "codex app-server rejected the quota request: {}",
+            response.get("error").unwrap_or(&Value::Null)
+        )),
+    }
 }
 
 /// 额度探测用不到插件。开着插件时 app-server 每次启动都会在后台升级插件市场
@@ -547,6 +560,39 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {{
         assert!(
             !survived,
             "app-server descendant {descendant_pid} outlived the quota read"
+        );
+    }
+
+    #[test]
+    fn error_response_is_reported_instead_of_a_timeout() {
+        let error = quota_result(Some(
+            json!({"id": 3, "error": {"message": "not signed in"}}),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not signed in"), "{error}");
+        assert_eq!(
+            quota_result(Some(json!({"id": 3, "result": {"rateLimits": {}}}))).unwrap(),
+            json!({"rateLimits": {}})
+        );
+    }
+
+    /// 子进程秒退时读通道断开，探测应立刻结束，而不是空转到超时。
+    #[test]
+    fn exited_app_server_ends_the_probe_without_waiting_for_the_timeout() {
+        let command = if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/C", "exit", "0"]);
+            command
+        } else {
+            Command::new("true")
+        };
+        let started = Instant::now();
+        assert!(read_usage_with_command(command, Duration::from_secs(20)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "probe waited {:?}",
+            started.elapsed()
         );
     }
 
