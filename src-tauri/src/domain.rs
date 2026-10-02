@@ -227,6 +227,11 @@ pub fn sane_resets_at_ms(window_key: &str, resets_at_ms: i64, collected_at_ms: i
     plausible.then_some(resets_at_ms)
 }
 
+/// 余额窗口（DeepSeek 的 balance_cny 等）存的是金额不是百分比。
+pub fn is_balance_window(window_key: &str) -> bool {
+    window_key.starts_with("balance")
+}
+
 /// Codex 的 primary/secondary 只是槽位，不是窗口语义：套餐不同，同一个槽位
 /// 可能是 5 小时窗也可能是周窗（prolite 的 primary 就是 10080 分钟的周窗）。
 /// 按窗口时长归类，槽位只作为缺时长时的回退，避免把周额度标成"5 小时"。
@@ -530,5 +535,17 @@ pub struct SyncDeviceView {
 pub fn stable_hash(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hex::encode(hasher.finalize())
+    format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    /// 事件与来源身份都落盘，哈希的文本形态（小写十六进制）不能变。
+    #[test]
+    fn stable_hash_is_lowercase_hex_sha256() {
+        assert_eq!(
+            super::stable_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

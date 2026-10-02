@@ -22,12 +22,9 @@ pub fn codex_may_be_signed_in() -> bool {
 }
 
 pub fn read_codex_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
-    read_codex_quota_with_command(codex_app_server_command(), timeout)
-}
-
-fn read_codex_quota_with_command(command: Command, timeout: Duration) -> Result<Vec<QuotaSample>> {
     Ok(parse_rate_limits(&read_usage_with_command(
-        command, timeout,
+        codex_app_server_command(),
+        timeout,
     )?))
 }
 

@@ -9,7 +9,7 @@
 //! - 余额窗口（`balance_*`）的 `remainingPercent` 是金额不是百分比，以
 //!   `kind: "balance"` 显式区分，消费者不得把它当比例渲染。
 
-use crate::domain::{agent_label, AGENT_IDS};
+use crate::domain::{agent_label, is_balance_window, AGENT_IDS};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::io::Write;
@@ -63,7 +63,7 @@ pub fn default_ledger_path() -> Option<PathBuf> {
 }
 
 fn window_kind(key: &str) -> &'static str {
-    if key.starts_with("balance") {
+    if is_balance_window(key) {
         "balance"
     } else {
         "percent"

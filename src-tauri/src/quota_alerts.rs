@@ -1,5 +1,8 @@
 //! Optional notifications from fresh quota snapshots. State is local and shared by all windows.
-use crate::{domain::AgentQuotaView, storage};
+use crate::{
+    domain::{is_balance_window, AgentQuotaView},
+    storage,
+};
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -39,7 +42,7 @@ pub fn check(
                 let view = &window.view;
                 // 余额窗口（balance_*）存的是金额不是百分比：¥10 不该触发
                 // "剩余 10%" 的告警。
-                !window.key.starts_with("balance")
+                !is_balance_window(&window.key)
                     && view.available
                     && !view.stale
                     && !view.reset_expired

@@ -256,9 +256,9 @@ impl QuotaProvider for GrokQuota {
         adapters::grok_home_exists()
     }
 
-    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
+    fn fetch(&self, _timeout: Duration) -> Result<Vec<QuotaSample>> {
         // 环境变量在这里解析一次；适配器本体接根目录参数，测试不碰全局状态。
-        adapters::fetch_grok_quota_snapshot(&adapters::grok_home(), timeout)
+        adapters::fetch_grok_quota_snapshot(&adapters::grok_home())
     }
 }
 

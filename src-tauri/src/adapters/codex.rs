@@ -1,5 +1,6 @@
 use super::{
-    discover_jsonl, timestamp_str_ms, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate,
+    discover_jsonl, non_empty, timestamp_str_ms, AgentAdapter, ParsedScan, ScanDiagnostics,
+    SourceCandidate,
 };
 use crate::domain::{ParsedSource, QuotaSample, TokenVector, UsageEvent};
 use anyhow::{Context, Result};
@@ -404,10 +405,6 @@ impl CodexAdapter {
             diagnostics,
         }))
     }
-}
-
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.filter(|model| !model.is_empty())
 }
 
 fn parse_quota_windows(rate_limits: RateLimits, timestamp: i64, source: &str) -> Vec<QuotaSample> {

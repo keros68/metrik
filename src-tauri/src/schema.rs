@@ -142,14 +142,18 @@ fn ensure_optional_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>> {
     let mut statement = connection
         .prepare(&format!("PRAGMA table_info({table})"))
         .with_context(|| format!("failed to inspect {table} schema"))?;
-    let columns: HashSet<String> = statement
+    let columns = statement
         .query_map([], |row| row.get(1))?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(columns.contains(column))
+    Ok(columns)
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(table_columns(connection, table)?.contains(column))
 }
 
 fn has_any_managed_table(connection: &Connection) -> Result<bool> {
@@ -168,12 +172,7 @@ fn has_any_managed_table(connection: &Connection) -> Result<bool> {
 
 fn schema_is_compatible(connection: &Connection) -> Result<bool> {
     for (table, required_columns) in REQUIRED_TABLES {
-        let mut statement = connection
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .with_context(|| format!("failed to inspect {table} schema"))?;
-        let columns: HashSet<String> = statement
-            .query_map([], |row| row.get(1))?
-            .collect::<rusqlite::Result<_>>()?;
+        let columns = table_columns(connection, table)?;
         if required_columns
             .iter()
             .any(|column| !columns.contains(*column))
