@@ -4,7 +4,7 @@
 
 /// 渲染边长（像素）。托盘图标在 100%–200% DPI 下最大显示 32px，
 /// 以 32 渲染、由系统按需缩小，三个档位都不会放大糊掉。
-export const TRAY_BADGE_EDGE = 32;
+const TRAY_BADGE_EDGE = 32;
 
 /// 数字可用的最大宽度：给圆角底留出边缘余量。
 const TRAY_BADGE_TEXT_BOX = 26;

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isDesktop } from "./platformDetection.js";
 
 const PERIOD_SCALE = {
   today: { factor: 1, points: 24, label: (index) => `${String(index).padStart(2, "0")}:00` },
@@ -9,10 +10,6 @@ const PERIOD_SCALE = {
   },
   month: { factor: 23.4, points: 30, label: (index) => `${index + 1} 日` },
 };
-
-function isTauriRuntime() {
-  return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
-}
 
 function emptySeries(period) {
   const config = PERIOD_SCALE[period] || PERIOD_SCALE.today;
@@ -309,7 +306,7 @@ function unavailableSnapshot(period = "today") {
 }
 
 async function loadUsageSnapshot(period = "today", options = {}) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 180));
     return demoSnapshot(period);
   }
@@ -329,7 +326,7 @@ async function loadUsageSnapshot(period = "today", options = {}) {
 }
 
 async function loadQuotaSnapshot(period = "today") {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return demoSnapshot(period);
   }
 
@@ -478,7 +475,7 @@ function demoSessions(period = "today") {
 }
 
 async function getUsageSessions(period = "today") {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     return demoSessions(period);
   }
@@ -545,7 +542,7 @@ function demoProjects(period = "today") {
 }
 
 async function getUsageProjects(period = "today") {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     return demoProjects(period);
   }
@@ -566,7 +563,7 @@ function sanitizeDemoRules(rules) {
 }
 
 async function getProjectRules() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 80));
     return { ...demoProjectRules };
   }
@@ -579,7 +576,7 @@ async function getProjectRules() {
 }
 
 async function setProjectRules(rules) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 120));
     demoProjectRules = sanitizeDemoRules(rules);
     return { ...demoProjectRules };
@@ -588,7 +585,7 @@ async function setProjectRules(rules) {
 }
 
 async function getUsageReport() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 220));
     return demoReport();
   }
@@ -602,14 +599,14 @@ async function getUsageReport() {
 
 // 桌面端 WebView 不响应 blob 下载，导出走后端写入下载目录；返回完整路径。
 async function exportCsvFile(fileName, content) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return null;
   }
   return invoke("export_csv", { fileName, content });
 }
 
 async function rebuildLocalLedger(period = "today") {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 700));
     return demoSnapshot(period);
   }
@@ -618,7 +615,7 @@ async function rebuildLocalLedger(period = "today") {
 }
 
 async function getSyncSettings() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     await new Promise((resolve) => setTimeout(resolve, 120));
     return {
       demo: true,
@@ -635,21 +632,21 @@ async function getSyncSettings() {
 }
 
 async function configureSync(directory) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置同步");
   }
   return invoke("configure_sync", { directory });
 }
 
 async function removeSyncDevice(deviceId) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能删除设备");
   }
   return invoke("remove_sync_device", { deviceId });
 }
 
 async function getClaudeHookStatus() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return {
       demo: true,
       installed: false,
@@ -664,14 +661,14 @@ async function getClaudeHookStatus() {
 }
 
 async function setClaudeHook(enabled) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置钩子");
   }
   return invoke("set_claude_hook", { enabled });
 }
 
 async function getAntigravityHookStatus() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return {
       demo: true,
       installed: false,
@@ -686,28 +683,28 @@ async function getAntigravityHookStatus() {
 }
 
 async function setAntigravityHook(enabled) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置钩子");
   }
   return invoke("set_antigravity_hook", { enabled });
 }
 
 async function getQoderCookieStatus() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return { demo: true, configured: false, source: null, message: null };
   }
   return invoke("qoder_cookie_status");
 }
 
 async function configureQoderCookie(cookie) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置 Cookie");
   }
   return invoke("configure_qoder_cookie", { cookie });
 }
 
 async function getClaudeOauthStatus() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return {
       demo: true,
       enabled: false,
@@ -720,21 +717,21 @@ async function getClaudeOauthStatus() {
 }
 
 async function setClaudeOauth(enabled) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置官方配额来源");
   }
   return invoke("set_claude_oauth", { enabled });
 }
 
 async function getCursorUsageStatus() {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     return { demo: true, enabled: false, installed: false, signedIn: false, expired: false };
   }
   return invoke("cursor_usage_status");
 }
 
 async function setCursorUsage(enabled) {
-  if (!isTauriRuntime()) {
+  if (!isDesktop()) {
     throw new Error("浏览器演示模式不能配置 Cursor 用量来源");
   }
   return invoke("set_cursor_usage", { enabled });
@@ -742,7 +739,7 @@ async function setCursorUsage(enabled) {
 
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
-  isTauriRuntime() ? pendingSnapshot(period) : demoSnapshot(period)
+  isDesktop() ? pendingSnapshot(period) : demoSnapshot(period)
 );
 
 export {

@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { platform as tauriPlatform } from "@tauri-apps/plugin-os";
-import {
-  resolveGlassMode,
-  resolveWindowsGlassComposition,
-} from "./glassAppearance.js";
-import { detectRuntimePlatform } from "./platformDetection";
+import { resolveGlassMode } from "./glassAppearance.js";
+import { detectRuntimePlatform, isDesktop } from "./platformDetection";
 import {
   renderTrayQuotaBadge,
   trayBadgeKey,
@@ -14,7 +11,9 @@ import {
   floatingViewportSize,
   isDockAnchorPosition,
   isStableFloatingMode,
+  monitorArea,
   monitorForWindowPosition,
+  overlapArea,
   physicalWindowSize,
   verticalStripHoverLocalLayout,
   verticalStripHoverLayout,
@@ -264,15 +263,9 @@ async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
   let best = null;
   let bestOverlap = 0;
   monitors.forEach((monitor) => {
-    const area = {
-      x: monitor.workArea?.position?.x ?? monitor.position.x,
-      y: monitor.workArea?.position?.y ?? monitor.position.y,
-      width: monitor.workArea?.size?.width ?? monitor.size.width,
-      height: monitor.workArea?.size?.height ?? monitor.size.height,
-    };
-    const overlapX = Math.min(pos.x + outer.width, area.x + area.width) - Math.max(pos.x, area.x);
-    const overlapY = Math.min(pos.y + outer.height, area.y + area.height) - Math.max(pos.y, area.y);
-    const overlap = Math.max(0, overlapX) * Math.max(0, overlapY);
+    const area = monitorArea(monitor);
+    if (!area) return;
+    const overlap = overlapArea({ x: pos.x, y: pos.y, width: outer.width, height: outer.height }, area);
     if (overlap > bestOverlap) {
       bestOverlap = overlap;
       best = area;
@@ -505,10 +498,6 @@ const lastPositions = {
   "strip-vertical": null,
 };
 
-function isDesktop() {
-  return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
-}
-
 function readStoredPosition(mode) {
   const key = POSITION_KEYS[mode];
   if (!key) return null;
@@ -521,6 +510,20 @@ function readStoredPosition(mode) {
   } catch {
     return null;
   }
+}
+
+/// 至少有一部分窗口落在某块屏幕（整屏，不扣任务栏）内才算有效坐标。
+function touchesAnyMonitor(monitors, pos, size) {
+  return (monitors || []).some((monitor) => {
+    const left = monitor.position.x;
+    const top = monitor.position.y;
+    return (
+      pos.x + size.width > left &&
+      pos.x < left + monitor.size.width &&
+      pos.y + size.height > top &&
+      pos.y < top + monitor.size.height
+    );
+  });
 }
 
 /// 记住窗口的物理坐标（按形态分开记）；边缘挂靠把窗口滑出屏幕时不记，
@@ -540,19 +543,7 @@ async function rememberWindowPosition(api, appWindow, mode) {
   // 完全掉出所有屏幕的坐标不记（钳位/锚定失效的残留、拔了扩展屏），
   // 否则坏坐标会被持久化，以后每次进入该形态都恢复到屏外。
   const outer = await appWindow.outerSize().catch(() => null);
-  if (outer && (monitors || []).length) {
-    const onAnyScreen = monitors.some((screen) => {
-      const left = screen.position.x;
-      const top = screen.position.y;
-      return (
-        pos.x + outer.width > left &&
-        pos.x < left + screen.size.width &&
-        pos.y + outer.height > top &&
-        pos.y < top + screen.size.height
-      );
-    });
-    if (!onAnyScreen) return;
-  }
+  if (outer && (monitors || []).length && !touchesAnyMonitor(monitors, pos, outer)) return;
   if (monitor) {
     const workArea = monitor.workArea || {
       position: monitor.position,
@@ -600,18 +591,7 @@ async function restoreWindowPosition(mode = "compact") {
   const fallback = WINDOW_SIZES[mode] || WINDOW_SIZES.compact;
   const width = size?.width || fallback.width;
   const height = size?.height || fallback.height;
-  // 至少有一部分窗口落在某块屏幕的可见区域内才算有效坐标。
-  const onScreen = (monitors || []).some((monitor) => {
-    const left = monitor.position.x;
-    const top = monitor.position.y;
-    return (
-      stored.x + width > left &&
-      stored.x < left + monitor.size.width &&
-      stored.y + height > top &&
-      stored.y < top + monitor.size.height
-    );
-  });
-  if (!onScreen) return;
+  if (!touchesAnyMonitor(monitors, stored, { width, height })) return;
 
   lastPositions[mode] = new api.PhysicalPosition(stored.x, stored.y);
   const offset = isLinuxPlatform()
@@ -1393,15 +1373,8 @@ async function onScaleFactorChanged(handler) {
 
 /// 返回实际生效的材质："native"（系统模糊已启用）、"alpha"（真实窗口
 /// Alpha）、"css"（原生不可用，由 CSS 近实心玻璃承担外观）或 "off"。
-async function setWindowGlass(enabled, radius = 12, tintStyle = "dark") {
-  if (!isDesktop()) {
-    return resolveGlassMode({
-      enabled,
-      tintStyle,
-      nativeAvailable: false,
-      trueAlphaAvailable: false,
-    });
-  }
+async function setWindowGlass(enabled, radius = 12) {
+  if (!isDesktop()) return resolveGlassMode({ enabled });
   if (isWindowsPlatform()) {
     // Keep one immutable composition strategy for the entire lifetime of the
     // Windows widget. Switching the HWND between HostBackdrop/Acrylic and clear
@@ -1410,17 +1383,12 @@ async function setWindowGlass(enabled, radius = 12, tintStyle = "dark") {
     // `transparent: true` WebView and drawing every material as a single CSS
     // surface. Do not reset WebView2's background at runtime: that also turns
     // external backdrop-filter sampling into an opaque white capture surface.
-    return resolveWindowsGlassComposition({ enabled, tintStyle }).mode;
+    return resolveGlassMode({ enabled, trueAlphaAvailable: true });
   }
   if (isLinuxPlatform()) {
     // WebKitGTK/Wayland 没有跨 GNOME、KDE 和 X11 都一致的原生 blur 协议。
     // 明确使用 CSS 表面，避免 setEffects 看似成功却渲染成不透明/黑底。
-    return resolveGlassMode({
-      enabled,
-      tintStyle,
-      nativeAvailable: false,
-      trueAlphaAvailable: false,
-    });
+    return resolveGlassMode({ enabled });
   }
   const api = await windowApi();
   if (!api) return enabled ? "css" : "off";
@@ -1844,7 +1812,6 @@ export {
   isMacPlatform,
   isWindowsPlatform,
   minimizeWindow,
-  normalizeUiScale,
   onMacAgentSelection,
   onMacAppearance,
   onScaleFactorChanged,
@@ -1865,7 +1832,6 @@ export {
   updateTrayQuotaBadge,
   setStripScale,
   setWindowGlass,
-  setPinnedHoverBehavior,
   setPinnedHoverTargetOpacity,
   setWindowPinned,
   setWindowUiScale,
