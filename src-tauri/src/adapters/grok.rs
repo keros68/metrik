@@ -25,7 +25,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 pub struct GrokAdapter {
     roots: Vec<PathBuf>,
@@ -309,7 +308,7 @@ fn load_summary(session_dir: Option<&Path>) -> Option<SummaryFile> {
 /// 根目录由调用点解析（quota.rs 传 `grok_home()`，测试直接传临时目录），
 /// 本函数不读环境变量。`timeout` 仅用于限制读尾部的最长阻塞（本地文件，
 /// 正常远小于此）。
-pub fn fetch_grok_quota_snapshot(root: &Path, _timeout: Duration) -> Result<Vec<QuotaSample>> {
+pub fn fetch_grok_quota_snapshot(root: &Path) -> Result<Vec<QuotaSample>> {
     let path = root.join("logs").join("unified.jsonl");
     if !path.exists() {
         anyhow::bail!("未找到 Grok 用量日志（~/.grok/logs/unified.jsonl）；先运行过 grok 会话后才会有配额快照");
@@ -575,7 +574,7 @@ mod tests {
         drop(file);
 
         // 根目录直接传临时目录，不改环境变量：并行测试不会互相干扰。
-        let samples = fetch_grok_quota_snapshot(&dir, Duration::from_secs(1)).unwrap();
+        let samples = fetch_grok_quota_snapshot(&dir).unwrap();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].adapter_id, "grok");
         assert_eq!(samples[0].window_key, "seven_day");
@@ -607,7 +606,7 @@ mod tests {
         .unwrap();
         drop(file);
 
-        let samples = fetch_grok_quota_snapshot(&dir, Duration::from_secs(1)).unwrap();
+        let samples = fetch_grok_quota_snapshot(&dir).unwrap();
         assert_eq!(samples.len(), 1);
         // 90% 用量的无时间戳行被跳过，留下的最新样本是 10% 用量那条。
         assert!((samples[0].remaining_percent - 90.0).abs() < 0.01);

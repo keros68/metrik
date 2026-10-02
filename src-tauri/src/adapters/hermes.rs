@@ -167,7 +167,7 @@ impl AgentAdapter for HermesAdapter {
             );
             events.push(
                 UsageEvent::new(
-                    hermes_providers::credited_agent(provider.as_deref(), base_url.as_deref()),
+                    hermes_providers::credited_agent(base_url.as_deref()),
                     event_key,
                     occurred_at_ms,
                     session_id,

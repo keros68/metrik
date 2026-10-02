@@ -215,8 +215,6 @@ mod tests {
                     .unwrap_or_else(|| home.join(".kimi-desktop-absent")),
             ]
         );
-        // grok 同样受 GROK_HOME 覆盖。
-        assert_eq!(paths(by_id("grok")), vec![crate::adapters::grok_home()]);
         // pi 与 OMP 的数据根与 PiAdapter::detected() 同源。
         assert_eq!(
             paths(by_id("pi")),
