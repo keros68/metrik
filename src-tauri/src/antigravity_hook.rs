@@ -7,7 +7,7 @@ use crate::domain::{sane_resets_at_ms, QuotaSample};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Antigravity CLI（`agy`）官方配额的零凭据来源：statusLine 钩子。
 ///
@@ -469,7 +469,7 @@ fn now_ms() -> i64 {
 /// 短名。系统关闭 8.3 生成（Windows 11 的新卷默认）时返回原样路径或 None，
 /// 调用方据此拒绝安装而不是装一个坏钩子。
 #[cfg(windows)]
-fn windows_short_path(executable: &Path) -> Option<String> {
+fn windows_short_path(executable: &std::path::Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::GetShortPathNameW;
