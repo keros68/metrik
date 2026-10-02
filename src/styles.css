@@ -3271,14 +3271,6 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 }
 
 .legend-line { display: block; width: 42px; height: 2px; border-radius: 2px; }
-/* 与图表线同源的降饱和配色。 */
-.legend-line--codex { background: #5586d4; }
-.legend-line--claude { background: #d98663; }
-.legend-line--opencode { background: #4aa392; }
-.legend-line--zcode { background: #8b80d9; }
-.legend-line--kimi { background: #c4719f; }
-.legend-line--antigravity { background: #d1a34e; }
-.legend-line--workbuddy { background: #5fa671; }
 
 .inspector-zone {
   min-width: 0;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QUOTA_LOW_REMAINING, bindingWindow, isBalanceWindow } from "./quotaWindows.js";
+import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 
 /// 造一个窗口；顺序按后端的 quota_window_rank（five_hour → seven_day → 月度）。
 function windowOf(key, remainingPercent, { resetExpired = false, available = true } = {}) {
@@ -114,4 +114,12 @@ test("全部失效时返回 null，由调用方显示「已重置，等待刷新
   assert.equal(bindingWindow([windowOf("five_hour", 0, { resetExpired: true })]), null);
   assert.equal(bindingWindow([]), null);
   assert.equal(bindingWindow(undefined), null);
+});
+
+test("重置倒计时：小数分钟先取整再拆分，不出现 60 分", () => {
+  assert.equal(formatReset(119.7), "2 小时 0 分");
+  assert.equal(formatReset(1439.7), "1 天 0 小时");
+  assert.equal(formatReset(61.2), "1 小时 1 分");
+  assert.equal(formatReset(2 * 1440 + 90), "2 天 1 小时");
+  assert.equal(formatReset(Number.NaN), "暂不可用");
 });
