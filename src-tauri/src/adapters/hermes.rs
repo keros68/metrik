@@ -27,12 +27,11 @@
 //! 自己的套餐，不显示配额。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
-use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
+use crate::domain::{ParsedSource, TokenVector, UsageEvent};
 use crate::hermes_providers;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
-use std::time::UNIX_EPOCH;
 
 pub struct HermesAdapter {
     database: PathBuf,
@@ -58,38 +57,7 @@ impl AgentAdapter for HermesAdapter {
     }
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
-        let Ok(metadata) = self.database.metadata() else {
-            return Vec::new();
-        };
-        // WAL 模式下写入先进 -wal，主库文件的 mtime/size 可能长期不变。
-        // 把三个文件的状态合并成一个变更指纹，任何一个变化都会触发重扫。
-        let mut size = metadata.len();
-        let mut mtime_ns = file_mtime_ns(&metadata);
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = self.database.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            if let Ok(sidecar_meta) = std::fs::metadata(PathBuf::from(sidecar)) {
-                size += sidecar_meta.len();
-                mtime_ns = mtime_ns.max(file_mtime_ns(&sidecar_meta));
-            }
-        }
-        if mtime_ns / 1_000_000 < cutoff_ms {
-            return Vec::new();
-        }
-        let normalized = {
-            let value = self.database.to_string_lossy().replace('\\', "/");
-            if cfg!(windows) {
-                value.to_lowercase()
-            } else {
-                value
-            }
-        };
-        vec![SourceCandidate {
-            source_id: stable_hash(&format!("hermes|{normalized}")),
-            path: self.database.clone(),
-            size,
-            mtime_ns,
-        }]
+        super::sqlite_candidate(&self.database, self.id(), cutoff_ms)
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
@@ -225,15 +193,6 @@ impl AgentAdapter for HermesAdapter {
             diagnostics,
         })
     }
-}
-
-fn file_mtime_ns(metadata: &std::fs::Metadata) -> i64 {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map(|value| value.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

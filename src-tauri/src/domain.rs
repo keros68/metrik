@@ -535,5 +535,17 @@ pub struct SyncDeviceView {
 pub fn stable_hash(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hex::encode(hasher.finalize())
+    format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    /// 事件与来源身份都落盘，哈希的文本形态（小写十六进制）不能变。
+    #[test]
+    fn stable_hash_is_lowercase_hex_sha256() {
+        assert_eq!(
+            super::stable_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

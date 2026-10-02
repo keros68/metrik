@@ -1,20 +1,15 @@
 use super::{
-    discover_jsonl, timestamp_str_ms, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate,
+    discover_jsonl, timestamp_str_ms, AgentAdapter, JsonlRecords, ParsedScan, ScanDiagnostics,
+    SourceCandidate,
 };
 use crate::domain::{ParsedSource, TokenVector, UsageEvent};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 pub struct ClaudeAdapter {
     roots: Vec<PathBuf>,
-    /// 写进账本的 adapter id。用户声明的自定义来源用的是同一套 Claude 兼容
-    /// JSONL 格式，因此共用这套解析，只换 id——多一份复制粘贴的解析器意味着
-    /// 以后修 bug 要修两遍。
-    adapter_id: &'static str,
 }
 
 #[derive(Clone)]
@@ -67,22 +62,18 @@ impl ClaudeAdapter {
         let home = dirs::home_dir().unwrap_or_default();
         Self {
             roots: vec![home.join(".claude").join("projects")],
-            adapter_id: "claude",
         }
     }
 
     #[cfg(test)]
     fn with_roots(roots: Vec<PathBuf>) -> Self {
-        Self {
-            roots,
-            adapter_id: "claude",
-        }
+        Self { roots }
     }
 }
 
 impl AgentAdapter for ClaudeAdapter {
     fn id(&self) -> &'static str {
-        self.adapter_id
+        "claude"
     }
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
@@ -90,9 +81,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let file = File::open(&candidate.path)
-            .with_context(|| format!("failed to open {}", candidate.path.display()))?;
-        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut records = JsonlRecords::<ClaudeRecord>::open(&candidate.path)?;
         let fallback_session = candidate
             .path
             .file_stem()
@@ -104,25 +93,7 @@ impl AgentAdapter for ClaudeAdapter {
         let mut diagnostics = ScanDiagnostics::default();
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
 
-        for (line_index, line) in reader.lines().enumerate() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => {
-                    if track_skipped_lines {
-                        diagnostics.unreadable_lines += 1;
-                    }
-                    continue;
-                }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<ClaudeRecord>(&line) else {
-                if track_skipped_lines {
-                    diagnostics.malformed_lines += 1;
-                }
-                continue;
-            };
+        for (line_index, record) in records.by_ref() {
             if record.record_type.as_deref() != Some("assistant") {
                 continue;
             }
@@ -209,6 +180,7 @@ impl AgentAdapter for ClaudeAdapter {
                 );
             }
         }
+        records.record_skipped(&mut diagnostics, track_skipped_lines);
 
         let mut events: Vec<UsageEvent> = messages
             .into_values()
@@ -251,6 +223,7 @@ impl AgentAdapter for ClaudeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     #[test]

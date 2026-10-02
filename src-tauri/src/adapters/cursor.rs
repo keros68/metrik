@@ -30,7 +30,7 @@
 //! 套餐余量同样来自仪表盘（`GET https://cursor.com/api/usage-summary`），
 //! 与用量共用开关和登录会话，见 `fetch_plan_quota`。
 
-use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
+use super::{normalize_locator, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
 use crate::domain::{
     sane_resets_at_ms, stable_hash, ParsedSource, QuotaSample, TokenVector, UsageEvent,
 };
@@ -42,7 +42,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub const USAGE_SETTING_KEY: &str = "cursor_usage_enabled";
 
@@ -358,19 +358,7 @@ pub fn reset_runtime_state() {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
-}
-
-fn normalize_locator(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        value.to_lowercase()
-    } else {
-        value
-    }
+    chrono::Utc::now().timestamp_millis()
 }
 
 struct Session {

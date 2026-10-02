@@ -87,14 +87,6 @@ impl AntigravityAdapter {
     pub fn detected() -> Self {
         Self
     }
-
-    fn endpoint(&self) -> Option<Endpoint> {
-        get_endpoint()
-    }
-
-    fn call(&self, endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
-        rpc_call(endpoint, method, body)
-    }
 }
 
 impl AgentAdapter for AntigravityAdapter {
@@ -103,11 +95,11 @@ impl AgentAdapter for AntigravityAdapter {
     }
 
     fn discover(&self, _cutoff_ms: i64) -> Vec<SourceCandidate> {
-        let Some(endpoint) = self.endpoint() else {
+        let Some(endpoint) = get_endpoint() else {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        if let Ok(list) = self.call(&endpoint, "GetAllCascadeTrajectories", &json!({})) {
+        if let Ok(list) = rpc_call(&endpoint, "GetAllCascadeTrajectories", &json!({})) {
             for cascade in normalize_trajectory_summaries(&list) {
                 candidates.push(SourceCandidate {
                     source_id: stable_hash(&format!("antigravity|{}", cascade.id)),
@@ -122,9 +114,8 @@ impl AgentAdapter for AntigravityAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let endpoint = self
-            .endpoint()
-            .ok_or_else(|| anyhow!("Antigravity language server 未在运行"))?;
+        let endpoint =
+            get_endpoint().ok_or_else(|| anyhow!("Antigravity language server 未在运行"))?;
 
         // cascade 路径形如 antigravity://cascade/<id>
         let cascade_id = candidate
@@ -134,7 +125,7 @@ impl AgentAdapter for AntigravityAdapter {
             .next()
             .unwrap_or_default()
             .to_owned();
-        let metadata = self.call(
+        let metadata = rpc_call(
             &endpoint,
             "GetCascadeTrajectoryGeneratorMetadata",
             &json!({ "cascadeId": cascade_id }),

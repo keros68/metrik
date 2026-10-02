@@ -1,10 +1,10 @@
-use super::{discover_jsonl, AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
+use super::{
+    discover_jsonl, AgentAdapter, JsonlRecords, ParsedScan, ScanDiagnostics, SourceCandidate,
+};
 use crate::domain::{ParsedSource, TokenVector, UsageEvent};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 /// 腾讯 CodeBuddy Code / WorkBuddy 的会话转录（JSONL），两个产品同一格式：
@@ -210,9 +210,7 @@ impl AgentAdapter for WorkbuddyAdapter {
     }
 
     fn parse(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
-        let file = File::open(&candidate.path)
-            .with_context(|| format!("failed to open {}", candidate.path.display()))?;
-        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut records = JsonlRecords::<BuddyRecord>::open(&candidate.path)?;
         let fallback_session = candidate
             .path
             .file_stem()
@@ -223,25 +221,7 @@ impl AgentAdapter for WorkbuddyAdapter {
         let mut diagnostics = ScanDiagnostics::default();
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
 
-        for (line_index, line) in reader.lines().enumerate() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => {
-                    if track_skipped_lines {
-                        diagnostics.unreadable_lines += 1;
-                    }
-                    continue;
-                }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<BuddyRecord>(&line) else {
-                if track_skipped_lines {
-                    diagnostics.malformed_lines += 1;
-                }
-                continue;
-            };
+        for (line_index, record) in records.by_ref() {
             // assistant 回复与工具调用都带 usage，都要计。
             //
             // status 只对 `message` 有约束：它在生成中会先落一行、完成后重写，
@@ -311,6 +291,7 @@ impl AgentAdapter for WorkbuddyAdapter {
                 );
             }
         }
+        records.record_skipped(&mut diagnostics, track_skipped_lines);
 
         let mut events: Vec<UsageEvent> = messages
             .into_values()
@@ -353,6 +334,7 @@ impl AgentAdapter for WorkbuddyAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     fn parse_lines(name: &str, lines: &[String]) -> ParsedScan {

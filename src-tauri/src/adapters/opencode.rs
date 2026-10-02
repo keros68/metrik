@@ -1,10 +1,11 @@
-use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
+use super::{
+    discover_files, file_mtime_ns, has_extension, normalize_locator, AgentAdapter, ParsedScan,
+    ScanDiagnostics, SourceCandidate,
+};
 use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::time::UNIX_EPOCH;
-use walkdir::WalkDir;
 
 /// OpenCode 的两代存储都支持：
 ///
@@ -130,16 +131,6 @@ impl OpencodeAdapter {
     }
 }
 
-/// 文件 mtime（纳秒）；拿不到记 0，让候选仍然成立（宁可多扫一次）。
-fn mtime_ns(path: &std::path::Path) -> i64 {
-    path.metadata()
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|since| since.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
-}
-
 impl AgentAdapter for OpencodeAdapter {
     fn id(&self) -> &'static str {
         "opencode"
@@ -156,49 +147,18 @@ impl AgentAdapter for OpencodeAdapter {
             };
             let mut wal_path = db_path.as_os_str().to_os_string();
             wal_path.push("-wal");
-            let wal_path = PathBuf::from(wal_path);
-            let wal_size = wal_path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let wal = std::fs::metadata(wal_path).ok();
             let normalized = normalize_locator(&db_path);
             found.push(SourceCandidate {
                 source_id: stable_hash(&format!("opencode|{normalized}")),
-                size: metadata.len() + wal_size,
-                mtime_ns: mtime_ns(&db_path).max(mtime_ns(&wal_path)),
+                size: metadata.len() + wal.as_ref().map_or(0, |meta| meta.len()),
+                mtime_ns: file_mtime_ns(&metadata).max(wal.as_ref().map_or(0, file_mtime_ns)),
                 path: db_path,
             });
         }
-        for root in self.roots.iter().filter(|root| root.exists()) {
-            for entry in WalkDir::new(root)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_type().is_file())
-            {
-                let path = entry.into_path();
-                if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                    continue;
-                }
-                let Ok(metadata) = path.metadata() else {
-                    continue;
-                };
-                let Ok(modified) = metadata.modified() else {
-                    continue;
-                };
-                let Ok(since_epoch) = modified.duration_since(UNIX_EPOCH) else {
-                    continue;
-                };
-                let mtime_ns = since_epoch.as_nanos().min(i64::MAX as u128) as i64;
-                if mtime_ns / 1_000_000 < cutoff_ms {
-                    continue;
-                }
-                let normalized = normalize_locator(&path);
-                found.push(SourceCandidate {
-                    source_id: stable_hash(&format!("opencode|{normalized}")),
-                    path,
-                    size: metadata.len(),
-                    mtime_ns,
-                });
-            }
-        }
+        found.extend(discover_files(&self.roots, self.id(), cutoff_ms, |path| {
+            has_extension(path, "json")
+        }));
         found.sort_by(|left, right| left.path.cmp(&right.path));
         found
     }
@@ -344,15 +304,6 @@ fn usage_event(
         vector,
         "exact",
     ))
-}
-
-fn normalize_locator(path: &std::path::Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        value.to_lowercase()
-    } else {
-        value
-    }
 }
 
 #[cfg(test)]
