@@ -1,9 +1,26 @@
 name: Release
 
 # 推送 v* 标签时构建安装包并发布草稿 Release，由维护者确认后发布。
+#
+# main 上的运行只预热编译缓存、不打包不发布。GitHub 缓存按 ref 隔离：标签运行
+# 读不到别的标签写的缓存，只能读默认分支的，所以缓存必须在 main 上写。依赖变化
+# 时预热一次；每周再跑一次，免得 7 天未访问的缓存被回收。标签推送不受 paths 限制。
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - src-tauri/Cargo.lock
+      - src-tauri/Cargo.toml
+      - .github/workflows/release.yml
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+# 预热运行可以被下一次预热取代；发布运行绝不取消。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: write
@@ -16,6 +33,7 @@ jobs:
         include:
           - platform: windows-latest
             args: ""
+            warm-args: ""
             rust-targets: ""
             widget-archs: ""
             updater-json: "true"
@@ -23,6 +41,7 @@ jobs:
           # 必须标明这一点。
           - platform: macos-latest
             args: "--target universal-apple-darwin"
+            warm-args: "--target universal-apple-darwin"
             rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
             widget-archs: "arm64 x86_64"
             updater-json: "true"
@@ -33,6 +52,7 @@ jobs:
             args: >-
               --bundles deb,appimage
               --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            warm-args: ""
             rust-targets: ""
             widget-archs: ""
             updater-json: "false"
@@ -63,8 +83,8 @@ jobs:
 
       # target 目录的整目录缓存（rust-cache）仍然不用：通用构建的 target 布局
       # 曾让缓存校验在 post 步骤报错、把已成功的构建标红（见 npm 缓存注释）。
-      # 编译级缓存由上面的 sccache 承担：依赖树（编译量大头）跨发布命中，
-      # 最终 crate + LTO 串行部分无缓存，那是 v0.19.10 实测的剩余大头。
+      # 编译级缓存由上面的 sccache 承担：依赖树（编译量大头）命中 main 上预热的
+      # 缓存，最终 crate + LTO 串行部分无缓存。
 
       # 与 ci.yml 的 Linux job 保持同一份依赖清单；改动时两边一起改。
       - name: Install Linux desktop dependencies
@@ -86,7 +106,14 @@ jobs:
       # 无法验证开发者），这是已知且在 README 声明的边界。下面这对密钥是
       # Tauri 更新器自己的 minisign 签名，只保证更新包在分发链路上没被掉包。
       # 同时会生成 latest.json（更新器的检查端点）并一并上传到 Release。
+      # 与发布构建同一条 tauri build 编译路径（同样的 features 与 target），
+      # sccache 的键才对得上；--no-bundle 跳过打包、签名与小组件扩展。
+      - name: Warm the compile cache
+        if: github.ref_type != 'tag'
+        run: npx tauri build ${{ matrix.warm-args }} --no-bundle
+
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        if: github.ref_type == 'tag'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -103,7 +130,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Verify WidgetKit extension is embedded
-        if: runner.os == 'macOS'
+        if: github.ref_type == 'tag' && runner.os == 'macOS'
         shell: bash
         run: |
           app_path="$(find src-tauri/target -path '*/release/bundle/macos/Metrik.app' -type d -print -quit)"
@@ -126,7 +153,7 @@ jobs:
       # 打包步骤成功不代表两个分发格式都产出了；缺失时直接判红，避免
       # Release 页只有其中一种包。
       - name: Verify Linux packages were built
-        if: runner.os == 'Linux'
+        if: github.ref_type == 'tag' && runner.os == 'Linux'
         shell: bash
         run: |
           find src-tauri/target -path '*/release/bundle/deb/*.deb' | grep -q .
