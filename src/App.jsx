@@ -941,7 +941,7 @@ function BreakdownSection({ snapshot, selectedAgent }) {
                   aria-hidden="true"
                   title={AGENT_META[entry.agent]?.label || entry.agent}
                 />
-                <span className="model-name">{modelDisplayName(entry.model)}</span>
+                <span className="model-name" title={modelDisplayName(entry.model)}>{modelDisplayName(entry.model)}</span>
                 <span className="model-track" aria-hidden="true">
                   <i style={{ transform: `scaleX(${entry.tokens / modelMax})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
                 </span>
