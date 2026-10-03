@@ -2724,6 +2724,23 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   font-size: 12px;
 }
 
+/* 概览的模型分布卡片在两列布局下只有约 360px，名称与进度条、数值同排会被
+   挤到只剩几个字符：改成两层，名称与数值一行，进度条在下方独占一行。轨道
+   起点都在名称列左缘，各行仍然对齐。 */
+.breakdown-card .model-list li {
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "dot name value"
+    ". track track";
+  column-gap: 9px;
+  row-gap: 5px;
+}
+
+.breakdown-card .model-list li > .model-dot { grid-area: dot; }
+.breakdown-card .model-list li > .model-name { grid-area: name; }
+.breakdown-card .model-list li > .model-track { grid-area: track; }
+.breakdown-card .model-list li > em { grid-area: value; }
+
 .model-dot {
   width: 8px;
   height: 8px;
