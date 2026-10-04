@@ -2,7 +2,7 @@ name: Pricing refresh
 
 # 每周一 03:00 UTC 重新生成价格表，有变化就开 PR。
 #
-# 不自动合并：LiteLLM 偶尔会成批改写某个 provider 的价目（一次刷新就把整个
+# 不自动合并：上游偶尔会成批改写某个 provider 的价目（LiteLLM 一次刷新就把整个
 # grok 系列从 $3/$15 改到 $1.25/$2.5），未经核对合进去等于把「猜价格」搬进
 # 仓库，正面违反 docs/PRODUCT-CONSTRAINTS.md 的数据真实性约束。人工看一眼
 # diff 再合。
@@ -26,7 +26,7 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      # 拉取 LiteLLM 数据和跑 cargo test 期间 .git/config 里不留写权限 token；
+      # 拉取价格数据和跑 cargo test 期间 .git/config 里不留写权限 token；
       # 只在最后开 PR 的那一步临时接上凭据。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,11 +103,12 @@ jobs:
           fi
 
           {
-            echo "由 \`.github/workflows/pricing-refresh.yml\` 从 LiteLLM 重新生成，估算截至 ${as_of}。"
+            echo "由 \`.github/workflows/pricing-refresh.yml\` 从 LiteLLM 与 models.dev 重新生成，估算截至 ${as_of}。"
             echo
-            echo "合之前请逐条看 diff：LiteLLM 偶尔会成批改写某个 provider 的价目，"
-            echo "改动过大或方向可疑的条目要回官方定价页核对。已被单测钉住的价目"
-            echo "如果消失，上一步的 cargo test 会先红。"
+            echo "合之前请逐条看 diff：上游偶尔会成批改写某个 provider 的价目，"
+            echo "改动过大或方向可疑的条目要回官方定价页核对。行尾标 \`// models.dev\`"
+            echo "的是只有 models.dev 收录的模型；文件头部「两源分歧」列出的条目新增时"
+            echo "也要核对。已被单测钉住的价目如果消失，上一步的 cargo test 会先红。"
             echo
             echo "生成表已覆盖的模型可以从 \`pricing.rs\` 的 MANUAL_PRICING 里删掉，"
             echo "两处都留会让手工值一直压过生成值。"
