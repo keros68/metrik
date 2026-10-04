@@ -1047,7 +1047,11 @@ async function resizeStripWindow({ width, height }) {
 /// Windows 与 Linux 竖向胶囊悬停时临时扩出一个透明画布承载详情卡。
 /// Windows/X11 用全局坐标保持原条身位置；Wayland 只改变本地尺寸，向右展开，
 /// 最终摆放交给合成器。关闭时恢复悬停前的尺寸以及可用时的全局位置。
-async function expandVerticalStripHover({ width, height, railWidth, railHeight, anchorY, cardHeight }, onPredictedLayout = null) {
+async function expandVerticalStripHover(
+  { width, height, railWidth, railHeight, anchorY, cardHeight },
+  onPredictedLayout = null,
+  onBeforeGrowInPlace = null,
+) {
   if (!isWindowsPlatform() && !isLinuxPlatform()) return null;
   const api = await windowApi();
   if (!api) return null;
@@ -1061,7 +1065,8 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   ]);
   const workArea = monitor?.workArea;
   if (!currentSize || (coordinateAware && (!currentPosition || !workArea))) return null;
-  if (!stripHoverRestore) {
+  const fresh = !stripHoverRestore;
+  if (fresh) {
     stripHoverRestore = {
       position: currentPosition,
       size: currentSize,
@@ -1089,6 +1094,17 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   });
   const predictedLayout = coordinateAware ? hoverLayoutFor(physical) : null;
   if (coordinateAware && !predictedLayout) return null;
+  // 新画面出来之前，DWM 会把旧的窄画面贴在新窗口原点上；原点左移时胶囊就
+  // 在左边停留，直到新画面出来。启动后第一次扩宽要等 GPU 分配大尺寸合成画面
+  // （见 waitForViewportWidth），实测停留 40–300ms。所以每次从收起态展开都先
+  // 保持原点原地扩宽——旧画面仍贴在胶囊原位——等新尺寸的画面出来再挪原点，
+  // 挪原点时只剩约 1 帧残影。原地扩宽前回调方要把条身切到左上对齐，新画面里
+  // 胶囊才仍在原位。
+  if (fresh && predictedLayout && onBeforeGrowInPlace && isWindowsPlatform()) {
+    onBeforeGrowInPlace();
+    await setWindowBounds(appWindow, base.position, physical);
+    await waitForViewportWidth(width);
+  }
   // Windows 会在 resize 与随后的 move 之间绘制中间帧（胶囊横跳、跳出鼠标
   // 命中区触发收回）：位置与尺寸作为一次原生变更下发，随后只核对。
   await setWindowBounds(
@@ -1155,6 +1171,33 @@ async function collapseVerticalStripHover() {
   await applyWebviewZoom(stripScale);
   await setWindowBounds(appWindow, restore.position, restore.size);
   rememberStripSize(restore.width, restore.height);
+}
+
+/// 等 WebView 视口达到目标 CSS 宽度，并跨过新尺寸的首次合成。冷启动后 GPU
+/// 第一次为大尺寸分配合成画面时，渲染会停顿约 200ms（无脚本、无布局，长帧
+/// 记录可见），停顿前还会照常跑一两次 rAF——所以要连等三次 rAF 才能确定
+/// 新尺寸的画面已经出来；预热过之后三次 rAF 只有几十毫秒。视口最多等
+/// 200ms、合成最多等 600ms，超时照常继续，悬停不能因此卡住。
+async function waitForViewportWidth(cssWidth) {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") return;
+  const deadline = Date.now() + 200;
+  while (Math.abs(window.innerWidth - cssWidth) > 1 && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 8));
+  }
+  await new Promise((resolve) => {
+    const timeout = window.setTimeout(resolve, 600);
+    let frames = 0;
+    const tick = () => {
+      frames += 1;
+      if (frames < 3) {
+        window.requestAnimationFrame(tick);
+        return;
+      }
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    window.requestAnimationFrame(tick);
+  });
 }
 
 /// 位置与尺寸作为一次原生变更下发（Windows 走 set_window_bounds 的单次

@@ -1442,22 +1442,31 @@ function StripBar({
           anchorY: hoveredDetail.anchorY,
           cardHeight: Math.ceil(cardRect.height),
         }, (predicted) => {
-          // 原生窗口已换原点：同步提交条身偏移，不等下一轮调度。
-          if (isLatest()) {
-            flushSync(() => {
-              setCanvasOpen(true);
-              setDetailLayout(predicted);
-            });
-          }
+          // 原生窗口已换原点：同步提交条身偏移，不等下一轮调度。即使这次展开
+          // 已被更新的悬停取代也要提交——布局必须和原生几何一致，否则条身停在
+          // 原地扩宽阶段的左对齐布局里，直到下一轮展开才纠正（鼠标边移动边
+          // 进入时实测停留 100ms 以上）。
+          flushSync(() => {
+            setCanvasOpen(true);
+            setDetailLayout(predicted);
+          });
+        }, () => {
+          // 原地扩宽阶段：条身贴画布左上角（即原位），详情卡近乎透明地预先绘制。
+          flushSync(() => {
+            setCanvasOpen(true);
+            setDetailLayout((current) => ({ ...current, side: "left", railOffsetY: 0, growing: true }));
+          });
         });
       } finally {
         hoverTransitionRef.current = false;
       }
-      if (!isLatest()) return;
+      // 同上：布局跟随原生几何，与这次展开是否已过期无关。
       if (layout) {
         setCanvasOpen(true);
         setDetailLayout(layout);
-      } else {
+      }
+      if (!isLatest()) return;
+      if (!layout) {
         setHoveredDetail((current) =>
           current?.agentId === hoveredDetail.agentId ? null : current,
         );
@@ -1606,6 +1615,7 @@ function StripBar({
     shellAppearance.className,
     canvasLayout ? "strip-shell--detail-open" : "",
     canvasLayout ? `strip-shell--detail-${detailLayout.side}` : "",
+    canvasLayout && detailLayout.growing ? "strip-shell--detail-growing" : "",
   ].filter(Boolean).join(" ");
   return (
     <main
