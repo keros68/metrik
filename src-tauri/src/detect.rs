@@ -110,6 +110,10 @@ pub fn table() -> Vec<AgentProbe> {
             probe: Probe::Credential(coding_quota::deepseek_credential_available),
         },
         AgentProbe {
+            id: "dsh",
+            probe: Probe::Paths(vec![crate::adapters::dsh_home()]),
+        },
+        AgentProbe {
             id: "grok",
             probe: Probe::Paths(vec![crate::adapters::grok_home()]),
         },

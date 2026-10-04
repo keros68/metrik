@@ -39,6 +39,7 @@ import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
 import cursorAppIcon from "./assets/cursor-app-icon.png";
 import deepseekAppIcon from "./assets/deepseek-app-icon.png";
+import dshAppIcon from "./assets/dsh-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
 import minimaxAppIcon from "./assets/minimax-app-icon.png";
@@ -281,6 +282,15 @@ const AGENT_META = {
     accent: "#1f9bd7",
     iconSrc: minimaxAppIcon,
     iconClass: "agent-icon--minimax",
+  },
+  dsh: {
+    // DeepSeek Harness 的本地逐请求用量（session.v4.jsonl.zstd）；没有套餐
+    // 配额可显示。deepseek 卡保持配额-only，两者互不混计。
+    label: "DeepSeek Harness",
+    // 强调色取 deepseek 蓝紫的暗一档，同一品牌系但与 deepseek / codex 区分。
+    accent: "#6a72d8",
+    iconSrc: dshAppIcon,
+    iconClass: "agent-icon--dsh",
   },
 };
 

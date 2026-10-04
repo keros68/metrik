@@ -1,7 +1,7 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, GrokAdapter,
-    HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics,
-    SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, DshAdapter,
+    GrokAdapter, HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter,
+    ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
 };
 #[cfg(test)]
 use crate::claude_hook;
@@ -749,6 +749,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(PiAdapter::detected()),
         Box::new(HermesAdapter::detected()),
         Box::new(MinimaxAdapter::detected()),
+        Box::new(DshAdapter::detected()),
         Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
     let mut report = ScanReport::default();
@@ -3311,6 +3312,7 @@ mod tests {
             Box::new(PiAdapter::detected()),
             Box::new(HermesAdapter::detected()),
             Box::new(MinimaxAdapter::detected()),
+            Box::new(DshAdapter::detected()),
         ];
 
         for adapter in adapters {
