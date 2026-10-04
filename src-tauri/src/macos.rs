@@ -89,7 +89,7 @@ struct StatusItemSpec {
     icon: &'static [u8],
 }
 
-const STATUS_ITEMS: [StatusItemSpec; 13] = [
+const STATUS_ITEMS: [StatusItemSpec; 14] = [
     StatusItemSpec {
         id: "codex",
         name: "ChatGPT",
