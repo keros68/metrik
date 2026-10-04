@@ -15,6 +15,7 @@ const AGENT_LINE_COLORS = {
   pi: { stroke: "#9aa0a6", fill: "rgba(154, 160, 166, 0.09)" },
   hermes: { stroke: "#7d8085", fill: "rgba(125, 128, 133, 0.09)" },
   cursor: { stroke: "#a8977c", fill: "rgba(168, 151, 124, 0.09)" },
+  minimax: { stroke: "#4fb0de", fill: "rgba(79, 176, 222, 0.09)" },
   default: { stroke: "#5586d4", fill: "rgba(85, 134, 212, 0.09)" },
 };
 
