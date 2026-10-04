@@ -1339,6 +1339,11 @@ function StripBar({
     ? cells.find(({ agentId }) => agentId === hoveredDetail.agentId) ?? null
     : null;
   const detailOpen = Boolean(detailCell);
+  // 原生窗口是否处于扩宽的透明画布态。它和 detailOpen 不同步：收起时详情卡
+  // 先消失，但画布布局要保持到原生窗口缩回之后，否则普通布局会先画进宽画布，
+  // 胶囊在屏幕上往左跳几帧（实测 47–76ms）。条身偏移也只在画布态生效。
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const canvasLayout = detailOpen || canvasOpen;
   // 控制按钮不再常驻：四个 26px 的槽在竖条上要吃掉 130px，比三个格子还高。
   // 改成按需就地展开——点状态灯位上浮出的 … 把它们放出来，条身随之变长，
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
@@ -1389,7 +1394,10 @@ function StripBar({
     if (!detailOpen) {
       latestWindowCorrection += 1;
       if (isDesktop() && (IS_WINDOWS || IS_LINUX)) {
-        runWindowAction(collapseVerticalStripHover);
+        runWindowAction(async () => {
+          await collapseVerticalStripHover();
+          setCanvasOpen(false);
+        });
       }
       return;
     }
@@ -1435,13 +1443,19 @@ function StripBar({
           cardHeight: Math.ceil(cardRect.height),
         }, (predicted) => {
           // 原生窗口已换原点：同步提交条身偏移，不等下一轮调度。
-          if (isLatest()) flushSync(() => setDetailLayout(predicted));
+          if (isLatest()) {
+            flushSync(() => {
+              setCanvasOpen(true);
+              setDetailLayout(predicted);
+            });
+          }
         });
       } finally {
         hoverTransitionRef.current = false;
       }
       if (!isLatest()) return;
       if (layout) {
+        setCanvasOpen(true);
         setDetailLayout(layout);
       } else {
         setHoveredDetail((current) =>
@@ -1466,7 +1480,7 @@ function StripBar({
     let timer = null;
     const fit = () => {
       timer = null;
-      if (detailOpen) return;
+      if (canvasLayout) return;
       const isVertical = shell.classList.contains("strip-shell--vertical");
       if (isVertical) {
         const targetHeight = measureStripVerticalContent(shell);
@@ -1590,8 +1604,8 @@ function StripBar({
   };
   const shellClassName = [
     shellAppearance.className,
-    detailOpen ? "strip-shell--detail-open" : "",
-    detailOpen ? `strip-shell--detail-${detailLayout.side}` : "",
+    canvasLayout ? "strip-shell--detail-open" : "",
+    canvasLayout ? `strip-shell--detail-${detailLayout.side}` : "",
   ].filter(Boolean).join(" ");
   return (
     <main
@@ -1605,7 +1619,7 @@ function StripBar({
       onPointerLeave={handlePointerLeave}
       style={{
         ...shellAppearance.style,
-        "--strip-rail-offset-y": `${detailLayout.railOffsetY}px`,
+        "--strip-rail-offset-y": `${canvasOpen ? detailLayout.railOffsetY : 0}px`,
         "--strip-detail-card-center-y": `${detailLayout.cardCenterY ?? ((hoveredDetail?.anchorY || 0) + detailLayout.railOffsetY)}px`,
         "--strip-detail-pointer-y": Number.isFinite(detailLayout.pointerY)
           ? `${detailLayout.pointerY}px`
