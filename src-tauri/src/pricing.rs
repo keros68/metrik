@@ -1,8 +1,9 @@
 //! 成本估算定价表（美元每百万 token）。
 //!
-//! 数据来源：LiteLLM 的公开价格表（`model_prices_and_context_window.json`），
-//! 只取 openai / anthropic / moonshot / zai / gemini / xai 六个官方第一方 API 的
-//! provider，构建期由 `scripts/update-pricing.mjs` 生成 `pricing_table.rs`
+//! 数据来源：LiteLLM 的公开价格表（`model_prices_and_context_window.json`）为主，
+//! models.dev 的 `api.json` 补 LiteLLM 未收录的模型；两边都只取 openai / anthropic /
+//! moonshot / zai / gemini / xai / minimax 七个官方第一方 API 的 provider，两源数值分歧记在
+//! 生成文件头部待人工核对。构建期由 `scripts/update-pricing.mjs` 生成 `pricing_table.rs`
 //! （`npm run pricing:update`）。运行时不联网——价格随发版更新，留在 git 里可审计。
 //! `.github/workflows/pricing-refresh.yml` 每周跑一次并开 PR，人工核对 diff 后合并。
 //!
@@ -19,7 +20,7 @@
 //!
 //! ## 覆盖范围
 //!
-//! 表内是六个第一方官方 API 的价目（生成时剥掉 LiteLLM 键的 provider 前缀，
+//! 表内是七个第一方官方 API 的价目（生成时剥掉 LiteLLM 键的 provider 前缀，
 //! 按裸模型名匹配）。OpenCode、Antigravity 等直连这些官方 API 的用量因此可以
 //! 计价（如 kimi-k2.5、glm-4.6、gemini-3-flash-preview）。
 //!
@@ -84,28 +85,49 @@ impl Pricing {
     }
 }
 
-/// 手动补充的官方第一方价目（生成表之外）：模型太新、LiteLLM 尚未收录时
+/// 手动补充的官方第一方价目（生成表之外）：模型太新、两个来源都未收录时
 /// 按官方定价页临时补齐，**收录后即删**——两处都留会让手工值一直压过生成值，
 /// 官方调价后刷新生成表也不生效。查找时先于生成表命中。
 ///
-/// glm-5.2 / glm-5.3 / glm-5.3-flash / kimi-k3 / kimi-k2.7-code 已在 2026-09-03
-/// 的刷新里被 LiteLLM 收录，数值与手工值一致，故从这里删掉；下面的测试仍按
-/// 各自官方定价页的数值断言，钉的是价格本身，不是它存在哪张表里。
+/// 已被生成表收录、数值与手工值一致的条目从这里删掉（如 glm-5.2、kimi-k3、
+/// glm-5-turbo）；下面的测试仍按各自官方定价页的数值断言，钉的是价格本身，
+/// 不是它存在哪张表里。
 ///
 /// 来源：
-/// - glm-5-turbo：z.ai 官方定价页 docs.z.ai/guides/overview/pricing
-///   （2026-07-20 核对；同页 glm-5/glm-5.1 数值与 LiteLLM 生成表完全一致，
-///   佐证来源可信）。缓存写入官方标注限时免费 → 记 0。
-/// - deepseek-v4-pro / deepseek-v4-flash：DeepSeek 官方定价页
-///   api-docs.deepseek.com/quick_start/pricing（2026-08-20 核对）。存的是峰段
-///   标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独计费 → 记 0。
+/// - deepseek-v4-pro / deepseek-flash：DeepSeek 官方定价页
+///   api-docs.deepseek.com/quick_start/pricing（2026-10-04 核对；v4-pro 自
+///   2026-08-20 起未变，官方更新日志写明 9 月 14 日后继续服务、计费不变）。
+///   存的是峰段标准价，谷段由 OFF_PEAK_HALF_PRICE 打 5 折。缓存写入官方不单独
+///   计费 → 记 0。
+/// - deepseek-v4-flash / deepseek-v4-flash-vision-exp：2026-09-10 04:00 UTC
+///   下线前的峰段价（v4-flash 2026-08-20 核对；vision-exp 2026-08-21 上线即与
+///   v4-flash 同价，见 2026-08-28 的定价页存档）。此后旧名按 deepseek-flash
+///   计费，见 RETIRED_ROUTES。
 /// - qwen3.8-max：阿里云百炼（2026-08-20 核对）。输入 $2/M、输出 $6/M 是官方
 ///   公布价；缓存两项官方尚未逐模型列出，按百炼计费文档的通用规则推算——
 ///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
 ///   规则推算不是逐模型报价，官方列出后应替换。
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
     (
+        "deepseek-flash",
+        Pricing {
+            input: 0.3,
+            cache_read: 0.006,
+            cache_write: 0.0,
+            output: 1.2,
+        },
+    ),
+    (
         "deepseek-v4-flash",
+        Pricing {
+            input: 0.44,
+            cache_read: 0.014,
+            cache_write: 0.0,
+            output: 1.32,
+        },
+    ),
+    (
+        "deepseek-v4-flash-vision-exp",
         Pricing {
             input: 0.44,
             cache_read: 0.014,
@@ -123,15 +145,6 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
         },
     ),
     (
-        "glm-5-turbo",
-        Pricing {
-            input: 1.2,
-            cache_read: 0.24,
-            cache_write: 0.0,
-            output: 4.0,
-        },
-    ),
-    (
         "qwen3.8-max",
         Pricing {
             input: 2.0,
@@ -146,12 +159,39 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
 /// DeepSeek 定价页（2026-08-23 核对）：峰段 01:00–04:00 与 06:00–10:00 UTC、
 /// **且只在周一至周五**，其余时段为谷段、5 折。表内存峰段标准价，与其他模型
 /// 「存官方标价」一致。
-const OFF_PEAK_HALF_PRICE: &[&str] = &["deepseek-v4-flash", "deepseek-v4-pro"];
+const OFF_PEAK_HALF_PRICE: &[&str] = &[
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-v4-pro",
+];
 
 /// 「周末全天谷段」这条规则生效的时刻：北京时间 2026-08-23 00:00，
 /// 即 2026-08-22 16:00 UTC。**此前的事件不按这条规则重算** —— 否则一次升级
 /// 会把用户看过的历史成本悄悄改成另一个数。
 const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
+
+/// 中国法定节假日全天谷段：这条规则在 2026-09-18 前后加入官方定价页
+/// （web.archive.org 快照 09-17 尚无、09-19 已有），其后的假期按国务院办公厅
+/// 《关于2026年部分节假日安排的通知》的放假区间计（北京时间日期，含两端）。
+/// 调休上班的周末不列入：定价页原文"周一至周五…为高峰；其余时段，包括周末…
+/// 均为空闲"，周末本来就是谷段。
+/// 每年 11 月前后公布次年安排后要补上，否则假期按工作日峰段估算（偏高）。
+const BEIJING_HOLIDAYS: &[(&str, &str)] =
+    &[("2026-09-25", "2026-09-27"), ("2026-10-01", "2026-10-07")];
+
+/// 已下线、由新模型接管并按新模型价计费的旧模型名：(旧名, 生效时刻, 新名)。
+/// DeepSeek 2026-09-10 更新日志：V4-Flash 与 V4-Flash-Vision-Exp 下线，
+/// 旧名路由到 V4.1-Flash 并按 Flash 价计费，新价 04:00 UTC 生效。生效前的
+/// 事件仍按旧名当时的价目。
+const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
+    ("deepseek-v4-flash", 1_789_012_800_000, "deepseek-flash"),
+    (
+        "deepseek-v4-flash-vision-exp",
+        1_789_012_800_000,
+        "deepseek-flash",
+    ),
+];
 
 /// 订阅制 coding plan 的模型 ID → 同一模型的官方第一方 API 价（估算口径）。
 /// 仅限"同一模型"，且要有官方佐证，不是看名字像就归一：
@@ -175,6 +215,11 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 ///   alignment.openai.com/auto-review 明写「Auto-review uses GPT-5.4 Thinking
 ///   (low reasoning)」（2026-08-20 核对），故按 gpt-5.4 官方 API 价估算。
 ///
+/// - DeepSeek 定价页「模型版本」一栏的版本名：DeepSeek-V4-Flash-0731、
+///   DeepSeek-V4-Pro-0813（2026-08-28 存档）与 DeepSeek-V4.1-Flash（2026-10-04
+///   核对）。Pi 经 OpenCode Go、千问 Token Plan 记的就是这些小写版本名，
+///   分别是 deepseek-v4-flash、deepseek-v4-pro、deepseek-flash 本身。
+///
 /// 没有官方价的订阅 ID 继续unpriced；kimi-for-coding 已有官方佐证（K2.7
 /// Code），见上。
 const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
@@ -187,6 +232,9 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("kimi-for-coding", "kimi-k2.7-code"),
     ("grok-4.5-build", "grok-4.5"),
     ("codex-auto-review", "gpt-5.4"),
+    ("deepseek-v4-flash-0731", "deepseek-v4-flash"),
+    ("deepseek-v4-pro-0813", "deepseek-v4-pro"),
+    ("deepseek-v4.1-flash", "deepseek-flash"),
 ];
 
 /// 不带单次请求输入量的定价，即只按基础档计。
@@ -208,7 +256,7 @@ pub fn price_for_request(
     occurred_at_ms: i64,
     request_input_tokens: Option<i64>,
 ) -> Option<Pricing> {
-    let (canonical, base) = resolve(model)?;
+    let (canonical, base) = resolve(model, occurred_at_ms)?;
     let mut price = if in_off_peak(canonical, occurred_at_ms) {
         base.halved()
     } else {
@@ -226,26 +274,33 @@ pub fn price_for_request(
 
 /// 归一到表里的规范名，连同标准价一起返回。规范名（而不是调用方传进来的
 /// 别名）才是查分时定价的依据。
-fn resolve(model: &str) -> Option<(&str, Pricing)> {
+fn resolve(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
+    // 别名先归一（版本名 deepseek-v4-flash-0731 → deepseek-v4-flash），
+    // 再看归一后的名字在这一刻是否已下线改路由。
+    let model = subscription_alias(model).unwrap_or(model);
+    if let Some(&(_, _, target)) = RETIRED_ROUTES
+        .iter()
+        .find(|(retired, from_ms, _)| *retired == model && occurred_at_ms >= *from_ms)
+    {
+        return exact(target).map(|pricing| (target, pricing));
+    }
     if let Some(pricing) = exact(model) {
         return Some((model, pricing));
     }
-    if let Some(base) = strip_date_suffix(model) {
-        if let Some(pricing) = exact(base) {
-            return Some((base, pricing));
-        }
-    }
-    let target = subscription_alias(model)?;
-    exact(target).map(|pricing| (target, pricing))
+    let base = strip_date_suffix(model)?;
+    exact(base).map(|pricing| (base, pricing))
 }
 
 /// DeepSeek 峰段是 01:00–04:00 与 06:00–10:00 UTC（左闭右开）、且只在周一至
-/// 周五；北京时间的周六周日全天谷段。其余时段为谷段。
+/// 周五；北京时间的周六周日与法定节假日全天谷段。其余时段为谷段。
 fn in_off_peak(canonical: &str, occurred_at_ms: i64) -> bool {
     if !OFF_PEAK_HALF_PRICE.contains(&canonical) {
         return false;
     }
     if occurred_at_ms >= WEEKEND_OFF_PEAK_FROM_MS && in_beijing_weekend(occurred_at_ms) {
+        return true;
+    }
+    if in_beijing_holiday(occurred_at_ms) {
         return true;
     }
     // Unix 纪元起点就是 UTC 00:00，UTC 又没有夏令时，整除即可，不必引 chrono。
@@ -266,6 +321,18 @@ fn in_beijing_weekend(occurred_at_ms: i64) -> bool {
     let day = (occurred_at_ms + 8 * 3_600_000).div_euclid(86_400_000);
     // 1970-01-01 是星期四，所以 +4 之后 0 = 周日、6 = 周六。
     matches!((day + 4).rem_euclid(7), 0 | 6)
+}
+
+/// 这一刻的北京时间日期是否落在 BEIJING_HOLIDAYS 的某个区间里。
+fn in_beijing_holiday(occurred_at_ms: i64) -> bool {
+    let date = chrono::DateTime::from_timestamp_millis(occurred_at_ms + 8 * 3_600_000)
+        .map(|moment| moment.date_naive().format("%Y-%m-%d").to_string());
+    // ISO 日期按字典序比较即按日期先后比较。
+    date.is_some_and(|date| {
+        BEIJING_HOLIDAYS
+            .iter()
+            .any(|(first, last)| *first <= date.as_str() && date.as_str() <= *last)
+    })
 }
 
 fn exact(model: &str) -> Option<Pricing> {
@@ -606,6 +673,73 @@ mod tests {
         let glm_peak = price_for("glm-5.3", 1_787_193_000_000).expect("priced");
         let glm_off = price_for("glm-5.3", 1_787_229_000_000).expect("priced");
         assert_eq!(glm_peak.input, glm_off.input);
+    }
+
+    #[test]
+    fn retired_deepseek_flash_names_switch_to_flash_rates_at_the_cutover() {
+        // 2026-09-09 02:00 UTC（周三峰段）：V4-Flash 尚未下线，按旧峰段价。
+        let before = price_for("deepseek-v4-flash", 1_788_919_200_000).unwrap();
+        assert_eq!(
+            (before.input, before.cache_read, before.output),
+            (0.44, 0.014, 1.32)
+        );
+        // 2026-09-11 02:00 UTC（周五峰段）：旧名按 V4.1-Flash 价计费。
+        let after = price_for("deepseek-v4-flash", 1_789_092_000_000).unwrap();
+        assert_eq!(
+            (after.input, after.cache_read, after.output),
+            (0.3, 0.006, 1.2)
+        );
+        let vision = price_for("deepseek-v4-flash-vision-exp", 1_789_092_000_000).unwrap();
+        assert_eq!(vision.input, 0.3);
+        let vision_before = price_for("deepseek-v4-flash-vision-exp", 1_788_919_200_000).unwrap();
+        assert_eq!(vision_before.input, 0.44);
+        // 官方版本名与模型 ID 同价，且同样跟着下线路由走。
+        let dated = price_for("deepseek-v4-flash-0731", 1_789_092_000_000).unwrap();
+        assert_eq!(dated.input, 0.3);
+        assert_eq!(
+            price_for("deepseek-v4-pro-0813", 1_789_092_000_000)
+                .unwrap()
+                .input,
+            1.32
+        );
+        assert_eq!(
+            price_for("deepseek-v4.1-flash", 1_789_092_000_000)
+                .unwrap()
+                .input,
+            0.3
+        );
+        // deepseek-v4-pro 官方继续按原价服务，不跟着路由。
+        assert_eq!(
+            price_for("deepseek-v4-pro", 1_789_092_000_000)
+                .unwrap()
+                .input,
+            1.32
+        );
+    }
+
+    #[test]
+    fn deepseek_chinese_public_holidays_are_off_peak() {
+        // 2026-10-05 02:00 UTC = 北京周一 10:00，钟点在峰段，但处于国庆假期。
+        assert_eq!(
+            price_for("deepseek-flash", 1_791_165_600_000)
+                .unwrap()
+                .input,
+            0.15
+        );
+        // 2026-09-25 02:00 UTC = 北京周五 10:00，中秋假期首日。
+        assert_eq!(
+            price_for("deepseek-v4-pro", 1_790_301_600_000)
+                .unwrap()
+                .input,
+            0.66
+        );
+        // 2026-10-08 02:00 UTC = 北京周四 10:00，假期结束，回到峰段。
+        assert_eq!(
+            price_for("deepseek-flash", 1_791_424_800_000)
+                .unwrap()
+                .input,
+            0.3
+        );
     }
 
     #[test]
