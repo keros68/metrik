@@ -40,6 +40,7 @@ import cursorAppIcon from "./assets/cursor-app-icon.png";
 import deepseekAppIcon from "./assets/deepseek-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
+import minimaxAppIcon from "./assets/minimax-app-icon.png";
 import opencodeAppIcon from "./assets/opencode-app-icon.png";
 import qoderAppIcon from "./assets/qoder-app-icon.png";
 import grokAppIcon from "./assets/grok-app-icon.png";
@@ -271,6 +272,14 @@ const AGENT_META = {
     accent: "#a08c6e",
     iconSrc: cursorAppIcon,
     iconClass: "agent-icon--cursor",
+  },
+  minimax: {
+    // MiniMax Code（mcode）的本地逐请求用量；Token Plan 额度暂无可编程的官方接口。
+    label: "MiniMax",
+    // 官方图标是蓝色渐变团块；强调色取偏青的天蓝，与 codex 宝蓝、deepseek 蓝紫拉开。
+    accent: "#1f9bd7",
+    iconSrc: minimaxAppIcon,
+    iconClass: "agent-icon--minimax",
   },
 };
 

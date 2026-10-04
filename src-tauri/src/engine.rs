@@ -1,7 +1,7 @@
 use crate::adapters::{
     AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, GrokAdapter,
-    HermesAdapter, KimiAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics, SourceCandidate,
-    WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
+    HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics,
+    SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
 };
 #[cfg(test)]
 use crate::claude_hook;
@@ -748,6 +748,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(GrokAdapter::detected()),
         Box::new(PiAdapter::detected()),
         Box::new(HermesAdapter::detected()),
+        Box::new(MinimaxAdapter::detected()),
         Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
     let mut report = ScanReport::default();
@@ -1549,6 +1550,13 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             "Hermes 本地 Token",
             scanned("hermes", "个用量库", "个"),
             "只读取 state.db 的用量统计表，不读消息内容；走其他家套餐的用量按路由记到对应计量卡片，其余留在 Hermes。",
+        ),
+        local(
+            "minimax",
+            "minimax-local",
+            "MiniMax Code 本地 Token",
+            scanned("minimax", "个用量库", "个"),
+            "只读取 runtime-state.sqlite 的逐请求用量表与会话工作目录，不读消息内容；主会话、子任务与定时会话均计入。表结构取自公开参考实现，尚未用真实安装的数据核对。",
         ),
     ];
 
@@ -3302,6 +3310,7 @@ mod tests {
             Box::new(WorkbuddyAdapter::detected()),
             Box::new(PiAdapter::detected()),
             Box::new(HermesAdapter::detected()),
+            Box::new(MinimaxAdapter::detected()),
         ];
 
         for adapter in adapters {

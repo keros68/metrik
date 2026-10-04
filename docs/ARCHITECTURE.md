@@ -20,6 +20,7 @@ Kimi wire.jsonl ─┤
 Grok updates ────┤
 Pi JSONL ────────┤
 Hermes SQLite ───┤
+MiniMax SQLite ──┤
 Cursor dashboard ┘
 
 Codex app-server ─────────┐
@@ -52,6 +53,7 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - Kimi: new-format records use the session path plus timestamp and component fingerprint; legacy StatusUpdates use the provider `message_id`. Kimi Work (kimi-desktop) embeds the same kimi-code kernel and writes the same wire.jsonl under its daimon runtime home; its sessions reuse the CLI parser unchanged, with project attribution from `session_index.jsonl` (`sessionId` → `workDir`) instead of `workspaces.json`.
 - Pi: provider `responseId` only (unique across 849 local assistant rows; the one row without it is an aborted message that falls back to the entry ID). `/fork` and `/clone` copy entries verbatim into a new session file, so a copy observes the same event with a different session in its payload and merges component-wise like Claude. Compaction and branch-summary summary usage is counted as its own event; the directory name is a lossy encoding and project attribution comes only from the header `cwd`.
 - Hermes: the full route row — session id, model, billing provider, base URL, billing mode, and task — from the `session_model_usage` primary key. Rows are cumulative counters re-read on every scan, so observations merge component-wise like Antigravity (keyed by the `hermes:` event-key prefix, since credited adapters differ); the timestamp is `last_seen`, so a long session's tokens land on its final active day. Forks and subagents only backfill metadata and never copy usage rows, so there is no replay risk.
+- MiniMax Code: the `local_runtime_token_usage` integer row id. Each row is one request (a delta, never merged); main sessions, sub-tasks, and scheduled sessions share the table, and project attribution comes from `local_runtime_sessions.workspace_dir`. The schema follows CC Switch's public reader and its fixtures and has not yet been checked against a real install.
 - Cursor: one dashboard usage event. The payload has no request id, so identity is timestamp, conversation id, model, and the token components; an identical fingerprint repeated within one day gets an occurrence suffix, so parallel calls in the same millisecond are both counted. Events are deltas and are never merged component-wise.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
 

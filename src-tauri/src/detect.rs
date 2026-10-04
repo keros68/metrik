@@ -140,6 +140,11 @@ pub fn table() -> Vec<AgentProbe> {
             id: "cursor",
             probe: Probe::Paths(vec![crate::adapters::cursor_state_db()]),
         },
+        AgentProbe {
+            // 与 MinimaxAdapter::detected() 同源：数据根受环境变量覆盖。
+            id: "minimax",
+            probe: Probe::Paths(vec![crate::adapters::minimax_data_dir()]),
+        },
     ]
 }
 
@@ -231,6 +236,10 @@ mod tests {
         assert_eq!(
             paths(by_id("cursor")),
             vec![crate::adapters::cursor_state_db()]
+        );
+        assert_eq!(
+            paths(by_id("minimax")),
+            vec![crate::adapters::minimax_data_dir()]
         );
     }
 
