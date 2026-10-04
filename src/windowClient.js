@@ -196,33 +196,46 @@ async function applyStartupUiScale(mode) {
   if (isMacPlatform() || mode !== "compact") return;
   const api = await windowApi();
   if (!api) return;
-  await applyWebviewZoom(uiScale);
   const appWindow = api.getCurrentWindow();
-  const size = WINDOW_SIZES.compact;
-  const height = compactContentHeight(size.height);
-  const placement = await floatingPlacement(
-    api,
-    "compact",
-    { width: size.width, height },
-    uiScale,
-  );
-  // tauri.conf 的 320×320 只负责首帧；内容可能因 75% 缩放或单行 Agent
-  // 收到更小，启动路径也必须像形态切换一样解除配置最小尺寸。
-  await appWindow.setMinSize(null);
-  // GTK 会把初始不可缩放的尺寸当成硬约束；这只在 Linux 启动路径解除。
-  // Windows 保留原有的启动时锁定行为。
-  if (isLinuxPlatform()) await appWindow.setResizable(true).catch(() => {});
-  else await appWindow.setResizable(false);
-  const physical = await scaledPhysicalSize(
-    api,
-    appWindow,
-    size.width,
-    height,
-    uiScale,
-    placement.monitor?.scaleFactor,
-  );
+  // Windows 与 Linux 首窗都以 hidden 创建（tauri.windows/linux.conf.json）：
+  // 位置和首帧尺寸恢复后才首次显示，避免先在屏幕中央按默认尺寸闪现再
+  // 跳走。任何一步失败都不能把应用永久留在托盘，所以显示放在 finally。
+  let revealed = false;
+  const reveal = async () => {
+    if (revealed) return;
+    revealed = true;
+    await appWindow.show().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+  };
   try {
+    await applyWebviewZoom(uiScale);
+    const size = WINDOW_SIZES.compact;
+    const height = compactContentHeight(size.height);
+    const placement = await floatingPlacement(
+      api,
+      "compact",
+      { width: size.width, height },
+      uiScale,
+    );
+    // tauri.conf 的 320×320 只负责首帧；内容可能因 75% 缩放或单行 Agent
+    // 收到更小，启动路径也必须像形态切换一样解除配置最小尺寸。
+    await appWindow.setMinSize(null);
+    // GTK 会把初始不可缩放的尺寸当成硬约束；这只在 Linux 启动路径解除。
+    // Windows 保留原有的启动时锁定行为。
+    if (isLinuxPlatform()) await appWindow.setResizable(true).catch(() => {});
+    else await appWindow.setResizable(false);
+    const physical = await scaledPhysicalSize(
+      api,
+      appWindow,
+      size.width,
+      height,
+      uiScale,
+      placement.monitor?.scaleFactor,
+    );
     await appWindow.setSize(physical);
+    // Windows 隐藏的 WebView2 视口不可靠：先显示再按实测视口校正，同
+    // applyWindowMode 的 compact 路径。Linux 保持校正完再首次映射。
+    if (!isLinuxPlatform()) await reveal();
     await reconcileFloatingSizeAfterShow(
       api,
       appWindow,
@@ -233,22 +246,19 @@ async function applyStartupUiScale(mode) {
     );
   } catch (error) {
     // 隐藏状态下某些 GTK 合成器会暂时拒绝 resize；位置已经在前一步恢复，
-    // 不能因为首帧尺寸校正失败把应用永久留在托盘。
-    console.warn("Unable to apply the hidden Linux startup size.", error);
+    // 尺寸偏差由内容自愈观察器收敛。
+    console.warn("Unable to apply the startup window size.", error);
   } finally {
-    // Linux 首窗在 tauri.linux.conf.json 中以 hidden 创建。位置和首帧尺寸已
-    // 全部恢复后才首次映射，避免 GTK 先按默认居中位置闪现再移动。
-    if (isLinuxPlatform()) {
-      await appWindow.show().catch(() => {});
-      await appWindow.setFocus().catch(() => {});
-    }
+    await reveal();
   }
 }
 
 /// 窗口重设尺寸后可能伸出屏幕（固定状态下竖条切横条最典型：位置不动、
 /// 宽度暴涨，控制按钮全在屏幕外，固定态又没有拖拽区，用户就被锁死了）。
 /// 把窗口钳回重叠面积最大的显示器工作区内；完全不与任何屏幕重叠时
-/// 返回 false，由调用方居中。
+/// 返回 false，由调用方居中。读不到坐标或显示器（登录初期、显示配置
+/// 变动中的瞬时失败）时无从判断，保持原位并返回 true：居中会覆盖用户
+/// 摆放的位置，下一次移动还会把居中坐标记成新位置。
 /// knownOuter：调用方刚算出的物理尺寸。setSize 异步生效，紧接着读 outerSize
 /// 会拿到旧值（实测拿到过 ~0），把变高的窗口钳错——传入时跳过 outerSize 读取。
 async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
@@ -259,7 +269,7 @@ async function clampIntoWorkArea(api, appWindow, knownOuter = null) {
     api.availableMonitors().catch(() => []),
   ]);
   const outer = knownOuter || readOuter;
-  if (!pos || !outer || !(monitors || []).length) return false;
+  if (!pos || !outer || !(monitors || []).length) return true;
   let best = null;
   let bestOverlap = 0;
   monitors.forEach((monitor) => {
@@ -1037,7 +1047,7 @@ async function resizeStripWindow({ width, height }) {
 /// Windows 与 Linux 竖向胶囊悬停时临时扩出一个透明画布承载详情卡。
 /// Windows/X11 用全局坐标保持原条身位置；Wayland 只改变本地尺寸，向右展开，
 /// 最终摆放交给合成器。关闭时恢复悬停前的尺寸以及可用时的全局位置。
-async function expandVerticalStripHover({ width, height, railWidth, railHeight, anchorY, cardHeight }) {
+async function expandVerticalStripHover({ width, height, railWidth, railHeight, anchorY, cardHeight }, onPredictedLayout = null) {
   if (!isWindowsPlatform() && !isLinuxPlatform()) return null;
   const api = await windowApi();
   if (!api) return null;
@@ -1079,24 +1089,18 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   });
   const predictedLayout = coordinateAware ? hoverLayoutFor(physical) : null;
   if (coordinateAware && !predictedLayout) return null;
-  const mutations = [
-    appWindow.setSize(physical).catch((error) => {
-      console.warn("Unable to expand the strip hover window.", error);
-    }),
-  ];
-  if (predictedLayout) {
-    mutations.push(
-      appWindow
-        .setPosition(new api.PhysicalPosition(
-          Math.round(predictedLayout.x),
-          Math.round(predictedLayout.y),
-        ))
-        .catch(() => {}),
-    );
-  }
-  // Windows 会在 resize 与随后的 move 之间绘制中间帧；胶囊先跳出鼠标命中区
-  // 就会触发收回。两项原生变更同时下发，随后只核对原生尺寸和位置。
-  await Promise.all(mutations);
+  // Windows 会在 resize 与随后的 move 之间绘制中间帧（胶囊横跳、跳出鼠标
+  // 命中区触发收回）：位置与尺寸作为一次原生变更下发，随后只核对。
+  await setWindowBounds(
+    appWindow,
+    predictedLayout
+      ? new api.PhysicalPosition(Math.round(predictedLayout.x), Math.round(predictedLayout.y))
+      : null,
+    physical,
+  );
+  // 原生窗口已经换了原点，条身的 CSS 偏移必须马上跟上；等下面的布局稳定
+  // 与复核走完再提交，旧偏移会让胶囊在新窗口里错位好几帧。
+  if (predictedLayout) onPredictedLayout?.(hoverLayoutResult(predictedLayout));
   // 悬停画布是临时几何，不能反算 zoom，也不能经过通用钳位再次移动条身。
   await settleWebviewLayout();
   physical = await appWindow.innerSize().catch(() => physical);
@@ -1123,18 +1127,22 @@ async function expandVerticalStripHover({ width, height, railWidth, railHeight, 
   await appWindow
     .setPosition(new api.PhysicalPosition(Math.round(layout.x), Math.round(layout.y)))
     .catch(() => {});
-  const cardCenterY = layout.cardCenter / scale;
-  const railOffsetY = layout.railOffsetY / scale;
-  const pointerY = Math.min(
-    Math.max(anchorY + railOffsetY - cardCenterY + cardHeight / 2, 22),
-    Math.max(cardHeight - 22, 22),
-  );
-  return {
-    side: layout.side,
-    cardCenterY,
-    pointerY,
-    railOffsetY,
-  };
+  return hoverLayoutResult(layout);
+
+  function hoverLayoutResult(native) {
+    const cardCenterY = native.cardCenter / scale;
+    const railOffsetY = native.railOffsetY / scale;
+    const pointerY = Math.min(
+      Math.max(anchorY + railOffsetY - cardCenterY + cardHeight / 2, 22),
+      Math.max(cardHeight - 22, 22),
+    );
+    return {
+      side: native.side,
+      cardCenterY,
+      pointerY,
+      railOffsetY,
+    };
+  }
 }
 
 async function collapseVerticalStripHover() {
@@ -1145,10 +1153,29 @@ async function collapseVerticalStripHover() {
   if (!api) return;
   const appWindow = api.getCurrentWindow();
   await applyWebviewZoom(stripScale);
-  const mutations = [appWindow.setSize(restore.size).catch(() => {})];
-  if (restore.position) mutations.push(appWindow.setPosition(restore.position).catch(() => {}));
-  await Promise.all(mutations);
+  await setWindowBounds(appWindow, restore.position, restore.size);
   rememberStripSize(restore.width, restore.height);
+}
+
+/// 位置与尺寸作为一次原生变更下发（Windows 走 set_window_bounds 的单次
+/// SetWindowPos）。其它平台、没有位置或命令失败时退回同时发出两次调用。
+async function setWindowBounds(appWindow, position, size) {
+  if (position && isWindowsPlatform()) {
+    try {
+      await invoke("set_window_bounds", {
+        x: Math.round(position.x),
+        y: Math.round(position.y),
+        width: Math.round(size.width),
+        height: Math.round(size.height),
+      });
+      return;
+    } catch (error) {
+      console.warn("Unable to apply the window bounds atomically.", error);
+    }
+  }
+  const mutations = [appWindow.setSize(size).catch(() => {})];
+  if (position) mutations.push(appWindow.setPosition(position).catch(() => {}));
+  await Promise.all(mutations);
 }
 
 /// 控制按钮就地展开会经 fit 观察器把窗口临时加高/加宽；展开前记下原生
@@ -1190,13 +1217,11 @@ async function collapseStripControlsExpand() {
   const api = await windowApi();
   if (!api) return;
   const appWindow = api.getCurrentWindow();
-  // 尺寸与位置同时下发：Windows 会在两段原生变更之间画中间帧，拆开
-  // 发就是收起时肉眼可见的一跳。几何来自展开前的稳定状态，不再过
+  // 尺寸与位置作为一次原生变更下发：Windows 会在两段原生变更之间画
+  // 中间帧，就是收起时肉眼可见的一跳。几何来自展开前的稳定状态，不再过
   // reconcile/锚定；极端情况（展开期间改了 DPI/缩放）由 fit 观察器
   // 在 DOM 收起后按测量值兜底修正。
-  const mutations = [appWindow.setSize(restore.size).catch(() => {})];
-  if (restore.position) mutations.push(appWindow.setPosition(restore.position).catch(() => {}));
-  await Promise.all(mutations);
+  await setWindowBounds(appWindow, restore.position, restore.size);
   rememberStripSize(Math.round(restore.cssWidth), Math.round(restore.cssHeight));
 }
 
@@ -1705,10 +1730,13 @@ async function setWindowPinned(pinned) {
 
 /// 胶囊条用显式原生拖动代替 data-tauri-drag-region：开始拖动前必须先让详情
 /// 扩窗完整收回，否则它保存的旧坐标会在拖动结束后把窗口搬回原位。
+/// 控制菜单展开期间同样可以拖动：展开前记下的坐标随之作废，收起时只还原
+/// 尺寸，否则指针离开、菜单收起的那一刻窗口会跳回拖动前的位置。
 async function startWindowDragging() {
   if (isMacPlatform()) return;
   const api = await windowApi();
   if (!api) return;
+  if (stripControlsRestore) stripControlsRestore = { ...stripControlsRestore, position: null };
   await api.getCurrentWindow().startDragging();
 }
 

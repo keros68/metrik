@@ -1127,6 +1127,55 @@ async fn set_taskbar_button(window: tauri::WebviewWindow, visible: bool) -> Resu
     Ok(())
 }
 
+/// 一次 SetWindowPos 同时改位置和尺寸（物理像素）。JS 侧分开调 setSize 与
+/// setPosition 是两次原生变更，DWM 会在中间合成一帧：竖条悬停扩窗/收回时实测
+/// 有 6–11ms 窗口尺寸已变、位置未变，胶囊在屏幕上横跳一下。
+/// 只在 Windows 实现；其它平台返回错误，由前端退回分开调用。
+#[tauri::command]
+async fn set_window_bounds(
+    window: tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use core::ffi::c_void;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        window
+            .run_on_main_thread(move || {
+                let result = unsafe {
+                    SetWindowPos(
+                        HWND(hwnd as *mut c_void),
+                        None,
+                        x,
+                        y,
+                        width as i32,
+                        height as i32,
+                        SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
+                    )
+                };
+                let _ = sender.send(result.map_err(|error| error.to_string()));
+            })
+            .map_err(|error| error.to_string())?;
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (&window, x, y, width, height);
+        Err("set_window_bounds is only implemented on Windows".into())
+    }
+}
+
 /// Windows 托盘余量徽标：把前端渲染好的 RGBA 位图换成任务栏托盘图标。
 /// 隐藏窗口后任务栏按钮本身就没了，能常驻显示数字的只有通知区域的托盘图标；
 /// 位图由 webview 里的 canvas 画出（渲染权威在前端，与悬浮窗尺寸同一套哲学），
@@ -1797,6 +1846,7 @@ pub fn run() {
             qoder_cookie_status,
             configure_qoder_cookie,
             set_taskbar_button,
+            set_window_bounds,
             set_tray_quota_icon,
             #[cfg(target_os = "linux")]
             linux_supports_global_window_coordinates,

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "windows-visibility",
+  "description": "Windows floating-window transactions hide the window while it moves and resizes, then show it; the first window is created hidden.",
+  "platforms": ["windows"],
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
+  ]
+}
