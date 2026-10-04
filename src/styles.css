@@ -998,6 +998,14 @@ html:has(.strip-shell) #root {
   animation-name: strip-detail-reveal-left;
 }
 
+/* 悬停展开先原地扩宽、再挪原点。扩宽阶段卡片以近乎透明的方式真实绘制，
+   让首次绘制（含背景模糊）在挪原点之前完成；visibility:hidden 或 opacity:0
+   会被跳过绘制，起不到预热作用。 */
+.strip-shell--detail-growing .strip-detail-card {
+  opacity: 0.01;
+  animation: none;
+}
+
 .strip-detail-card::after {
   content: "";
   position: absolute;

@@ -461,3 +461,50 @@ test("hover collapse restores position and size in one native call on Windows", 
     JSON.stringify([["set_window_bounds", { x: 2483, y: 297, width: 68, height: 632 }]]),
   );
 });
+
+test("a fresh hover expansion first grows in place, then moves the origin", async () => {
+  const context = controller();
+  const events = [];
+  const appWindow = {
+    outerPosition: async () => ({ x: 2483, y: 297 }),
+    outerSize: async () => ({ width: 68, height: 632 }),
+    innerSize: async () => ({ width: 507, height: 629 }),
+    scaleFactor: async () => 1,
+    setSize: async () => { events.push("setSize"); },
+    setPosition: async () => {},
+  };
+  const api = {
+    getCurrentWindow: () => appWindow,
+    currentMonitor: async () => ({ workArea: {
+      position: { x: 0, y: 0 }, size: { width: 2560, height: 1320 },
+    } }),
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => api,
+    invoke: async (command, args) => { events.push([command, args.x, args.width]); },
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    waitForViewportWidth: async () => { events.push("painted"); },
+    settleWebviewLayout: async () => {},
+    applyWebviewZoom: async () => {},
+  });
+  const hover = {
+    width: 507, height: 629, railWidth: 68, railHeight: 632,
+    anchorY: 150, cardHeight: 120,
+  };
+  await context.expandVerticalStripHover(hover, () => events.push("layout"), () => events.push("align-left"));
+  assert.deepEqual(events.slice(0, 5), [
+    "align-left",
+    ["set_window_bounds", 2483, 507],
+    "painted",
+    ["set_window_bounds", 2483 + 68 - 507, 507],
+    "layout",
+  ]);
+  // 已经扩开的画布（在格子之间移动）不再原地扩宽。
+  events.length = 0;
+  await context.expandVerticalStripHover(hover, () => events.push("layout"), () => events.push("align-left"));
+  assert.equal(events.includes("align-left"), false);
+});
