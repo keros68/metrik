@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
@@ -1432,6 +1433,9 @@ function StripBar({
           railHeight,
           anchorY: hoveredDetail.anchorY,
           cardHeight: Math.ceil(cardRect.height),
+        }, (predicted) => {
+          // 原生窗口已换原点：同步提交条身偏移，不等下一轮调度。
+          if (isLatest()) flushSync(() => setDetailLayout(predicted));
         });
       } finally {
         hoverTransitionRef.current = false;

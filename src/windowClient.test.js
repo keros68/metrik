@@ -333,3 +333,131 @@ test("collapseStripControlsExpand without a pending restore is a no-op", async (
   await context.collapseStripControlsExpand();
   assert.equal(resized, 0);
 });
+
+test("dragging with strip controls open keeps the dropped position when the menu collapses", async () => {
+  const context = controller();
+  const calls = [];
+  let current = {
+    position: { x: 1246, y: 344 },
+    size: { width: 68, height: 632 },
+  };
+  const appWindow = {
+    outerPosition: async () => current.position,
+    outerSize: async () => current.size,
+    scaleFactor: async () => 1.25,
+    setSize: async (size) => { calls.push(["setSize", size]); current = { ...current, size }; },
+    setPosition: async (position) => { calls.push(["setPosition", position]); current = { ...current, position }; },
+    startDragging: async () => {},
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => ({ getCurrentWindow: () => appWindow }),
+  });
+  await context.beginStripControlsExpand();
+  current = { position: { x: 1246, y: 344 }, size: { width: 68, height: 760 } };
+  await context.startWindowDragging();
+  // 用户把展开态的条拖到屏幕右缘。
+  current = { ...current, position: { x: 2492, y: 329 } };
+  await context.collapseStripControlsExpand();
+  assert.deepEqual(calls, [["setSize", { width: 68, height: 632 }]]);
+  assert.deepEqual(current.position, { x: 2492, y: 329 });
+});
+
+test("work-area clamp leaves the window in place when monitors cannot be read", async () => {
+  const context = controller();
+  let moved = false;
+  context.isLinuxPlatform = () => false;
+  const clamped = await context.clampIntoWorkArea({
+    availableMonitors: async () => { throw new Error("transient"); },
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  }, {
+    outerPosition: async () => ({ x: 2478, y: 270 }),
+    setPosition: async () => { moved = true; },
+  }, { width: 68, height: 632 });
+  // true 表示调用方不得居中。
+  assert.equal(clamped, true);
+  assert.equal(moved, false);
+});
+
+test("hover expansion moves and resizes in one native call and reports the layout before settling", async () => {
+  const context = controller();
+  const events = [];
+  const appWindow = {
+    outerPosition: async () => ({ x: 2483, y: 297 }),
+    outerSize: async () => ({ width: 68, height: 632 }),
+    innerSize: async () => ({ width: 507, height: 629 }),
+    scaleFactor: async () => 1,
+    setSize: async () => { events.push("setSize"); },
+    setPosition: async (value) => { events.push(["setPosition", value.x, value.y]); },
+  };
+  const api = {
+    getCurrentWindow: () => appWindow,
+    currentMonitor: async () => ({ workArea: {
+      position: { x: 0, y: 0 }, size: { width: 2560, height: 1320 },
+    } }),
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => api,
+    invoke: async (command, args) => { events.push([command, args.x, args.y, args.width, args.height]); },
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    settleWebviewLayout: async () => { events.push("settle"); },
+    applyWebviewZoom: async () => {},
+  });
+  await context.expandVerticalStripHover({
+    width: 507, height: 629, railWidth: 68, railHeight: 632,
+    anchorY: 150, cardHeight: 120,
+  }, (layout) => events.push(["layout", layout.side]));
+  assert.deepEqual(events.slice(0, 3), [
+    ["set_window_bounds", 2483 + 68 - 507, events[0][2], 507, 629],
+    ["layout", "right"],
+    "settle",
+  ]);
+  assert.equal(events.includes("setSize"), false);
+});
+
+test("hover collapse restores position and size in one native call on Windows", async () => {
+  const context = controller();
+  const calls = [];
+  let position = { x: 2483, y: 297 };
+  const appWindow = {
+    outerPosition: async () => position,
+    outerSize: async () => ({ width: 68, height: 632 }),
+    innerSize: async () => ({ width: 507, height: 629 }),
+    scaleFactor: async () => 1,
+    setSize: async () => { calls.push("setSize"); },
+    setPosition: async (value) => { position = value; },
+  };
+  const api = {
+    getCurrentWindow: () => appWindow,
+    currentMonitor: async () => ({ workArea: {
+      position: { x: 0, y: 0 }, size: { width: 2560, height: 1320 },
+    } }),
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => api,
+    invoke: async (command, args) => { calls.push([command, args]); },
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    settleWebviewLayout: async () => {},
+    applyWebviewZoom: async () => {},
+  });
+  await context.expandVerticalStripHover({
+    width: 507, height: 629, railWidth: 68, railHeight: 632,
+    anchorY: 150, cardHeight: 120,
+  });
+  calls.length = 0;
+  await context.collapseVerticalStripHover();
+  assert.equal(
+    JSON.stringify(calls),
+    JSON.stringify([["set_window_bounds", { x: 2483, y: 297, width: 68, height: 632 }]]),
+  );
+});
