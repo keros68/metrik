@@ -1,19 +1,36 @@
 //! 由 scripts/update-pricing.mjs 生成，请勿手改。
-//! 来源：LiteLLM 的 model_prices_and_context_window.json
-//! （只取 openai / anthropic / moonshot / zai / gemini / xai 官方第一方 API）。
-//! 重新生成：node scripts/update-pricing.mjs
+//! 来源：LiteLLM 的 model_prices_and_context_window.json 为主，models.dev 的
+//! api.json 补 LiteLLM 未收录的模型（行尾标 `// models.dev`）。只取 openai /
+//! anthropic / moonshot / zai / gemini / xai / minimax 官方第一方 API。
+//! 重新生成：npm run pricing:update
 //!
 //! 单位：美元 / 百万 token。表按模型名有序，供 price_for 二分查找。
+//!
+//! 两源分歧（表内采用 LiteLLM 值；字段顺序 input / cache_read / cache_write / output）。
+//! 涉及实际计价的条目应回官方定价页核对，确认后在 MANUAL_PRICING 覆盖或无需处理：
+//! - MiniMax-M2（cache_read、cache_write）：LiteLLM 0.3 / 0.03 / 0.375 / 1.2；models.dev 0.3 / 0.3 / 0.0 / 1.2
+//! - glm-4.5（cache_read）：LiteLLM 0.6 / 0.6 / 0.0 / 2.2；models.dev 0.6 / 0.11 / 0.0 / 2.2
+//! - glm-4.5-air（cache_read）：LiteLLM 0.2 / 0.2 / 0.0 / 1.1；models.dev 0.2 / 0.03 / 0.0 / 1.1
+//! - gpt-3.5-turbo（cache_read）：LiteLLM 0.5 / 0.5 / 0.0 / 1.5；models.dev 0.5 / 0.0 / 0.0 / 1.5
 
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-09-28";
+pub const PRICING_AS_OF: &str = "2026-10-04";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
 #[rustfmt::skip]
 pub const PRICING_TABLE: &[(&str, Pricing)] = &[
+    ("MiniMax-M2", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.375, output: 1.2 }),
+    ("MiniMax-M2.1", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.375, output: 1.2 }),
+    ("MiniMax-M2.1-lightning", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.375, output: 2.4 }),
+    ("MiniMax-M2.5", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.375, output: 1.2 }),
+    ("MiniMax-M2.5-highspeed", Pricing { input: 0.6, cache_read: 0.06, cache_write: 0.375, output: 2.4 }), // models.dev
+    ("MiniMax-M2.5-lightning", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.375, output: 2.4 }),
+    ("MiniMax-M2.7", Pricing { input: 0.3, cache_read: 0.06, cache_write: 0.375, output: 1.2 }), // models.dev
+    ("MiniMax-M2.7-highspeed", Pricing { input: 0.6, cache_read: 0.06, cache_write: 0.375, output: 2.4 }), // models.dev
+    ("MiniMax-M3", Pricing { input: 0.3, cache_read: 0.06, cache_write: 0.0, output: 1.2 }),
     ("chat-latest", Pricing { input: 5.0, cache_read: 0.5, cache_write: 0.0, output: 30.0 }),
     ("claude-fable-5", Pricing { input: 10.0, cache_read: 1.0, cache_write: 12.5, output: 50.0 }),
     ("claude-fable-5-1", Pricing { input: 10.0, cache_read: 0.25, cache_write: 12.5, output: 50.0 }),
@@ -35,11 +52,13 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("claude-sonnet-4-5-20250929", Pricing { input: 3.0, cache_read: 0.3, cache_write: 3.75, output: 15.0 }),
     ("claude-sonnet-4-6", Pricing { input: 3.0, cache_read: 0.3, cache_write: 3.75, output: 15.0 }),
     ("claude-sonnet-5", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 10.0 }),
+    ("claude-sonnet-5-5", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 10.0 }),
     ("computer-use-preview", Pricing { input: 3.0, cache_read: 3.0, cache_write: 0.0, output: 12.0 }),
     ("daybreak-blue-latest", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
     ("daybreak-red-latest", Pricing { input: 12.5, cache_read: 1.25, cache_write: 15.625, output: 75.0 }),
     ("deep-research-max-preview-04-2026", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 12.0 }),
     ("deep-research-preview-04-2026", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 12.0 }),
+    ("deep-research-pro-preview-12-2025", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 12.0 }),
     ("ft:gpt-3.5-turbo", Pricing { input: 3.0, cache_read: 3.0, cache_write: 0.0, output: 6.0 }),
     ("ft:gpt-3.5-turbo-0125", Pricing { input: 3.0, cache_read: 3.0, cache_write: 0.0, output: 6.0 }),
     ("ft:gpt-3.5-turbo-0613", Pricing { input: 3.0, cache_read: 3.0, cache_write: 0.0, output: 6.0 }),
@@ -84,13 +103,18 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("glm-4.5-x", Pricing { input: 2.2, cache_read: 2.2, cache_write: 0.0, output: 8.9 }),
     ("glm-4.5v", Pricing { input: 0.6, cache_read: 0.6, cache_write: 0.0, output: 1.8 }),
     ("glm-4.6", Pricing { input: 0.6, cache_read: 0.11, cache_write: 0.0, output: 2.2 }),
+    ("glm-4.6v", Pricing { input: 0.3, cache_read: 0.3, cache_write: 0.0, output: 0.9 }), // models.dev
     ("glm-4.7", Pricing { input: 0.6, cache_read: 0.11, cache_write: 0.0, output: 2.2 }),
+    ("glm-4.7-flashx", Pricing { input: 0.07, cache_read: 0.01, cache_write: 0.0, output: 0.4 }), // models.dev
     ("glm-5", Pricing { input: 1.0, cache_read: 0.2, cache_write: 0.0, output: 3.2 }),
     ("glm-5-code", Pricing { input: 1.2, cache_read: 0.3, cache_write: 0.0, output: 5.0 }),
+    ("glm-5-turbo", Pricing { input: 1.2, cache_read: 0.24, cache_write: 0.0, output: 4.0 }), // models.dev
     ("glm-5.1", Pricing { input: 1.4, cache_read: 0.26, cache_write: 0.0, output: 4.4 }),
     ("glm-5.2", Pricing { input: 1.4, cache_read: 0.26, cache_write: 0.0, output: 4.4 }),
     ("glm-5.3", Pricing { input: 1.4, cache_read: 0.26, cache_write: 0.0, output: 4.4 }),
     ("glm-5.3-flash", Pricing { input: 0.15, cache_read: 0.03, cache_write: 0.0, output: 0.5 }),
+    ("glm-5.3-flashx", Pricing { input: 0.37, cache_read: 0.075, cache_write: 0.0, output: 1.25 }), // models.dev
+    ("glm-5v-turbo", Pricing { input: 1.2, cache_read: 0.24, cache_write: 0.0, output: 4.0 }), // models.dev
     ("gpt-3.5-turbo", Pricing { input: 0.5, cache_read: 0.5, cache_write: 0.0, output: 1.5 }),
     ("gpt-3.5-turbo-0125", Pricing { input: 0.5, cache_read: 0.5, cache_write: 0.0, output: 1.5 }),
     ("gpt-3.5-turbo-1106", Pricing { input: 1.0, cache_read: 1.0, cache_write: 0.0, output: 2.0 }),
@@ -144,6 +168,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-5.2-pro-2025-12-11", Pricing { input: 21.0, cache_read: 21.0, cache_write: 0.0, output: 168.0 }),
     ("gpt-5.3-chat-latest", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }),
     ("gpt-5.3-codex", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }),
+    ("gpt-5.3-codex-spark", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }), // models.dev
     ("gpt-5.4", Pricing { input: 2.5, cache_read: 0.25, cache_write: 0.0, output: 15.0 }),
     ("gpt-5.4-2026-03-05", Pricing { input: 2.5, cache_read: 0.25, cache_write: 0.0, output: 15.0 }),
     ("gpt-5.4-mini", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 4.5 }),
@@ -164,6 +189,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-6-astra", Pricing { input: 10.0, cache_read: 1.0, cache_write: 12.5, output: 50.0 }),
     ("gpt-6-luna", Pricing { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 }),
     ("gpt-6-sol", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 10.0 }),
+    ("gpt-6.1-sol", Pricing { input: 2.0, cache_read: 0.1, cache_write: 2.5, output: 10.0 }),
     ("gpt-audio", Pricing { input: 2.5, cache_read: 2.5, cache_write: 0.0, output: 10.0 }),
     ("gpt-audio-1.5", Pricing { input: 2.5, cache_read: 2.5, cache_write: 0.0, output: 10.0 }),
     ("gpt-audio-2025-08-28", Pricing { input: 2.5, cache_read: 2.5, cache_write: 0.0, output: 10.0 }),
@@ -217,6 +243,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("kimi-k2.5", Pricing { input: 0.6, cache_read: 0.1, cache_write: 0.0, output: 3.0 }),
     ("kimi-k2.6", Pricing { input: 0.95, cache_read: 0.16, cache_write: 0.0, output: 4.0 }),
     ("kimi-k2.7-code", Pricing { input: 0.95, cache_read: 0.19, cache_write: 0.0, output: 4.0 }),
+    ("kimi-k2.7-code-highspeed", Pricing { input: 1.9, cache_read: 0.38, cache_write: 0.0, output: 8.0 }), // models.dev
     ("kimi-k3", Pricing { input: 3.0, cache_read: 0.3, cache_write: 0.0, output: 15.0 }),
     ("moonshot-v1-128k", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 5.0 }),
     ("moonshot-v1-128k-vision-preview", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 5.0 }),
