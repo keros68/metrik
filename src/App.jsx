@@ -459,6 +459,13 @@ function agentQuotaFor(snapshot, agentId) {
   );
 }
 
+/// 本周期该 Agent 的本地解析用量（与 Inspector 侧栏的 snapshot.agents 同源）。
+/// 用量-only 的 Agent（dsh/hermes/qwen/pi 等）没有官方配额窗口，收起态与其
+/// 显示 "-- / 暂无可靠来源"，不如显示能拿到的精确数字——它本来就是 exact 口径。
+function agentUsageFor(snapshot, agentId) {
+  return snapshot.agents?.find((agent) => agent.id === agentId)?.tokens || 0;
+}
+
 function quotaHasData(entry) {
   return Boolean(entry?.windows?.some((window) => window.view.available));
 }
@@ -511,8 +518,12 @@ function compactDisplayWindows(entry) {
 
 // 原生 title tooltip：逐窗口列出剩余与重置倒计时，并标注官方/快照/演示来源，
 // 让官方配额与本地解析用量始终可区分。
-function compactQuotaTooltip(agentId, windows) {
-  if (!windows.length) return `${AGENT_META[agentId].label}：暂无可靠来源`;
+function compactQuotaTooltip(agentId, windows, usageTokens = 0) {
+  if (!windows.length) {
+    return usageTokens > 0
+      ? `${AGENT_META[agentId].label}：本地用量 ${compactTokens(usageTokens)}（本周期，无官方配额来源）`
+      : `${AGENT_META[agentId].label}：暂无可靠来源`;
+  }
   const lines = windows.map((window) => {
     const view = window.view;
     const label = window.label || shortWindowLabel(window.key);
@@ -595,7 +606,7 @@ function quotaSeverity(view, key) {
   return "";
 }
 
-function StripDetailCard({ agentId, cell, cardRef }) {
+function StripDetailCard({ agentId, cell, usage = 0, cardRef }) {
   const meta = AGENT_META[agentId];
   const firstView = cell?.windows?.[0]?.view;
   const stale = firstView && (firstView.stale || firstView.quality === "official_snapshot");
@@ -633,6 +644,10 @@ function StripDetailCard({ agentId, cell, cardRef }) {
             );
           })}
         </div>
+      ) : usage > 0 ? (
+        <p className="strip-detail-empty">
+          本地用量 {compactTokens(usage)}（本周期，无官方配额来源）
+        </p>
       ) : (
         <p className="strip-detail-empty">官方配额暂不可用</p>
       )}
@@ -1322,10 +1337,11 @@ function StripBar({
   availableUpdate,
   onOpenUpdate,
 }) {
-  // 用户自选的 agent 一律占格；没有官方配额数据的显示 "--"，不伪造数字。
+  // 用户自选的 agent 一律占格；没有官方配额数据的显示本地用量（有则）或 "--"。
   const cells = agents.map((agentId) => ({
     agentId,
     cell: stripCellData(agentQuotaFor(snapshot, agentId)),
+    usage: agentUsageFor(snapshot, agentId),
   }));
   const vertical = orientation === "vertical";
   // 透明档的真实桌面背景变化很大，控制图标加粗以稳定识别。
@@ -1650,14 +1666,17 @@ function StripBar({
       <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
       <div ref={railRef} className="strip-rail" {...dragProps}>
       {cells.length ? (
-        cells.map(({ agentId, cell }) => {
+        cells.map(({ agentId, cell, usage }) => {
           const meta = AGENT_META[agentId];
           if (!cell) {
+            // 无官方配额窗口：有本地用量就显示精确数字（exact 口径），否则 "--"。
             return (
               <div
                 key={agentId}
                 className="strip-cell strip-cell--unavailable"
-                aria-label={`${meta.label}：官方配额不可用`}
+                aria-label={usage > 0
+                  ? `${meta.label}：本地用量 ${compactTokens(usage)}`
+                  : `${meta.label}：官方配额不可用`}
                 onPointerEnter={(event) => showDetail(event, agentId)}
               >
                 <img
@@ -1667,7 +1686,7 @@ function StripBar({
                   draggable={false}
                 />
                 <span className="strip-cell-body">
-                  <em>--</em>
+                  <em>{usage > 0 ? compactTokens(usage) : "--"}</em>
                 </span>
               </div>
             );
@@ -1792,6 +1811,7 @@ function StripBar({
         <StripDetailCard
           agentId={detailCell.agentId}
           cell={detailCell.cell}
+          usage={detailCell.usage}
           cardRef={detailCardRef}
         />
       )}
@@ -2099,6 +2119,9 @@ function CompactWidget({
               if (!meta) return null;
               const entry = agentQuotaFor(snapshot, agentId);
               const windows = compactDisplayWindows(entry);
+              // 用量-only 的 Agent（无官方配额窗口）行内显示本地解析用量，
+              // 不再显示 "-- / 暂无可靠来源"——数字是 exact 口径，不是推算。
+              const usageTokens = agentUsageFor(snapshot, agentId);
               // 行内头条窗口与胶囊条同规则，见 quotaWindows.js；
               // 完整窗口明细在该行的原生 tooltip 与焦点卡中。
               const headline = bindingWindow(entry.windows) || windows[0] || null;
@@ -2113,7 +2136,7 @@ function CompactWidget({
                   className={`widget-agent ${severity ? `widget-agent--${severity}` : ""}`}
                   key={agentId}
                   style={{ "--quota-accent": meta.accent }}
-                  title={compactQuotaTooltip(agentId, windows)}
+                  title={compactQuotaTooltip(agentId, windows, usageTokens)}
                 >
                   <i className="widget-agent-accent" style={{ backgroundColor: meta.accent }} aria-hidden="true" />
                   <AgentMark agentId={agentId} />
@@ -2129,18 +2152,22 @@ function CompactWidget({
                             ? "· 正在读取…"
                             : snapshot.loadError
                               ? "· 读取失败"
-                              : "· 暂无可靠来源"}
+                              : usageTokens > 0
+                                ? "· 本地用量"
+                                : "· 暂无可靠来源"}
                     </small>
                   </span>
                   {/* 展示剩余额度（用户关心的是还能用多少）。快照新鲜度不再
                       影响数字的写法与颜色：那一格已经写着窗口或"已重置，等待
                       刷新"，再加 ~ 前缀和灰化是重复信息，只会让人以为数字是
-                      估算出来的。 */}
+                      估算出来的。无配额来源时退回本周期本地用量。 */}
                   <em>{current
                     ? balance
                       ? formatBalance(headline.key, headlineView.remainingPercent)
                       : `${Math.round(remaining)}%`
-                    : "--"}</em>
+                    : usageTokens > 0 && !snapshot.pending && !snapshot.loadError
+                      ? compactTokens(usageTokens)
+                      : "--"}</em>
                 </div>
               );
             });
