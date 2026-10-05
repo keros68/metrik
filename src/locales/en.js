@@ -92,7 +92,8 @@ export default {
   "本机日志读取失败。界面不会以演示数据替代，点击查看数据来源。": "Couldn't read local logs. Metrik doesn't substitute demo data. Click to view data sources.",
   "补齐历史": "Backfilling",
   "还剩 {count}": "{count} left",
-  "补齐中 {count}": "Backfilling {count}",
+  // Sidebar status under "Statistics": the column is about 90px wide.
+  "补齐中 {count}": "{count} left",
   "正在补齐历史索引，还剩 {count} 个日志文件。历史周期的数字尚不完整，会随补齐自动更新。": ({ count }) => `Backfilling the history index, ${count} log ${count === 1 ? "file" : "files"} left. Figures for past periods are incomplete and update as the backfill finishes.`,
   "数据不完整": "Incomplete data",
   "点击查看": "Click to view",
@@ -209,7 +210,8 @@ export default {
   "强制刷新官方配额与本地统计": "Force refresh official quota and local statistics",
 
   // Data sources drawer (App.jsx)
-  "数据来源": "Data sources",
+  // The drawer title shares its row with Rescan and Close in the 320px compact card.
+  "数据来源": ({ context }) => (context === "drawer" ? "Sources" : "Data sources"),
   "扫描中…": "Scanning…",
   "重新扫描": "Rescan",
   "关闭": ({ context }) => (context === "toggle" ? "Turn off" : "Close"),

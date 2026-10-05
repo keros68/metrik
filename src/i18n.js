@@ -150,6 +150,9 @@ export async function initLanguage() {
   try {
     const { listen } = await import("@tauri-apps/api/event");
     await listen(LANGUAGE_CHANGED_EVENT, (event) => applyState(event.payload));
+    // 首次读取与监听建立之间发生的切换没有事件送达；监听建立后再读一次，
+    // 窗口加载期间切换语言也不会停在旧语言。
+    applyState(await invoke("ui_language"));
   } catch (error) {
     console.warn("language change listener failed:", error);
   }

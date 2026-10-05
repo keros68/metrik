@@ -2252,7 +2252,7 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
-          <h2 id="source-title">{t("数据来源")}</h2>
+          <h2 id="source-title">{t("数据来源", { context: "drawer" })}</h2>
           <div className="source-header-actions">
             {!partial && !confirmingRebuild && rebuildState.status === "idle" && (
               <button
