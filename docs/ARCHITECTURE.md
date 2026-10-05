@@ -92,7 +92,9 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
 - **Pi**: pi is a harness, not a quota identity — it has no coding plan of its
   own. Its session usage is attributed per provider: GLM Coding Plan providers
   (`zai*`) count under the GLM card, Qwen Token Plan providers under the Qwen
-  card, OpenCode Go (`opencode-go`) under the OpenCode card, and direct
+  card, OpenCode Go (`opencode-go`) under the OpenCode card, Kimi Code
+  (`kimi-coding`) under the Kimi card, the ChatGPT subscription
+  (`openai-codex`) under the Codex card, and direct
   providers (Anthropic, OpenAI, …) stay under Pi. The GLM and OpenCode Go
   quota sources additionally accept the key pi stores in
   `~/.pi/agent/auth.json`, so a pi-only install still shows those quotas on
@@ -165,7 +167,7 @@ missing or unreadable ledger is a stderr message with a non-zero exit code.
   the table is wholesale-replaced derived data, so only one stale quota round
   is lost.
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched. Version changes force retained-history reconciliation.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched and Pi using 8 so Kimi Code and ChatGPT subscription usage moves to its own cards. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of `payload_hash` — it is attribution, not a measured quantity, and hashing it would make the same event hash differently after a parser upgrade, which non-mergeable adapters reject as an identity collision. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 

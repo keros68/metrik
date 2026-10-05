@@ -105,8 +105,10 @@ change.
   attributed usage only, like the Pi card.
 - Pi is a harness, not a quota identity: it has no coding plan of its own.
   Its session usage is attributed by provider — GLM Coding Plan providers to
-  the GLM card, Qwen Token Plan providers to the Qwen card, direct providers
-  (Anthropic, OpenAI, …) to the Pi card. The Pi card therefore carries local
+  the GLM card, Qwen Token Plan providers to the Qwen card, OpenCode Go to the
+  OpenCode card, Kimi Code to the Kimi card, the ChatGPT subscription
+  (`openai-codex`) to the Codex card, and direct providers (Anthropic,
+  OpenAI, …) to the Pi card. The Pi card therefore carries local
   usage only and never a quota; the GLM quota source additionally accepts the
   key pi stores so a pi-only install still shows the GLM quota on the GLM
   card.

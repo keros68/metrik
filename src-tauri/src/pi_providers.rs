@@ -2,11 +2,14 @@
 //! 用量计费发生在它调用的 provider 上。本模块把 pi 会话日志里的 provider id
 //! 映射到 Metrik 的计量 Agent。
 //!
-//! 映射依据 pi 内置目录（models-store.json 的 provider 名单，2026-08 提取）：
-//! GLM Coding Plan（z.ai / BigModel CN）→ `zcode`（GLM 卡片，与 zcode 桌面端
-//! 同一账户额度）；Qwen Token Plan 各变体 → `qwen`；OpenCode Go（`opencode-go`，
-//! 2026-09 真机补录）→ `opencode`；其余 provider（Anthropic、OpenAI 等）由 pi
-//! 自带凭据直连计费，不经过既有客户端的额度，留在 `pi` 名下。
+//! 映射依据 pi 内置目录（models-store.json 的 provider 名单，2026-08 提取）与
+//! pi-ai 的 `KnownProvider` 名单（2026-10 核对）：GLM Coding Plan（z.ai /
+//! BigModel CN）→ `zcode`（GLM 卡片，与 zcode 桌面端同一账户额度）；Qwen Token
+//! Plan 各变体 → `qwen`；OpenCode Go（`opencode-go`，2026-09 真机补录）→
+//! `opencode`；Kimi Code 订阅（`kimi-coding`）→ `kimi`；ChatGPT Plus/Pro 订阅
+//! （`openai-codex`）→ `codex`，与 Hermes 的路由归属一致；其余 provider
+//! （Anthropic、OpenAI 等）由 pi 自带凭据直连计费，不经过既有客户端的额度，
+//! 留在 `pi` 名下。
 //!
 //! 归属发生在 adapter 层（写入 `usage_event.adapter_id`），一次入库、处处一致：
 //! 图表、模型榜、会话流、成本估算与同步导出自动跟随，无需各查询点单独判断。
@@ -28,6 +31,9 @@ pub fn credited_agent(pi_provider: Option<&str>) -> &'static str {
         // OpenCode Go：opencode.ai 网关计费的同一套餐，与跑在哪个 harness 无关；
         // 配额源（coding_quota 的 Go 配额）同挂 opencode 卡片。
         "opencode-go" => "opencode",
+        // Kimi Code 订阅与 ChatGPT 订阅：走各自套餐额度，与 Hermes 的归属一致。
+        "kimi-coding" => "kimi",
+        "openai-codex" => "codex",
         _ => "pi",
     }
 }
@@ -46,6 +52,8 @@ mod tests {
         assert_eq!(credited_agent(Some("qwen-token-plan-individual")), "qwen");
         // 真机（2026-09）：pi 会话日志里的 provider id 就是 opencode-go。
         assert_eq!(credited_agent(Some("opencode-go")), "opencode");
+        assert_eq!(credited_agent(Some("kimi-coding")), "kimi");
+        assert_eq!(credited_agent(Some("openai-codex")), "codex");
     }
 
     #[test]

@@ -19,11 +19,12 @@ use std::path::{Path, PathBuf};
 // so without the bump the stale "incomplete" marker would survive the upgrade.
 pub const PARSER_VERSION: i64 = 7;
 
+/// 只影响单个 adapter 的升级不必重扫全部来源。
+/// Pi 8 重扫 pi 来源，让 kimi-coding / openai-codex 路由的用量改记到 Kimi / Codex 卡片。
 pub fn parser_version_for(adapter: &str) -> i64 {
-    if adapter == "codex" {
-        8
-    } else {
-        PARSER_VERSION
+    match adapter {
+        "codex" | "pi" => 8,
+        _ => PARSER_VERSION,
     }
 }
 
@@ -1254,6 +1255,26 @@ mod tests {
         // 重扫会把 parser_version 写成当前值（size / mtime 取自 `source` 助手）。
         replace_source(&mut connection, &source("recent", "claude", Vec::new()), 0).unwrap();
         assert!(source_is_current(&connection, "recent", 20, 1, 0).unwrap());
+    }
+
+    /// Pi 单独升版：旧版本解析的 pi 来源要重扫才能把用量改记到新卡片。
+    #[test]
+    fn pi_sources_parsed_before_the_route_update_are_reparsed() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scan_source (
+                    source_id, adapter_id, logical_key, locator, observed_size,
+                    mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
+                 ) VALUES ('pi-session', 'pi', 'pi-session', 'pi.jsonl', 10, 1, 0, ?1, 0, NULL)",
+                [PARSER_VERSION],
+            )
+            .unwrap();
+
+        assert!(!source_is_current(&connection, "pi-session", 10, 1, 0).unwrap());
     }
 
     #[test]
