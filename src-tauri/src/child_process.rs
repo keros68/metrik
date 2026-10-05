@@ -17,6 +17,7 @@
 use std::cell::Cell;
 use std::io;
 use std::process::{Child, Command, ExitStatus, Output};
+use std::time::{Duration, Instant};
 
 /// 生产代码里每一个拉起子进程的调用点。新增一项前先确认它不在周期性刷新路径上，
 /// 或者有跨快照的节流（参见 `spawn_budget` 测试）。
@@ -147,6 +148,30 @@ pub(crate) fn spawn_tree(site: Site, command: &mut Command) -> io::Result<TreeCh
 impl TreeChild {
     pub(crate) fn child_mut(&mut self) -> &mut Child {
         self.child.as_mut().expect("tree child already terminated")
+    }
+
+    /// 等直接子进程自行退出，超过 `grace` 才终止整棵树。自行退出时返回其退出码；
+    /// 留下的后代随后照常收掉（Windows 由作业对象关闭即杀，其余平台同 [`Self::terminate`]）。
+    ///
+    /// 能让子进程自己收尾就别强杀：Windows 上被强杀的 `codex.exe` 若正有 SSPI 调用
+    /// 在途，lsass 会在 RPCRT4 内崩溃并强制重启系统（#250）。
+    pub(crate) fn finish(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
+        let child = self.child.as_mut()?;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.terminate();
+                    return Some(status);
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => break,
+            }
+        }
+        self.terminate();
+        None
     }
 
     pub(crate) fn terminate(&mut self) {
@@ -318,6 +343,46 @@ mod tests {
         }
         let other = std::thread::spawn(spawned_on_this_thread).join().unwrap();
         assert!(other.iter().all(|(_, count)| *count == 0));
+    }
+
+    #[test]
+    fn finish_lets_a_child_that_exits_on_its_own_keep_its_exit_code() {
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/C", "exit", "7"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exit 7"]);
+            command
+        };
+        let mut tree = spawn_tree(Site::CodexAppServer, &mut command).unwrap();
+        let status = tree.finish(Duration::from_secs(20));
+        assert_eq!(status.and_then(|status| status.code()), Some(7));
+    }
+
+    #[test]
+    fn finish_terminates_a_child_that_outlives_the_grace_period() {
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("PING.EXE");
+            command.args(["-n", "60", "127.0.0.1"]);
+            command
+        } else {
+            let mut command = Command::new("sleep");
+            command.arg("60");
+            command
+        };
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null());
+        let mut tree = spawn_tree(Site::CodexAppServer, &mut command).unwrap();
+        let started = Instant::now();
+        assert!(tree.finish(Duration::from_millis(200)).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "finish took {:?}",
+            started.elapsed()
+        );
     }
 
     /// 作业对象的价值所在：直接子进程先退出、进程树已经断开，后代仍被收掉。
