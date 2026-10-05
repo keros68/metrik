@@ -57,6 +57,7 @@ import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from
 import { agentPalette } from "./agentColors.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
 import { LanguageCard } from "./LanguageSettings.jsx";
+import { formatDate, formatDateTime, formatNumber, formatTime, t, useLanguage } from "./i18n.js";
 import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
   configureQoderCookie,
@@ -390,8 +391,8 @@ const AGENT_LABELS = Object.fromEntries(
 /// 状态灯的含义：绿 = 数据正常，黄（呼吸）= 正在更新，红 = 读取失败。
 /// 灯本身只是装饰，含义必须悬浮可见，否则用户永远猜不到。
 function statusDotTitle(loading, loadError) {
-  if (loadError) return "数据读取失败，仍显示上次成功的数据";
-  return loading ? "正在更新数据…" : "数据正常";
+  if (loadError) return t("数据读取失败，仍显示上次成功的数据");
+  return loading ? t("正在更新数据…") : t("数据正常");
 }
 
 // 小组件窗口高度跟随 Agent 行数。内容自然高 = 各行 getBoundingClientRect
@@ -405,14 +406,14 @@ const COMPACT_LIST_MIN_HEIGHT = 52;
 const COMPACT_MIN_WINDOW_HEIGHT = 260;
 
 function exactTokens(value) {
-  return Number(value || 0).toLocaleString("zh-CN");
+  return formatNumber(value || 0);
 }
 
 function formatClock(isoString) {
   if (!isoString) return "--:--";
   const value = new Date(isoString);
   if (Number.isNaN(value.getTime())) return "--:--";
-  return value.toLocaleTimeString("zh-CN", {
+  return formatTime(value, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -420,20 +421,20 @@ function formatClock(isoString) {
 }
 
 function formatQuotaAge(minutes) {
-  if (!Number.isFinite(minutes) || minutes < 1) return "刚刚";
-  if (minutes < 60) return `${Math.round(minutes)} 分钟前`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`;
-  return `${Math.floor(minutes / 1440)} 天前`;
+  if (!Number.isFinite(minutes) || minutes < 1) return t("刚刚");
+  if (minutes < 60) return t("{count} 分钟前", { count: Math.round(minutes) });
+  if (minutes < 1440) return t("{count} 小时前", { count: Math.floor(minutes / 60) });
+  return t("{count} 天前", { count: Math.floor(minutes / 1440) });
 }
 
 function quotaProvenance(quota) {
-  if (!quota.available) return "暂无可靠来源";
-  if (quota.quality === "demo") return "演示数据";
-    if (quota.resetExpired) return "已重置 · 等待刷新";
+  if (!quota.available) return t("暂无可靠来源");
+  if (quota.quality === "demo") return t("演示数据");
+    if (quota.resetExpired) return t("已重置 · 等待刷新");
   if (quota.stale || quota.quality === "official_snapshot") {
-    return `官方快照 · ${formatQuotaAge(quota.ageMinutes)}`;
+    return t("官方快照 · {age}", { age: formatQuotaAge(quota.ageMinutes) });
   }
-  return "官方 · 实时";
+  return t("官方 · 实时");
 }
 
 function snapshotIsPartial(snapshot) {
@@ -468,18 +469,18 @@ function quotaHasData(entry) {
 /// 缺 scope、限流……）；有原因就别再叫用户去开状态栏钩子——他多半已经开了
 /// 直连，而且不用 Claude Code 的人开了钩子也不会有数据。
 function quotaEmptyCopy(entry, agentId, short = false) {
-  if (entry?.note) return short ? "直连查询失败" : "直连查询失败 · 详见设置";
-  if (agentId !== "claude") return short ? "官方配额不可用" : "暂无可靠来源";
-  return short ? "设置中开启状态栏钩子" : "在设置中开启状态栏钩子后显示";
+  if (entry?.note) return short ? t("直连查询失败") : t("直连查询失败 · 详见设置");
+  if (agentId !== "claude") return short ? t("官方配额不可用") : t("暂无可靠来源");
+  return short ? t("设置中开启状态栏钩子") : t("在设置中开启状态栏钩子后显示");
 }
 
 function shortWindowLabel(key) {
   if (key === "five_hour" || key === "primary") return "5h";
   if (key === "seven_day" || key === "secondary") return "7d";
-  if (key === "extra_usage") return "超额";
-  if (key === "credits") return "额度";
-  if (key === "monthly_cycle") return "月度";
-  if (key.startsWith("balance")) return "余额";
+  if (key === "extra_usage") return t("超额");
+  if (key === "credits") return t("额度");
+  if (key === "monthly_cycle") return t("月度");
+  if (key.startsWith("balance")) return t("余额", { context: "short" });
   if (key.endsWith("_5h")) return key.replace(/_5h$/, "").slice(0, 3) + " 5h";
   if (key.endsWith("_weekly")) return key.replace(/_weekly$/, "").slice(0, 3) + " 7d";
   if (key.endsWith("_7d")) return key.replace(/_7d$/, "").slice(0, 3) + " 7d";
@@ -494,7 +495,7 @@ function compactQuotaWindows(entry) {
   const usedLabels = new Set(rows.map((window) => shortWindowLabel(window.key)));
   const placeholders = [
     { key: "five_hour", label: "Session", view: UNAVAILABLE_QUOTA },
-    { key: "seven_day", label: "每周", view: UNAVAILABLE_QUOTA },
+    { key: "seven_day", label: t("每周"), view: UNAVAILABLE_QUOTA },
   ].filter((placeholder) => !usedLabels.has(shortWindowLabel(placeholder.key)));
   while (rows.length < 2 && placeholders.length) {
     rows.push(placeholders.shift());
@@ -513,19 +514,28 @@ function compactDisplayWindows(entry) {
 // 原生 title tooltip：逐窗口列出剩余与重置倒计时，并标注官方/快照/演示来源，
 // 让官方配额与本地解析用量始终可区分。
 function compactQuotaTooltip(agentId, windows) {
-  if (!windows.length) return `${AGENT_META[agentId].label}：暂无可靠来源`;
+  if (!windows.length) return t("{agent}：暂无可靠来源", { agent: AGENT_META[agentId].label });
   const lines = windows.map((window) => {
     const view = window.view;
     const label = window.label || shortWindowLabel(window.key);
-    if (view.resetExpired) return `${label}：已重置，等待刷新`;
+    if (view.resetExpired) return t("{label}：已重置，等待刷新", { label });
     // 余额窗口：金额不拼"剩余 X%"，也没有重置倒计时。
     if (isBalanceWindow(window)) {
-      return `${label}：余额 ${formatBalance(window.key, view.remainingPercent)} · ${quotaProvenance(view)}`;
+      return t("{label}：余额 {amount} · {provenance}", {
+        label,
+        amount: formatBalance(window.key, view.remainingPercent),
+        provenance: quotaProvenance(view),
+      });
     }
     const reset = Number.isFinite(view.resetsInMinutes)
-      ? ` · ${formatReset(view.resetsInMinutes)}后重置`
+      ? ` · ${t("{time}后重置", { time: formatReset(view.resetsInMinutes) })}`
       : "";
-    return `${label}：剩余 ${Math.round(view.remainingPercent)}%${reset} · ${quotaProvenance(view)}`;
+    return t("{label}：剩余 {percent}%{reset} · {provenance}", {
+      label,
+      percent: Math.round(view.remainingPercent),
+      reset,
+      provenance: quotaProvenance(view),
+    });
   });
   return [AGENT_META[agentId].label, ...lines].join("\n");
 }
@@ -541,24 +551,25 @@ function stripCellData(entry) {
 
 function conciseSourceDetail(source) {
   if (source.kind === "official") {
-    return "显示官方额度和重置时间。";
+    return t("显示官方额度和重置时间。");
   }
   if (source.kind === "sync") {
     return source.quality === "partial"
-      ? "同步未完成，本机统计不受影响。"
-      : "已合并其他设备的统计数据。";
+      ? t("同步未完成，本机统计不受影响。")
+      : t("已合并其他设备的统计数据。");
   }
 
-  const scanSummary = source.detail?.match(/^发现[^。]+。/)?.[0] || "";
+  // scanSummary 是后端给的扫描摘要（已是当前语言），没有时为空。
+  const scanSummary = source.scanSummary || "";
   if (source.quality === "partial") {
-    return `${scanSummary}部分记录未计入。`;
+    return t("{summary}部分记录未计入。", { summary: scanSummary });
   }
-  return scanSummary || "本机数据已更新。";
+  return scanSummary || t("本机数据已更新。");
 }
 
 function conciseQualityLabel(source) {
-  if (source.quality === "exact") return "正常";
-  if (source.quality === "partial") return "不完整";
+  if (source.quality === "exact") return t("正常");
+  if (source.quality === "partial") return t("不完整");
   return source.qualityLabel;
 }
 
@@ -601,10 +612,10 @@ function StripDetailCard({ agentId, cell, cardRef }) {
   const firstView = cell?.windows?.[0]?.view;
   const stale = firstView && (firstView.stale || firstView.quality === "official_snapshot");
   return (
-    <aside ref={cardRef} className="strip-detail-card" role="tooltip" aria-label={`${meta.label} 用量详情`}>
+    <aside ref={cardRef} className="strip-detail-card" role="tooltip" aria-label={t("{agent} 用量详情", { agent: meta.label })}>
       <header className="strip-detail-header">
         <img src={meta.iconSrc} className={meta.iconClass || ""} alt="" draggable={false} />
-        <strong>{meta.label} 用量</strong>
+        <strong>{t("{agent} 用量", { agent: meta.label })}</strong>
       </header>
       {cell?.windows?.length ? (
         <div className="strip-detail-metrics">
@@ -615,8 +626,8 @@ function StripDetailCard({ agentId, cell, cardRef }) {
             const used = Math.round(quotaUsedPercent(view));
             const severity = quotaSeverity(view, window.key);
             const reset = Number.isFinite(view.resetsInMinutes)
-              ? `${formatReset(view.resetsInMinutes)}后重置`
-              : "重置时间不可用";
+              ? t("{time}后重置", { time: formatReset(view.resetsInMinutes) })
+              : t("重置时间不可用");
             return (
               <section className="strip-detail-metric" key={window.key}>
                 <span>{window.label || shortWindowLabel(window.key)}</span>
@@ -627,17 +638,17 @@ function StripDetailCard({ agentId, cell, cardRef }) {
                   />
                 </div>
                 <p>
-                  <strong>{balance ? `余额 ${formatBalance(window.key, view.remainingPercent)}` : `已用 ${used}%`}</strong>
-                  <small>{balance ? "账户余额 · 不重置" : reset}</small>
+                  <strong>{balance ? t("余额 {amount}", { amount: formatBalance(window.key, view.remainingPercent) }) : t("已用 {percent}%", { percent: used })}</strong>
+                  <small>{balance ? t("账户余额 · 不重置") : reset}</small>
                 </p>
               </section>
             );
           })}
         </div>
       ) : (
-        <p className="strip-detail-empty">官方配额暂不可用</p>
+        <p className="strip-detail-empty">{t("官方配额暂不可用")}</p>
       )}
-      {stale && <footer>官方快照 · {formatQuotaAge(firstView.ageMinutes)}</footer>}
+      {stale && <footer>{t("官方快照 · {age}", { age: formatQuotaAge(firstView.ageMinutes) })}</footer>}
     </aside>
   );
 }
@@ -674,26 +685,26 @@ function QuotaBarRow({ label, view, windowKey, accent }) {
         </div>
         <em>{view.available && !view.resetExpired
           ? balance
-            ? `余额 ${formatBalance(windowKey, view.remainingPercent)}`
-            : `已用 ${Math.round(quotaUsedPercent(view))}%`
+            ? t("余额 {amount}", { amount: formatBalance(windowKey, view.remainingPercent) })
+            : t("已用 {percent}%", { percent: Math.round(quotaUsedPercent(view)) })
           : "--"}</em>
         <span>
           {view.resetExpired
-            ? "已重置，等待刷新"
+            ? t("已重置，等待刷新")
             : view.available
               ? balance
-                ? "账户余额 · 不重置"
-                : `${formatReset(view.resetsInMinutes)}后重置`
-              : "暂不可用"}
+                ? t("账户余额 · 不重置")
+                : t("{time}后重置", { time: formatReset(view.resetsInMinutes) })
+              : t("暂不可用")}
         </span>
       </div>
       {pace && (
         <small className={`quota-pace ${pace.tone === "behind" ? "quota-pace--behind" : ""}`}>
           {pace.tone === "ahead"
-            ? `节奏从容 ${Math.abs(pace.delta).toFixed(0)}% · 按当前用量可维持至重置`
+            ? t("节奏从容 {delta}% · 按当前用量可维持至重置", { delta: Math.abs(pace.delta).toFixed(0) })
             : pace.tone === "close"
-              ? `节奏略偏快 ${pace.delta.toFixed(0)}% · 接近临界节奏`
-              : `节奏偏快 ${pace.delta.toFixed(0)}% · 按当前用量重置前可能耗尽`}
+              ? t("节奏略偏快 {delta}% · 接近临界节奏", { delta: pace.delta.toFixed(0) })
+              : t("节奏偏快 {delta}% · 按当前用量重置前可能耗尽", { delta: pace.delta.toFixed(0) })}
         </small>
       )}
     </>
@@ -708,50 +719,50 @@ function sourceStatusCopy(snapshot, loading, partial) {
   const indexingPending = snapshot.indexing?.pending || 0;
   if (snapshot.pending) {
     return {
-      title: "正在读取",
-      hint: "首次扫描",
-      state: "正在读取",
-      detail: "正在读取本机日志，日志库较大时首次扫描需要几分钟。",
+      title: t("正在读取"),
+      hint: t("首次扫描"),
+      state: t("正在读取"),
+      detail: t("正在读取本机日志，日志库较大时首次扫描需要几分钟。"),
     };
   }
   if (snapshot.loadError) {
     return {
-      title: "读取失败",
-      hint: "点击排查",
-      state: "读取失败",
-      detail: "本机日志读取失败。界面不会以演示数据替代，点击查看数据来源。",
+      title: t("读取失败"),
+      hint: t("点击排查"),
+      state: t("读取失败"),
+      detail: t("本机日志读取失败。界面不会以演示数据替代，点击查看数据来源。"),
     };
   }
   if (indexingPending > 0) {
     return {
-      title: "补齐历史",
-      hint: `还剩 ${indexingPending}`,
+      title: t("补齐历史"),
+      hint: t("还剩 {count}", { count: indexingPending }),
       // 侧栏那行不能换行，只放数字；完整说明走 title 与统计说明抽屉。
-      state: `补齐中 ${indexingPending}`,
-      detail: `正在补齐历史索引，还剩 ${indexingPending} 个日志文件。历史周期的数字尚不完整，会随补齐自动更新。`,
+      state: t("补齐中 {count}", { count: indexingPending }),
+      detail: t("正在补齐历史索引，还剩 {count} 个日志文件。历史周期的数字尚不完整，会随补齐自动更新。", { count: indexingPending }),
     };
   }
   if (partial) {
     return {
-      title: "数据不完整",
-      hint: "点击查看",
-      state: "数据不完整",
-      detail: "部分日志未能解析，统计数字低于真实用量。点击查看受影响的来源。",
+      title: t("数据不完整"),
+      hint: t("点击查看"),
+      state: t("数据不完整"),
+      detail: t("部分日志未能解析，统计数字低于真实用量。点击查看受影响的来源。"),
     };
   }
   if (snapshot.isDemo) {
     return {
-      title: "演示数据",
-      hint: "非真实用量",
-      state: "演示数据",
-      detail: "当前显示的是演示数据，不是本机真实用量。",
+      title: t("演示数据"),
+      hint: t("非真实用量"),
+      state: t("演示数据"),
+      detail: t("当前显示的是演示数据，不是本机真实用量。"),
     };
   }
   return {
-    title: "数据源正常",
-    hint: loading ? "更新中" : formatClock(snapshot.generatedAt),
-    state: loading ? "更新中" : `更新于 ${formatClock(snapshot.generatedAt)}`,
-    detail: "各项数据均可溯源。",
+    title: t("数据源正常"),
+    hint: loading ? t("更新中") : formatClock(snapshot.generatedAt),
+    state: loading ? t("更新中") : t("更新于 {time}", { time: formatClock(snapshot.generatedAt) }),
+    detail: t("各项数据均可溯源。"),
   };
 }
 
@@ -760,7 +771,7 @@ function Sidebar({ activeNav, onNavChange, snapshot, loading }) {
   const indexing = (snapshot.indexing?.pending || 0) > 0;
   const sourceStatus = sourceStatusCopy(snapshot, loading, partial);
   return (
-    <aside className="sidebar" aria-label="主导航">
+    <aside className="sidebar" aria-label={t("主导航")}>
       <div className="wordmark">Metrik</div>
 
       <nav className="nav-stack">
@@ -769,13 +780,13 @@ function Sidebar({ activeNav, onNavChange, snapshot, loading }) {
             className={`nav-button ${activeNav === id ? "nav-button--active" : ""}`}
             key={id}
             type="button"
-            aria-label={label}
+            aria-label={t(label)}
             aria-current={activeNav === id ? "page" : undefined}
             onClick={() => onNavChange(id)}
           >
             <Icon size={27} weight="light" aria-hidden="true" />
             <span className="nav-dot" aria-hidden="true" />
-            <span className="tooltip-label">{label}</span>
+            <span className="tooltip-label">{t(label)}</span>
           </button>
         ))}
       </nav>
@@ -790,7 +801,7 @@ function Sidebar({ activeNav, onNavChange, snapshot, loading }) {
         title={sourceStatus.detail}
       >
         <span className={`status-dot ${loading || indexing ? "status-dot--loading" : ""} ${snapshot.loadError ? "status-dot--error" : ""} ${partial && !indexing ? "status-dot--warning" : ""}`} />
-        <span>数据统计</span>
+        <span>{t("数据统计")}</span>
         <small>{sourceStatus.state}</small>
       </button>
     </aside>
@@ -802,7 +813,7 @@ function PeriodControl({ period, onChange, compact = false, fullWidthArea = fals
     <div
       className={`period-control ${compact ? "period-control--compact" : ""} ${fullWidthArea ? "period-control--full" : ""}`}
       role="group"
-      aria-label="统计周期"
+      aria-label={t("统计周期")}
     >
       {PERIODS.map((item) => (
         <button
@@ -812,7 +823,7 @@ function PeriodControl({ period, onChange, compact = false, fullWidthArea = fals
           aria-pressed={period === item.id}
           onClick={() => onChange(item.id)}
         >
-          {item.label}
+          {t(item.label)}
         </button>
       ))}
     </div>
@@ -833,10 +844,10 @@ function UsageChart({ snapshot, selectedAgent, dark = false }) {
 
   return (
     <section className="chart-section" aria-labelledby="usage-chart-title">
-      <h2 id="usage-chart-title" className="sr-only">用量趋势</h2>
-      <span className="axis-caption">{snapshot.period === "today" ? "tokens · 当日累计" : "tokens · 每日增量"}</span>
+      <h2 id="usage-chart-title" className="sr-only">{t("用量趋势")}</h2>
+      <span className="axis-caption">{snapshot.period === "today" ? t("tokens · 当日累计") : t("tokens · 每日增量")}</span>
       <div className="chart-frame">
-        <Suspense fallback={<div className="chart-loading">正在准备趋势图</div>}>
+        <Suspense fallback={<div className="chart-loading">{t("正在准备趋势图")}</div>}>
           <UsagePlot
             series={snapshot.series}
             visibleAgents={visibleAgents}
@@ -847,7 +858,7 @@ function UsageChart({ snapshot, selectedAgent, dark = false }) {
           />
         </Suspense>
       </div>
-      <div className="chart-legend" aria-label="图例">
+      <div className="chart-legend" aria-label={t("图例")}>
         {(legendAgents.length ? legendAgents : visibleAgents.slice(0, 1)).map((agent) => (
           <span key={agent}>
             <i className="legend-line" style={{ background: chartColor(agent) }} />
@@ -899,11 +910,11 @@ function BreakdownSection({ snapshot, selectedAgent }) {
   if (!componentTotal && !models.length && !costRows.length) return null;
 
   return (
-    <section className="breakdown-grid" aria-label="Token 构成、模型分布与成本估算">
+    <section className="breakdown-grid" aria-label={t("Token 构成、模型分布与成本估算")}>
       {componentTotal > 0 && (
         <article className="breakdown-card">
-          <h2>Token 构成</h2>
-          <div className="comp-bar" role="img" aria-label="按处理类型的 token 构成比例">
+          <h2>{t("Token 构成")}</h2>
+          <div className="comp-bar" role="img" aria-label={t("按处理类型的 token 构成比例")}>
             {components.filter((component) => component.value > 0).map((component) => (
               <i
                 key={component.key}
@@ -918,7 +929,7 @@ function BreakdownSection({ snapshot, selectedAgent }) {
             {components.map((component) => (
               <li key={component.key}>
                 <i style={{ backgroundColor: component.color }} aria-hidden="true" />
-                <span>{component.label}</span>
+                <span>{t(component.label)}</span>
                 <em>{compactTokens(component.value)} · {((component.value / componentTotal) * 100).toFixed(1)}%</em>
               </li>
             ))}
@@ -927,32 +938,32 @@ function BreakdownSection({ snapshot, selectedAgent }) {
       )}
       {costRows.length > 0 && (
         <article className="breakdown-card">
-          <h2>成本估算</h2>
+          <h2>{t("成本估算")}</h2>
           <p className="cost-total">
             <strong>
               <span className="cost-currency">$</span>
               {formatUsd(scopedUsd).slice(1)}
             </strong>
-            <span>本周期 · API 等价</span>
+            <span>{t("本周期 · API 等价")}</span>
           </p>
           <ul className="comp-legend">
             {costRows.map((row) => (
               <li key={row.agent}>
                 <i style={{ backgroundColor: AGENT_META[row.agent]?.accent || "#74767a", borderRadius: "50%" }} aria-hidden="true" />
                 <span>{AGENT_META[row.agent]?.label || row.agent}</span>
-                <em>{row.usd > 0 ? formatUsd(row.usd) : "未计价"}</em>
+                <em>{row.usd > 0 ? formatUsd(row.usd) : t("未计价")}</em>
               </li>
             ))}
           </ul>
           <p className="cost-note">
-            按公开 API 价格（{cost.pricingAsOf}）折算，非账单。
-            {scopedUnpriced > 0 ? `另有 ${compactTokens(scopedUnpriced)} tokens 因无可靠定价未计入。` : ""}
+            {t("按公开 API 价格（{date}）折算，非账单。", { date: cost.pricingAsOf })}
+            {scopedUnpriced > 0 ? t("另有 {tokens} tokens 因无可靠定价未计入。", { tokens: compactTokens(scopedUnpriced) }) : ""}
           </p>
         </article>
       )}
       {models.length > 0 && (
         <article className="breakdown-card">
-          <h2>模型分布</h2>
+          <h2>{t("模型分布")}</h2>
           <ul className="model-list">
             {models.map((entry) => (
               <li key={`${entry.agent}-${entry.model}`}>
@@ -982,8 +993,8 @@ function ChartState({ pending }) {
       <div className="chart-state" role="status">
         <HardDrives size={28} weight="light" aria-hidden="true" />
         <div>
-          <h2 id="usage-chart-state-title">{pending ? "正在读取本机趋势" : "趋势暂不可用"}</h2>
-          <p>{pending ? "索引完成后将显示真实曲线。" : "读取失败时不会以零值或演示曲线替代。"}</p>
+          <h2 id="usage-chart-state-title">{pending ? t("正在读取本机趋势") : t("趋势暂不可用")}</h2>
+          <p>{pending ? t("索引完成后将显示真实曲线。") : t("读取失败时不会以零值或演示曲线替代。")}</p>
         </div>
       </div>
     </section>
@@ -1022,8 +1033,8 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources, widg
     // Array.sort 是稳定的：并列（尤其一堆 0）时保持注册表顺序，不会每次刷新乱跳。
     .sort((left, right) => right.tokens - left.tokens);
   return (
-    <aside className="inspector" aria-label="配额与 Agent 明细">
-      <div className="quota-groups" aria-label="各 Agent 官方配额">
+    <aside className="inspector" aria-label={t("配额与 Agent 明细")}>
+      <div className="quota-groups" aria-label={t("各 Agent 官方配额")}>
         {/* 严格按勾选，顺序即勾选顺序。配额卡是实时状态而非历史用量，没勾就
             不该冒出来——哪怕它确有官方额度来源。勾了但没有来源的仍占一行，
             "暂无可靠来源"本身是有效信息。 */}
@@ -1054,7 +1065,7 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources, widg
         })}
       </div>
 
-      <div className="agent-list" aria-label="按 Agent 筛选">
+      <div className="agent-list" aria-label={t("按 Agent 筛选")}>
         {rankedAgents.map((agent) => {
           const meta = AGENT_META[agent.id];
           if (!meta) return null;
@@ -1081,8 +1092,8 @@ function Inspector({ snapshot, selectedAgent, onSelectAgent, onOpenSources, widg
       </div>
 
       <button className={`traceability ${snapshot.loadError ? "traceability--error" : ""} ${partial ? "traceability--warning" : ""}`} type="button" onClick={onOpenSources}>
-        <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? "正在读取本机数据" : snapshot.loadError ? "数据暂不可用" : partial ? "部分数据可能不完整" : "数据源正常"}</span>
-        <small>{snapshot.pending ? "后台建立索引，窗口仍可操作" : snapshot.loadError ? "失败结果未以演示数据替代" : partial ? "打开数据来源查看受影响来源" : snapshot.isDemo ? "当前为演示数据" : `本地统计 + 官方配额 · ${formatClock(snapshot.generatedAt)}`}</small>
+        <span><ShieldCheck size={17} weight="fill" />{snapshot.pending ? t("正在读取本机数据") : snapshot.loadError ? t("数据暂不可用") : partial ? t("部分数据可能不完整") : t("数据源正常")}</span>
+        <small>{snapshot.pending ? t("后台建立索引，窗口仍可操作") : snapshot.loadError ? t("失败结果未以演示数据替代") : partial ? t("打开数据来源查看受影响来源") : snapshot.isDemo ? t("当前为演示数据") : t("本地统计 + 官方配额 · {time}", { time: formatClock(snapshot.generatedAt) })}</small>
       </button>
     </aside>
   );
@@ -1131,7 +1142,7 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
     };
   }, [menuOpen]);
 
-  const label = theme === "auto" ? "自动（跟随系统）" : theme === "dark" ? "暗色" : "亮色";
+  const label = theme === "auto" ? t("自动（跟随系统）") : theme === "dark" ? t("暗色") : t("亮色");
   return (
     <div className="theme-quick" ref={wrapRef}>
       <button
@@ -1142,10 +1153,10 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
           event.preventDefault();
           setMenuOpen((open) => !open);
         }}
-        aria-label={`切换明暗，当前${label}`}
+        aria-label={t("切换明暗，当前{label}", { label })}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        title={`当前：${label}\n点击切换明暗 · 右键选择模式`}
+        title={t("当前：{label}\n点击切换明暗 · 右键选择模式", { label })}
       >
         {darkTheme ? (
           <Moon size={16} weight="light" aria-hidden="true" />
@@ -1167,7 +1178,7 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
                 setMenuOpen(false);
               }}
             >
-              {option.label}
+              {t(option.label)}
               {theme === option.id && <Check size={13} weight="bold" aria-hidden="true" />}
             </button>
           ))}
@@ -1179,20 +1190,20 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
 
 function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, theme, darkTheme, onThemeChange, onToggleMode, onTogglePinned, onToggleTransparent }) {
   const glassName = (id) =>
-    GLASS_TINT_OPTIONS.find((option) => option.id === id)?.label || "深色";
+    t(GLASS_TINT_OPTIONS.find((option) => option.id === id)?.label || "深色");
   const glassCurrent = normalizeGlassTint(glassTint);
   const glassNext = nextGlassTint(glassCurrent);
-  const glassLabel = `${glassName(glassCurrent)} · 点击切为${glassName(glassNext)}`;
+  const glassLabel = t("{current} · 点击切为{next}", { current: glassName(glassCurrent), next: glassName(glassNext) });
   return (
-    <div className={`window-actions window-actions--${mode}`} aria-label="窗口操作">
+    <div className={`window-actions window-actions--${mode}`} aria-label={t("窗口操作")}>
       {mode === "expanded" && (
         <>
           <button
             type="button"
             className="window-action"
             onClick={() => onToggleMode("compact")}
-            aria-label="收起为桌面小组件"
-            title="收起为桌面小组件"
+            aria-label={t("收起为桌面小组件")}
+            title={t("收起为桌面小组件")}
           >
             <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
           </button>
@@ -1200,8 +1211,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
             type="button"
             className="window-action"
             onClick={() => onToggleMode("strip")}
-            aria-label="折叠为胶囊条"
-            title="折叠为胶囊条"
+            aria-label={t("折叠为胶囊条")}
+            title={t("折叠为胶囊条")}
           >
             <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
           </button>
@@ -1213,8 +1224,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
           type="button"
           className="window-action"
           onClick={() => onToggleMode("strip")}
-          aria-label="折叠为胶囊条"
-          title="折叠为胶囊条"
+          aria-label={t("折叠为胶囊条")}
+          title={t("折叠为胶囊条")}
         >
           <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
         </button>
@@ -1224,8 +1235,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
           type="button"
           className="window-action window-action--active"
           onClick={onToggleTransparent}
-          aria-label={`外观：${glassLabel}`}
-          title={`外观：${glassLabel}`}
+          aria-label={t("外观：{label}", { label: glassLabel })}
+          title={t("外观：{label}", { label: glassLabel })}
         >
           <CircleHalfTilt size={16} weight="fill" aria-hidden="true" />
         </button>
@@ -1235,9 +1246,9 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
           type="button"
           className={`window-action ${pinned ? "window-action--active" : ""}`}
           onClick={onTogglePinned}
-          aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          aria-label={pinned ? t("取消固定，恢复拖动") : t("固定在当前位置并置顶")}
           aria-pressed={pinned}
-          title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+          title={pinned ? t("取消固定，恢复拖动") : t("固定在当前位置并置顶")}
         >
           <PushPinSimple size={17} weight={pinned ? "fill" : "light"} aria-hidden="true" />
         </button>
@@ -1248,8 +1259,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
             type="button"
             className="window-action"
             onClick={() => runWindowAction(minimizeWindow)}
-            aria-label="最小化"
-            title="最小化"
+            aria-label={t("最小化")}
+            title={t("最小化")}
           >
             <Minus size={17} weight="light" aria-hidden="true" />
           </button>
@@ -1258,8 +1269,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
               type="button"
               className="window-action"
               onClick={() => runWindowAction(toggleMaximizeWindow)}
-              aria-label="最大化或还原"
-              title="最大化 / 还原"
+              aria-label={t("最大化或还原")}
+              title={t("最大化 / 还原")}
             >
               <CornersOut size={16} weight="light" aria-hidden="true" />
             </button>
@@ -1268,8 +1279,8 @@ function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, t
             type="button"
             className="window-action window-action--close"
             onClick={() => runWindowAction(closeWindow)}
-            aria-label="隐藏到托盘"
-            title="隐藏到托盘"
+            aria-label={t("隐藏到托盘")}
+            title={t("隐藏到托盘")}
           >
             <X size={17} weight="light" aria-hidden="true" />
           </button>
@@ -1648,7 +1659,7 @@ function StripBar({
         ...(pinned ? { cursor: "default" } : {}),
       }}
     >
-      <h1 className="sr-only">Metrik 官方配额胶囊条</h1>
+      <h1 className="sr-only">{t("Metrik 官方配额胶囊条")}</h1>
       <div ref={railRef} className="strip-rail" {...dragProps}>
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
@@ -1658,7 +1669,7 @@ function StripBar({
               <div
                 key={agentId}
                 className="strip-cell strip-cell--unavailable"
-                aria-label={`${meta.label}：官方配额不可用`}
+                aria-label={t("{agent}：官方配额不可用", { agent: meta.label })}
                 onPointerEnter={(event) => showDetail(event, agentId)}
               >
                 <img
@@ -1682,8 +1693,10 @@ function StripBar({
               key={agentId}
               className={`strip-cell ${severity ? `strip-cell--${severity}` : ""}`}
               aria-label={balance
-                ? `${meta.label}：余额 ${formatBalance(cell.tightest.key, view.remainingPercent)} · 官方余额`
-                : `${meta.label}：剩余 ${Math.round(view.remainingPercent)}%${Number.isFinite(view.resetsInMinutes) ? `，${formatReset(view.resetsInMinutes)}后重置` : ""}`}
+                ? t("{agent}：余额 {amount} · 官方余额", { agent: meta.label, amount: formatBalance(cell.tightest.key, view.remainingPercent) })
+                : Number.isFinite(view.resetsInMinutes)
+                  ? t("{agent}：剩余 {percent}%，{time}后重置", { agent: meta.label, percent: Math.round(view.remainingPercent), time: formatReset(view.resetsInMinutes) })
+                  : t("{agent}：剩余 {percent}%", { agent: meta.label, percent: Math.round(view.remainingPercent) })}
               onPointerEnter={(event) => showDetail(event, agentId)}
             >
               <img
@@ -1702,7 +1715,7 @@ function StripBar({
         })
       ) : (
         <span className="strip-empty">
-          配额不可用
+          {t("配额不可用")}
         </span>
       )}
       <div className={`strip-controls ${controlsOpen && !(pinned && IS_LINUX) ? "strip-controls--open" : ""}`}>
@@ -1712,8 +1725,8 @@ function StripBar({
               type="button"
               className="update-dot"
               onClick={onOpenUpdate}
-              aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
-              title={`有新版本 ${availableUpdate.version}，点击更新`}
+              aria-label={t("有新版本 {version}，打开设置更新", { version: availableUpdate.version })}
+              title={t("有新版本 {version}，点击更新", { version: availableUpdate.version })}
             />
           </span>
         )}
@@ -1732,9 +1745,9 @@ function StripBar({
               type="button"
               className={`strip-button strip-button--menu ${controlsOpen ? "strip-button--active" : ""}`}
               onClick={toggleControls}
-              aria-label={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
+              aria-label={controlsOpen ? t("收起控制按钮") : t("展开控制按钮")}
               aria-expanded={controlsOpen}
-              title={controlsOpen ? "收起控制按钮" : "展开控制按钮"}
+              title={controlsOpen ? t("收起控制按钮") : t("展开控制按钮")}
             >
               <DotsThree size={16} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -1747,9 +1760,9 @@ function StripBar({
                 type="button"
                 className={`strip-button ${pinned ? "strip-button--active" : ""}`}
                 onClick={onTogglePinned}
-                aria-label={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+                aria-label={pinned ? t("取消固定，恢复拖动") : t("固定在当前位置并置顶")}
                 aria-pressed={pinned}
-                title={pinned ? "取消固定，恢复拖动" : "固定在当前位置并置顶"}
+                title={pinned ? t("取消固定，恢复拖动") : t("固定在当前位置并置顶")}
               >
                 <PushPinSimple size={15} weight={pinned ? "fill" : buttonWeight} aria-hidden="true" />
               </button>
@@ -1762,8 +1775,8 @@ function StripBar({
                 cancelStripControlsExpand();
                 onToggleOrientation();
               }}
-              aria-label={vertical ? "切换为横条" : "切换为竖条"}
-              title={vertical ? "切换为横条" : "切换为竖条"}
+              aria-label={vertical ? t("切换为横条") : t("切换为竖条")}
+              title={vertical ? t("切换为横条") : t("切换为竖条")}
             >
               <OrientationIcon size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -1771,8 +1784,8 @@ function StripBar({
               type="button"
               className="strip-button"
               onClick={onRestore}
-              aria-label="展开为桌面小组件"
-              title="展开为桌面小组件"
+              aria-label={t("展开为桌面小组件")}
+              title={t("展开为桌面小组件")}
             >
               <ArrowsOutSimple size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -1780,8 +1793,8 @@ function StripBar({
               type="button"
               className="strip-button"
               onClick={onExpand}
-              aria-label="打开完整视图"
-              title="完整视图"
+              aria-label={t("打开完整视图")}
+              title={t("完整视图")}
             >
               <CornersOut size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -1933,8 +1946,10 @@ function CompactWidget({
     };
   });
   // 标签必须描述快照本身的周期；切换周期的扫描期间不给旧数据贴新标签。
-  const comparisonLabel = snapshot.period === "today" ? "较近 7 日同时段" : "较前一周期";
-  const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  const comparisonText = (lower, percent) => (snapshot.period === "today"
+    ? (lower ? t("较近 7 日同时段低 {percent}%", { percent }) : t("较近 7 日同时段高 {percent}%", { percent }))
+    : (lower ? t("较前一周期低 {percent}%", { percent }) : t("较前一周期高 {percent}%", { percent })));
+  const flatComparisonLabel = snapshot.period === "today" ? t("与近 7 日同时段持平") : t("与前一周期持平");
   const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
   const quotaEntry = agentQuotaFor(snapshot, quotaAgent);
   const quotaWindows = compactQuotaWindows(quotaEntry);
@@ -1962,7 +1977,7 @@ function CompactWidget({
       {...glassPointerProps(shellAppearance.edgeInteractive)}
       style={shellAppearance.style}
     >
-      <h1 className="sr-only">Metrik Agent 用量桌面小组件</h1>
+      <h1 className="sr-only">{t("Metrik Agent 用量桌面小组件")}</h1>
       <header
         className="widget-titlebar"
         // 固定 = 置顶 + 锁定位置：去掉拖动区，窗口停在用户选定的位置。
@@ -1985,8 +2000,8 @@ function CompactWidget({
               type="button"
               className="update-dot"
               onClick={onOpenUpdate}
-              aria-label={`有新版本 ${availableUpdate.version}，打开设置更新`}
-              title={`有新版本 ${availableUpdate.version}，点击更新`}
+              aria-label={t("有新版本 {version}，打开设置更新", { version: availableUpdate.version })}
+              title={t("有新版本 {version}，点击更新", { version: availableUpdate.version })}
             />
           )}
         </div>
@@ -2006,11 +2021,11 @@ function CompactWidget({
       <div className="widget-content">
         <PeriodControl period={period} onChange={onPeriodChange} compact />
 
-        <section className="widget-primary" aria-label="用量摘要">
+        <section className="widget-primary" aria-label={t("用量摘要")}>
           <div className="widget-metric">
             <span>
-              {selectedAgent === "all" ? "总用量" : AGENT_META[selectedAgent].label}
-              {switchingPeriod ? `（${PERIODS.find((item) => item.id === snapshot.period)?.label}）` : ""}
+              {selectedAgent === "all" ? t("总用量") : AGENT_META[selectedAgent].label}
+              {switchingPeriod ? t("（{period}）", { period: t(PERIODS.find((item) => item.id === snapshot.period)?.label) }) : ""}
             </span>
             <div aria-live="polite" aria-atomic="true">
               <strong>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(visibleTokens)}</strong>
@@ -2018,15 +2033,15 @@ function CompactWidget({
             </div>
             <p className="widget-comparison">
               {switchingPeriod ? (
-                <>正在统计{PERIODS.find((item) => item.id === period)?.label}数据…</>
+                <>{t("正在统计{period}数据…", { period: t(PERIODS.find((item) => item.id === period)?.label) })}</>
               ) : snapshot.pending ? (
-                <>正在建立本地索引</>
+                <>{t("正在建立本地索引")}</>
               ) : snapshot.loadError ? (
-                <>本地数据读取失败</>
+                <>{t("本地数据读取失败")}</>
               ) : selectedAgent !== "all" ? (
                 <>
                   <FunnelSimple size={14} weight="light" aria-hidden="true" />
-                  已按 Agent 筛选
+                  {t("已按 Agent 筛选")}
                 </>
               ) : snapshot.comparisonAvailable ? (
                 <>
@@ -2035,12 +2050,12 @@ function CompactWidget({
                   ) : (
                     <>
                       <ComparisonArrow size={14} weight="bold" aria-hidden="true" />
-                      {comparisonLabel}{comparisonIsLower ? "低" : "高"} {Math.abs(snapshot.comparisonPercent).toFixed(0)}%
+                      {comparisonText(comparisonIsLower, Math.abs(snapshot.comparisonPercent).toFixed(0))}
                     </>
                   )}
                 </>
               ) : (
-                <>{period === "today" ? "同时段基线建立中" : "基线建立中"}</>
+                <>{period === "today" ? t("同时段基线建立中") : t("基线建立中")}</>
               )}
             </p>
           </div>
@@ -2050,10 +2065,10 @@ function CompactWidget({
             style={{ "--quota-accent": AGENT_META[quotaAgent].accent }}
             type="button"
             onClick={onCycleQuotaAgent}
-            aria-label={`${AGENT_META[quotaAgent].label} 配额，点击切换 Agent`}
-            title="点击切换配额 Agent"
+            aria-label={t("{agent} 配额，点击切换 Agent", { agent: AGENT_META[quotaAgent].label })}
+            title={t("点击切换配额 Agent")}
           >
-            <span>{AGENT_META[quotaAgent].label} 已用</span>
+            <span>{t("{agent} 已用", { agent: AGENT_META[quotaAgent].label })}</span>
             {quotaWindows.map((window) => {
               // 余额窗口：金额没有"已用占比"，轨道画满作为中性表达。
               const balance = isBalanceWindow(window);
@@ -2080,17 +2095,17 @@ function CompactWidget({
               {quotaView.quality === "demo"
                 ? quotaProvenance(quotaView)
                 : quotaView.resetExpired
-                  ? "已重置，等待刷新"
+                  ? t("已重置，等待刷新")
                   : quotaView.available
                     ? quotaIsBalance
-                      ? "账户余额 · 不重置"
-                      : `${formatReset(quotaView.resetsInMinutes)}后重置`
+                      ? t("账户余额 · 不重置")
+                      : t("{time}后重置", { time: formatReset(quotaView.resetsInMinutes) })
                     : quotaEmptyCopy(quotaEntry, quotaAgent, true)}
             </small>
           </button>
         </section>
 
-        <section className="widget-agent-list" aria-label="各 Agent 官方剩余额度">
+        <section className="widget-agent-list" aria-label={t("各 Agent 官方剩余额度")}>
           {(() => {
             // 行集合只由用户的 Agent 选择决定（与胶囊条同一哲学：自选一律占格），
             // 没有可靠配额来源的 Agent 显示 "-- / 暂无可靠来源" 而不是消失——
@@ -2125,12 +2140,12 @@ function CompactWidget({
                       {current
                         ? `· ${shortWindowLabel(headline.key)}`
                         : headlineView
-                          ? "· 已重置，等待刷新"
+                          ? `· ${t("已重置，等待刷新")}`
                           : snapshot.pending
-                            ? "· 正在读取…"
+                            ? `· ${t("正在读取…")}`
                             : snapshot.loadError
-                              ? "· 读取失败"
-                              : "· 暂无可靠来源"}
+                              ? `· ${t("读取失败")}`
+                              : `· ${t("暂无可靠来源")}`}
                     </small>
                   </span>
                   {/* 展示剩余额度（用户关心的是还能用多少）。快照新鲜度不再
@@ -2164,13 +2179,13 @@ function CompactWidget({
             className="widget-refresh"
             onClick={onRefresh}
             disabled={loading}
-            aria-label="强制刷新官方配额与本地统计"
-            title="强制刷新官方配额与本地统计"
+            aria-label={t("强制刷新官方配额与本地统计")}
+            title={t("强制刷新官方配额与本地统计")}
           >
             <ArrowsClockwise size={13} weight="light" aria-hidden="true" />
           </button>
           <button type="button" className="widget-expand" onClick={() => onExpand("expanded")}>
-            <span>完整视图</span>
+            <span>{t("完整视图")}</span>
             <ArrowsOutSimple size={16} weight="light" aria-hidden="true" />
           </button>
         </footer>
@@ -2237,7 +2252,7 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
-          <h2 id="source-title">数据来源</h2>
+          <h2 id="source-title">{t("数据来源")}</h2>
           <div className="source-header-actions">
             {!partial && !confirmingRebuild && rebuildState.status === "idle" && (
               <button
@@ -2247,10 +2262,10 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
                 onClick={() => setConfirmingRebuild(true)}
               >
                 <ClockCounterClockwise size={15} weight="light" aria-hidden="true" />
-                {rebuildBusy ? "扫描中…" : "重新扫描"}
+                {rebuildBusy ? t("扫描中…") : t("重新扫描")}
               </button>
             )}
-            <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label="关闭">
+            <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label={t("关闭")}>
               <X size={21} weight="light" />
             </button>
           </div>
@@ -2260,7 +2275,10 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
           <div className="indexing-note" role="status">
             <ClockCounterClockwise size={20} weight="light" aria-hidden="true" />
             <p>
-              正在补齐历史，还剩 <strong>{snapshot.indexing.pending}</strong> 个文件。完成后会自动更新。
+              {(() => {
+                const [before, after] = t("正在补齐历史，还剩 {count} 个文件。完成后会自动更新。").split("{count}");
+                return <>{before}<strong>{snapshot.indexing.pending}</strong>{after}</>;
+              })()}
             </p>
           </div>
         )}
@@ -2270,8 +2288,8 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
             {confirmingRebuild ? (
               <div className="source-repair-confirmation" role="group" aria-labelledby="source-repair-title">
                 <div>
-                  <strong id="source-repair-title">重新扫描本机数据？</strong>
-                  <p>只重建 Metrik 的统计索引，不会修改 Agent 日志。</p>
+                  <strong id="source-repair-title">{t("重新扫描本机数据？")}</strong>
+                  <p>{t("只重建 Metrik 的统计索引，不会修改 Agent 日志。")}</p>
                 </div>
                 <div className="source-repair-actions">
                   <button
@@ -2280,14 +2298,14 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
                     className="ledger-button ledger-button--secondary"
                     onClick={() => setConfirmingRebuild(false)}
                   >
-                    取消
+                    {t("取消")}
                   </button>
                   <button
                     type="button"
                     className="ledger-button ledger-button--primary"
                     onClick={confirmRebuild}
                   >
-                    重新扫描
+                    {t("重新扫描")}
                   </button>
                 </div>
               </div>
@@ -2299,32 +2317,32 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
                 <div>
                   <strong id="source-repair-title">
                     {rebuildBusy
-                      ? "正在重新扫描"
+                      ? t("正在重新扫描")
                       : partial && rebuildState.status === "success"
-                        ? "扫描完成，仍不完整"
+                        ? t("扫描完成，仍不完整")
                         : partial
-                          ? "部分数据未计入"
-                          : "扫描完成"}
+                          ? t("部分数据未计入")
+                          : t("扫描完成")}
                   </strong>
                   <p>
                     {rebuildBusy
-                      ? "正在重建统计索引，可能需要几分钟。"
+                      ? t("正在重建统计索引，可能需要几分钟。")
                       : rebuildState.status === "success"
-                        ? rebuildState.message
+                        ? feedbackText(rebuildState)
                         : partial
-                          ? "可重新扫描本机日志；如果仍不完整，更新 Metrik 后再试。"
-                          : rebuildState.message}
+                          ? t("可重新扫描本机日志；如果仍不完整，更新 Metrik 后再试。")
+                          : feedbackText(rebuildState)}
                   </p>
                 </div>
                 {partial && !rebuildBusy && (
                   <button type="button" className="source-rescan-button" onClick={() => setConfirmingRebuild(true)}>
-                    重新扫描
+                    {t("重新扫描")}
                   </button>
                 )}
               </div>
             )}
             {!confirmingRebuild && rebuildState.status === "error" && (
-              <p className="source-repair-error" role={rebuildStatusRole}>{rebuildState.message}</p>
+              <p className="source-repair-error" role={rebuildStatusRole}>{feedbackText(rebuildState)}</p>
             )}
           </section>
         )}
@@ -2352,18 +2370,24 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
 
         <div className="privacy-note">
           <ShieldCheck size={20} weight="light" />
-          <p>只保存用量和来源信息，不读取或上传对话正文与凭据。</p>
+          <p>{t("只保存用量和来源信息，不读取或上传对话正文与凭据。")}</p>
         </div>
       </section>
     </div>
   );
 }
 
+// 反馈状态里，前端自己的文字存中文原文 text（渲染时翻译，切换语言也跟着变），
+// 后端或异常带回的文字存 message（已是当前语言，原样显示）。
+function feedbackText(feedback) {
+  return feedback.text ? t(feedback.text, feedback.params) : feedback.message;
+}
+
 function formatSyncTime(ms) {
-  if (!Number.isFinite(ms)) return "尚未同步";
+  if (!Number.isFinite(ms)) return t("尚未同步");
   const value = new Date(ms);
-  if (Number.isNaN(value.getTime())) return "尚未同步";
-  return value.toLocaleString("zh-CN", { hour12: false });
+  if (Number.isNaN(value.getTime())) return t("尚未同步");
+  return formatDateTime(value, { hour12: false });
 }
 
 // 官方配额的 statusLine 钩子：只提取额度窗口，不碰对话与凭据。Antigravity
@@ -2390,7 +2414,7 @@ function HookCard({
         if (!cancelled) setStatus(value);
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "钩子状态读取失败。" });
+        if (!cancelled) setFeedback({ tone: "error", text: "钩子状态读取失败。" });
       });
     return () => {
       cancelled = true;
@@ -2405,7 +2429,7 @@ function HookCard({
       setStatus(next);
       setFeedback({
         tone: "success",
-        message: enabled ? installedMessage : "钩子已卸载，statusLine 设置已恢复。",
+        text: enabled ? installedMessage : "钩子已卸载，statusLine 设置已恢复。",
       });
       onSnapshotRefresh();
     } catch (error) {
@@ -2420,7 +2444,7 @@ function HookCard({
       <h2>{title}</h2>
       <p className="settings-muted">{description}</p>
       {status?.demo ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
+        <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>
       ) : status && (
         <>
           <div className="settings-directory-row">
@@ -2430,24 +2454,26 @@ function HookCard({
               disabled={busy || (!status.installed && status.conflict)}
               onClick={() => toggle(!status.installed)}
             >
-              {status.installed ? "卸载钩子" : status.replaced ? "重新串联" : "安装钩子"}
+              {status.installed ? t("卸载钩子") : status.replaced ? t("重新串联") : t("安装钩子")}
             </button>
           </div>
           <dl className="settings-status">
             <div>
-              <dt>状态</dt>
+              <dt>{t("状态")}</dt>
               <dd>
                 {status.installed
-                  ? `已安装${status.chained ? " · 已串联原有状态栏" : ""} · ${
+                  ? [
+                      t("已安装"),
+                      ...(status.chained ? [t("已串联原有状态栏")] : []),
                       status.lastDataAtMs
-                        ? `${status.stale ? "数据已过期" : "最近数据"} ${formatSyncTime(status.lastDataAtMs)}`
-                        : waitingLabel
-                    }`
+                        ? t(status.stale ? "数据已过期 {time}" : "最近数据 {time}", { time: formatSyncTime(status.lastDataAtMs) })
+                        : waitingLabel,
+                    ].join(" · ")
                   : status.conflict
-                    ? "未安装 · 现有 statusLine 缺少 command 字段，无法串联"
+                    ? t("未安装 · 现有 statusLine 缺少 command 字段，无法串联")
                     : status.replaced
-                      ? "已被其他 statusLine 替换 · 可重新串联当前命令"
-                    : "未安装"}
+                      ? t("已被其他 statusLine 替换 · 可重新串联当前命令")
+                    : t("未安装")}
               </dd>
             </div>
           </dl>
@@ -2458,7 +2484,7 @@ function HookCard({
           className={`settings-feedback settings-feedback--${feedback.tone}`}
           role={feedback.tone === "error" ? "alert" : "status"}
         >
-          {feedback.message}
+          {feedbackText(feedback)}
         </p>
       )}
       {children}
@@ -2480,7 +2506,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
         if (!cancelled) setStatus(value);
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "官方配额来源状态读取失败。" });
+        if (!cancelled) setFeedback({ tone: "error", text: "官方配额来源状态读取失败。" });
       });
     return () => {
       cancelled = true;
@@ -2495,7 +2521,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
       setStatus(next);
       setFeedback({
         tone: "success",
-        message: enabled
+        text: enabled
           ? "已开启。下次刷新起直接查询官方配额（约每 5 分钟一次）；查询失败时自动回落到状态栏钩子。"
           : "已关闭。恢复为仅由状态栏钩子提供额度。",
       });
@@ -2511,17 +2537,12 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-subsection">
-      <h3>官方配额直连（OAuth）</h3>
+      <h3>{t("官方配额直连（OAuth）")}</h3>
       <p className="settings-muted">
-        备选来源：用本机 Claude Code 已保存的凭据直接查询官方配额（账户级合并值，约每 5 分钟一次），
-        网页版与桌面客户端的消耗同样计入。凭据只在内存中读取，不存储、不上传。
-        前提是最近使用过 Claude Code：凭据有效期仅数小时，且仅在 Claude Code 运行时刷新；
-        服务端拒绝后回落到状态栏钩子。
+        {t("备选来源：用本机 Claude Code 已保存的凭据直接查询官方配额（账户级合并值，约每 5 分钟一次）， 网页版与桌面客户端的消耗同样计入。凭据只在内存中读取，不存储、不上传。 前提是最近使用过 Claude Code：凭据有效期仅数小时，且仅在 Claude Code 运行时刷新； 服务端拒绝后回落到状态栏钩子。")}
       </p>
       <p className="settings-muted">
-        ⚠️ 条款风险须知：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的
-        OAuth 凭据。目前公开的封禁与拦截集中在借订阅做推理的第三方工具，未见只读用量查询被封号的案例，
-        但按条款字面本功能同样属于违规范围。若不愿承担此风险，可保持关闭，使用零凭据的状态栏钩子。
+        {t("⚠️ 条款风险须知：Anthropic 2026 年 2 月更新的消费者条款禁止在第三方工具中使用 Claude 订阅的 OAuth 凭据。目前公开的封禁与拦截集中在借订阅做推理的第三方工具，未见只读用量查询被封号的案例， 但按条款字面本功能同样属于违规范围。若不愿承担此风险，可保持关闭，使用零凭据的状态栏钩子。")}
       </p>
       {status && (
         <>
@@ -2532,28 +2553,30 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
               disabled={busy || (!status.enabled && !status.credentialsPresent)}
               onClick={() => toggle(!status.enabled)}
             >
-              {status.enabled ? "关闭直连" : "开启直连"}
+              {status.enabled ? t("关闭直连") : t("开启直连")}
             </button>
           </div>
           <dl className="settings-status">
             <div>
-              <dt>状态</dt>
+              <dt>{t("状态")}</dt>
               <dd>
                 {!status.credentialsPresent
-                  ? "本机未找到 Claude Code 登录凭据（先在终端运行 claude login）"
+                  ? t("本机未找到 Claude Code 登录凭据（先在终端运行 claude login）")
                   : !status.scopeOk
-                    ? "凭据缺少 user:profile 权限，开启后可能查询失败（可运行 claude login 重新登录）"
+                    ? t("凭据缺少 user:profile 权限，开启后可能查询失败（可运行 claude login 重新登录）")
                     : status.expired
-                      ? `${status.enabled ? "已开启" : "未开启"} · 本地有效期记录已过，开启后仍由服务端确认一次`
+                      ? (status.enabled
+                        ? t("已开启 · 本地有效期记录已过，开启后仍由服务端确认一次")
+                        : t("未开启 · 本地有效期记录已过，开启后仍由服务端确认一次"))
                       : status.enabled
-                        ? "已开启 · 凭据可用"
-                        : "未开启 · 凭据可用"}
+                        ? t("已开启 · 凭据可用")
+                        : t("未开启 · 凭据可用")}
               </dd>
             </div>
             {/* 开关一切正常、却始终没有额度数字时，唯一能解释原因的就是这一行。 */}
             {status.lastFailure && (
               <div>
-                <dt>最近失败</dt>
+                <dt>{t("最近失败")}</dt>
                 <dd>
                   {status.lastFailure.message} · {formatSyncTime(status.lastFailure.atMs)}
                 </dd>
@@ -2567,7 +2590,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
           className={`settings-feedback settings-feedback--${feedback.tone}`}
           role={feedback.tone === "error" ? "alert" : "status"}
         >
-          {feedback.message}
+          {feedbackText(feedback)}
         </p>
       )}
     </div>
@@ -2586,7 +2609,7 @@ function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
         if (!cancelled) setEnabled(value);
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "开机启动状态读取失败。" });
+        if (!cancelled) setFeedback({ tone: "error", text: "开机启动状态读取失败。" });
       });
     return () => {
       cancelled = true;
@@ -2607,12 +2630,12 @@ function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
 
   return (
     <div className="settings-card">
-      <h2>启动与位置</h2>
+      <h2>{t("启动与位置")}</h2>
       <p className="settings-muted">
-        位置会被记住，下次启动时恢复；超出屏幕范围时自动居中。
+        {t("位置会被记住，下次启动时恢复；超出屏幕范围时自动居中。")}
       </p>
       {enabled === null ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
+        <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>
       ) : (
         <div className="settings-directory-row">
           <button
@@ -2621,13 +2644,13 @@ function StartupCard({ autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
             disabled={busy}
             onClick={() => toggle(!enabled)}
           >
-            {enabled ? "关闭开机启动" : "开机时自动启动"}
+            {enabled ? t("关闭开机启动") : t("开机时自动启动")}
           </button>
         </div>
       )}
       {feedback && (
         <p className={`settings-feedback settings-feedback--${feedback.tone}`} role="alert">
-          {feedback.message}
+          {feedbackText(feedback)}
         </p>
       )}
       <UpdateBlock
@@ -2683,10 +2706,9 @@ function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
 
   return (
     <div className="settings-subsection">
-      <h3>更新</h3>
+      <h3>{t("更新")}</h3>
       <p className="settings-muted">
-        当前版本 {__APP_VERSION__}。自动检查开启后，启动时检查一次，持续运行时每天检查一次；
-        下载与安装需手动确认，更新包经签名校验。
+        {t("当前版本 {version}。自动检查开启后，启动时检查一次，持续运行时每天检查一次； 下载与安装需手动确认，更新包经签名校验。", { version: __APP_VERSION__ })}
       </p>
       <label className="update-autocheck">
         <input
@@ -2694,7 +2716,7 @@ function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
           checked={autoCheck}
           onChange={(event) => onAutoCheckChange(event.target.checked)}
         />
-        <span>自动检查更新（每天一次）</span>
+        <span>{t("自动检查更新（每天一次）")}</span>
       </label>
       <div className="settings-directory-row">
         <button
@@ -2704,24 +2726,24 @@ function UpdateBlock({ autoCheck, onAutoCheckChange, availableUpdate }) {
           onClick={state.status === "available" ? install : check}
         >
           {state.status === "checking"
-            ? "检查中…"
+            ? t("检查中…")
             : state.status === "installing"
-              ? `下载中${state.percent == null ? "" : ` ${state.percent}%`}…`
+              ? (state.percent == null ? t("下载中…") : t("下载中 {percent}%…", { percent: state.percent }))
               : state.status === "available"
-                ? `更新到 ${state.version}`
-                : "检查更新"}
+                ? t("更新到 {version}", { version: state.version })
+                : t("检查更新")}
         </button>
         {/* 有新版待装时主按钮变成"更新到 X"，没有这一个就再也没法重新检查：
             关掉自动检查的人只能先把旧版装掉，才看得到后面发布的版本。 */}
         {state.status === "available" && (
           <button type="button" className="ledger-button ledger-button--secondary" onClick={check}>
-            重新检查
+            {t("重新检查")}
           </button>
         )}
       </div>
       {state.status === "current" && (
         <p className="settings-feedback settings-feedback--success" role="status">
-          已是最新版本。
+          {t("已是最新版本。")}
         </p>
       )}
       {state.status === "available" && state.notes && (
@@ -2750,22 +2772,29 @@ function AboutCard() {
   };
   return (
     <div className="settings-card settings-about">
-      <h2>关于</h2>
+      <h2>{t("关于")}</h2>
       <p className="settings-muted">Metrik {__APP_VERSION__}</p>
       <p className="settings-muted">
-        作者：keros68（
-        <a href={`mailto:${AUTHOR_EMAIL}`} onClick={(event) => openExternal(event, `mailto:${AUTHOR_EMAIL}`)}>
-          {AUTHOR_EMAIL}
-        </a>
-        ）
+        {(() => {
+          const [before, after] = t("作者：keros68（{email}）").split("{email}");
+          return (
+            <>
+              {before}
+              <a href={`mailto:${AUTHOR_EMAIL}`} onClick={(event) => openExternal(event, `mailto:${AUTHOR_EMAIL}`)}>
+                {AUTHOR_EMAIL}
+              </a>
+              {after}
+            </>
+          );
+        })()}
       </p>
       <p className="settings-muted">
-        项目仓库：
+        {t("项目仓库：")}
         <a href={REPO_URL} onClick={(event) => openExternal(event, REPO_URL)}>
           github.com/keros68/metrik
         </a>
       </p>
-      <p className="settings-muted">许可证：AGPL-3.0-or-later</p>
+      <p className="settings-muted">{t("许可证：AGPL-3.0-or-later")}</p>
     </div>
   );
 }
@@ -2838,11 +2867,11 @@ function SliderRow({ label, hint, min, max, step, percent, ariaLabel, onChange }
 function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
   return (
     <div className="settings-card">
-      <h2>外观与缩放</h2>
+      <h2>{t("外观与缩放")}</h2>
       <p className="settings-muted">
-        大窗口的明暗主题，「自动」跟随系统；小组件不受影响。
+        {t("大窗口的明暗主题，「自动」跟随系统；小组件不受影响。")}
       </p>
-      <div className="theme-toggle" role="group" aria-label="完整视图主题">
+      <div className="theme-toggle" role="group" aria-label={t("完整视图主题")}>
         {THEME_OPTIONS.map((option) => (
           <button
             key={option.id}
@@ -2851,7 +2880,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
             aria-pressed={theme === option.id}
             onClick={() => onThemeChange(option.id)}
           >
-            {option.label}
+            {t(option.label)}
           </button>
         ))}
       </div>
@@ -2859,11 +2888,11 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
           深/浅配色用于 Windows 与 Linux 的卡片和胶囊。 */}
       {!IS_MAC && (
         <div className="settings-subsection">
-          <h3>组件外观</h3>
+          <h3>{t("组件外观")}</h3>
           <p className="settings-muted">
-            深色是 HUD 玻璃；浅色是透亮白磨砂；透明会直接透出桌面与后方窗口，并叠加轻霜和边缘高光。
+            {t("深色是 HUD 玻璃；浅色是透亮白磨砂；透明会直接透出桌面与后方窗口，并叠加轻霜和边缘高光。")}
           </p>
-          <div className="theme-toggle" role="group" aria-label="组件外观">
+          <div className="theme-toggle" role="group" aria-label={t("组件外观")}>
             {GLASS_TINT_OPTIONS.map((option) => (
               <button
                 key={option.id}
@@ -2872,7 +2901,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
                 aria-pressed={glassTint === option.id}
                 onClick={() => onGlassTint(option.id)}
               >
-                {option.label}
+                {t(option.label)}
               </button>
             ))}
           </div>
@@ -2880,11 +2909,11 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
       )}
       {!IS_MAC && glassTint === "clear" && (
         <div className="settings-subsection">
-          <h3>透明档文字</h3>
+          <h3>{t("透明档文字")}</h3>
           <p className="settings-muted">
-            深色字配白霜，在浅色壁纸上更清晰；白色字配一层薄暗罩，接近桌面挂件常见的风格。
+            {t("深色字配白霜，在浅色壁纸上更清晰；白色字配一层薄暗罩，接近桌面挂件常见的风格。")}
           </p>
-          <div className="theme-toggle" role="group" aria-label="透明档文字">
+          <div className="theme-toggle" role="group" aria-label={t("透明档文字")}>
             {GLASS_INK_OPTIONS.map((option) => (
               <button
                 key={option.id}
@@ -2893,62 +2922,62 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
                 aria-pressed={glassInk === option.id}
                 onClick={() => onGlassInk(option.id)}
               >
-                {option.label}
+                {t(option.label)}
               </button>
             ))}
           </div>
         </div>
       )}
       <SliderRow
-        label="玻璃浓度"
-        hint="同时作用于卡片和胶囊；越低越通透，越高越厚实。"
+        label={t("玻璃浓度")}
+        hint={t("同时作用于卡片和胶囊；越低越通透，越高越厚实。")}
         min={5}
         max={96}
         step={2}
         percent={Math.round(glassAlpha * 100)}
-        ariaLabel="玻璃浓度百分比"
+        ariaLabel={t("玻璃浓度百分比")}
         onChange={onGlassAlpha}
       />
       {/* mac 的菜单栏面板是系统 UI 的一部分，尺寸固定不提供缩放；
           缩放只针对 Windows 的桌面小插件与胶囊条。 */}
       {!IS_MAC && (
         <SliderRow
-          label="卡片缩放"
-          hint="仅调整卡片尺寸；滑杆改动下次进入时生效。"
+          label={t("卡片缩放")}
+          hint={t("仅调整卡片尺寸；滑杆改动下次进入时生效。")}
           min={UI_SCALE_RANGE.min * 100}
           max={UI_SCALE_RANGE.max * 100}
           step={5}
           percent={Math.round(uiScale * 100)}
-          ariaLabel="卡片缩放百分比"
+          ariaLabel={t("卡片缩放百分比")}
           onChange={onUiScale}
         />
       )}
       {!IS_MAC && (
         <SliderRow
-          label="胶囊缩放"
-          hint="仅调整胶囊尺寸，与卡片互不影响；下次进入时生效。"
+          label={t("胶囊缩放")}
+          hint={t("仅调整胶囊尺寸，与卡片互不影响；下次进入时生效。")}
           min={UI_SCALE_RANGE.min * 100}
           max={UI_SCALE_RANGE.max * 100}
           step={5}
           percent={Math.round(stripScale * 100)}
-          ariaLabel="胶囊缩放百分比"
+          ariaLabel={t("胶囊缩放百分比")}
           onChange={onStripScale}
         />
       )}
       {IS_LINUX && (
         <div className="settings-subsection">
-          <h3>置顶展示</h3>
+          <h3>{t("置顶展示")}</h3>
           <p className="settings-muted">
-            置顶后卡片和胶囊的全部控件、拖动与点击均不可用；只能回到此设置取消。
+            {t("置顶后卡片和胶囊的全部控件、拖动与点击均不可用；只能回到此设置取消。")}
           </p>
-          <div className="theme-toggle" role="group" aria-label="置顶展示模式">
+          <div className="theme-toggle" role="group" aria-label={t("置顶展示模式")}>
             <button
               type="button"
               className={!pinned ? "is-selected" : ""}
               aria-pressed={!pinned}
               onClick={() => onPinnedChange(false)}
             >
-              正常交互
+              {t("正常交互")}
             </button>
             <button
               type="button"
@@ -2956,18 +2985,18 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
               aria-pressed={pinned}
               onClick={() => onPinnedChange(true)}
             >
-              置顶只读
+              {t("置顶只读")}
             </button>
           </div>
         </div>
       )}
       {IS_LINUX && (
         <div className="settings-subsection">
-          <h3>置顶悬停行为</h3>
+          <h3>{t("置顶悬停行为")}</h3>
           <p className="settings-muted">
-            鼠标进入置顶卡片或胶囊时生效，移开后恢复。
+            {t("鼠标进入置顶卡片或胶囊时生效，移开后恢复。")}
           </p>
-          <div className="theme-toggle" role="group" aria-label="置顶悬停行为">
+          <div className="theme-toggle" role="group" aria-label={t("置顶悬停行为")}>
             {PINNED_HOVER_OPTIONS.map((option) => (
               <button
                 key={option.id}
@@ -2976,7 +3005,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
                 aria-pressed={pinnedHoverMode === option.id}
                 onClick={() => onPinnedHoverMode(option.id)}
               >
-                {option.label}
+                {t(option.label)}
               </button>
             ))}
           </div>
@@ -2984,13 +3013,13 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
       )}
       {IS_LINUX && pinnedHoverMode === "fade" && (
         <SliderRow
-          label="悬停不透明度"
-          hint="数值越低，鼠标经过时越接近完全透明。"
+          label={t("悬停不透明度")}
+          hint={t("数值越低，鼠标经过时越接近完全透明。")}
           min={5}
           max={90}
           step={5}
           percent={Math.round(pinnedHoverOpacity * 100)}
-          ariaLabel="置顶悬停不透明度百分比"
+          ariaLabel={t("置顶悬停不透明度百分比")}
           onChange={onPinnedHoverOpacity}
         />
       )}
@@ -3004,12 +3033,12 @@ function NativeMacWidgetCard() {
     <div className="settings-card desktop-widget-setting">
       <div>
         <span className="desktop-widget-setting-kicker">macOS</span>
-        <h2>桌面小组件</h2>
+        <h2>{t("桌面小组件")}</h2>
         <p className="settings-muted">
-          在桌面空白处右键「编辑小组件」，搜索 Metrik 后添加。透明材质、圆角和摆放由 macOS 管理。
+          {t("在桌面空白处右键「编辑小组件」，搜索 Metrik 后添加。透明材质、圆角和摆放由 macOS 管理。")}
         </p>
       </div>
-      <span className="desktop-widget-native-badge">系统原生</span>
+      <span className="desktop-widget-native-badge">{t("系统原生")}</span>
     </div>
   );
 }
@@ -3045,8 +3074,8 @@ function AgentListColumn({ title, hint, agents, detected, onToggle, onMove }) {
             className="settings-agent-move"
             onClick={() => onMove(agentId)}
             disabled={index === 0}
-            aria-label={`将 ${AGENT_META[agentId].label} 上移`}
-            title="上移"
+            aria-label={t("将 {agent} 上移", { agent: AGENT_META[agentId].label })}
+            title={t("上移")}
           >
             ↑
           </button>
@@ -3061,7 +3090,7 @@ function AgentListColumn({ title, hint, agents, detected, onToggle, onMove }) {
       <ul className="settings-agent-toggle">{present.map(row)}</ul>
       {missing.length > 0 && (
         <details className="settings-agent-missing">
-          <summary>本机未检测到（{missing.length}）</summary>
+          <summary>{t("本机未检测到（{count}）", { count: missing.length })}</summary>
           <ul className="settings-agent-toggle">{missing.map(row)}</ul>
         </details>
       )}
@@ -3072,14 +3101,14 @@ function AgentListColumn({ title, hint, agents, detected, onToggle, onMove }) {
 function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge }) {
   return (
     <div className="settings-card">
-      <h2>显示的 Agent</h2>
+      <h2>{t("显示的 Agent")}</h2>
       <p className="settings-muted">
-        勾选即展示（至少保留一个），勾选顺序即显示顺序，↑ 上移。
+        {t("勾选即展示（至少保留一个），勾选顺序即显示顺序，↑ 上移。")}
       </p>
       <div className="settings-agent-columns">
         <AgentListColumn
-          title={IS_MAC ? "菜单栏、小组件与侧栏" : "小组件与侧栏"}
-          hint="完整视图侧栏还会自动加入本周期内产生用量的 Agent。"
+          title={IS_MAC ? t("菜单栏、小组件与侧栏") : t("小组件与侧栏")}
+          hint={t("完整视图侧栏还会自动加入本周期内产生用量的 Agent。")}
           agents={widgetAgents}
           detected={detectedAgents}
           onToggle={onToggleWidgetAgent}
@@ -3087,8 +3116,8 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
         />
         {!IS_MAC && (
           <AgentListColumn
-            title="胶囊条"
-            hint={'无配额来源的以 "--" 占位。'}
+            title={t("胶囊条")}
+            hint={t('无配额来源的以 "--" 占位。')}
             agents={stripAgents}
             detected={detectedAgents}
             onToggle={onToggleStripAgent}
@@ -3100,10 +3129,9 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
           与菜单栏状态项同一套数据，只是托盘只放得下一个数字。 */}
       {IS_WINDOWS && (
         <div className="settings-subsection">
-          <h3>任务栏图标</h3>
+          <h3>{t("任务栏图标")}</h3>
           <p className="settings-muted">
-            开启后，任务栏右下角的 Metrik 图标改为显示列表最上方 Agent 的剩余百分比；
-            无可靠额度时显示 --，窗口隐藏后数字仍每 5 分钟更新一次。
+            {t("开启后，任务栏右下角的 Metrik 图标改为显示列表最上方 Agent 的剩余百分比； 无可靠额度时显示 --，窗口隐藏后数字仍每 5 分钟更新一次。")}
           </p>
           <label className="settings-check">
             <input
@@ -3111,7 +3139,7 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
               checked={trayBadgeEnabled}
               onChange={(event) => onToggleTrayBadge(event.target.checked)}
             />
-            <span>图标改为显示余量数字</span>
+            <span>{t("图标改为显示余量数字")}</span>
           </label>
         </div>
       )}
@@ -3133,7 +3161,7 @@ function CursorUsageCard({ onSnapshotRefresh }) {
         if (!cancelled) setStatus(value);
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "Cursor 用量来源状态读取失败。" });
+        if (!cancelled) setFeedback({ tone: "error", text: "Cursor 用量来源状态读取失败。" });
       });
     return () => {
       cancelled = true;
@@ -3148,7 +3176,7 @@ function CursorUsageCard({ onSnapshotRefresh }) {
       setStatus(next);
       setFeedback({
         tone: "success",
-        message: enabled
+        text: enabled
           ? "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。"
           : "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量与套餐余量已从本机账本删除。",
       });
@@ -3165,13 +3193,11 @@ function CursorUsageCard({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-card">
-      <h2>Cursor 用量与套餐余量</h2>
+      <h2>{t("Cursor 用量与套餐余量")}</h2>
       <p className="settings-muted">
-        Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量，以及当前账单周期的套餐余量。
-        会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读；套餐余量最多每 5 分钟读一次。
-        用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步。
+        {t("Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量，以及当前账单周期的套餐余量。 会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读；套餐余量最多每 5 分钟读一次。 用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步。")}
       </p>
-      {status?.demo && <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>}
+      {status?.demo && <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>}
       {status && !status.demo && (
         <>
           <div className="settings-directory-row">
@@ -3181,20 +3207,21 @@ function CursorUsageCard({ onSnapshotRefresh }) {
               disabled={busy}
               onClick={() => toggle(!status.enabled)}
             >
-              {status.enabled ? "关闭" : "开启"}
+              {status.enabled ? t("关闭", { context: "toggle" }) : t("开启")}
             </button>
           </div>
           <dl className="settings-status">
             <div>
-              <dt>状态</dt>
+              <dt>{t("状态")}</dt>
               <dd>
-                {`${status.enabled ? "已开启" : "未开启"} · ${
+                {[
+                  status.enabled ? t("已开启") : t("未开启"),
                   !status.signedIn
-                    ? "Cursor 未登录"
+                    ? t("Cursor 未登录")
                     : status.expired
-                      ? "登录会话已过期，打开 Cursor 即可刷新"
-                      : "登录会话可用"
-                }`}
+                      ? t("登录会话已过期，打开 Cursor 即可刷新")
+                      : t("登录会话可用"),
+                ].join(" · ")}
               </dd>
             </div>
           </dl>
@@ -3205,7 +3232,7 @@ function CursorUsageCard({ onSnapshotRefresh }) {
           className={`settings-feedback settings-feedback--${feedback.tone}`}
           role={feedback.tone === "error" ? "alert" : "status"}
         >
-          {feedback.message}
+          {feedbackText(feedback)}
         </p>
       )}
     </div>
@@ -3237,14 +3264,15 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
       const next = await configureQoderCookie(cookie);
       setStatus(next);
       setCookieInput("");
-      // 验证失败也已保存：如实转述后端的结果，不粉饰。
+      // 验证失败也已保存：如实转述后端的结果，不粉饰。messageIsError 由后端
+      // 给出，前端不解析文案判断成败。
       setFeedback({
-        tone: next.message?.includes("失败") ? "error" : "success",
-        message: next.message || "已更新。",
+        tone: next.messageIsError ? "error" : "success",
+        ...(next.message ? { message: next.message } : { text: "已更新。" }),
       });
-      if (cookie && !next.message?.includes("失败")) onSnapshotRefresh();
+      if (cookie && !next.messageIsError) onSnapshotRefresh();
     } catch (error) {
-      setFeedback({ tone: "error", message: `操作失败：${error}` });
+      setFeedback({ tone: "error", text: "操作失败：{error}", params: { error: `${error}` } });
     } finally {
       setBusy(false);
     }
@@ -3252,29 +3280,27 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
 
   return (
     <div className="settings-card">
-      <h2>Qoder 官方配额</h2>
+      <h2>{t("Qoder 官方配额")}</h2>
       <p className="settings-muted">
-        Qoder、QoderWork 与 Qoder CLI 共用账户级 Credits；本地客户端不提供可被可靠解析的 token 用量，只能读取官网 Credits 额度，需要提供一次
-        登录 Cookie。Cookie 仅明文保存在本机（不入账本、不进同步导出），可清除。
+        {t("Qoder、QoderWork 与 Qoder CLI 共用账户级 Credits；本地客户端不提供可被可靠解析的 token 用量，只能读取官网 Credits 额度，需要提供一次 登录 Cookie。Cookie 仅明文保存在本机（不入账本、不进同步导出），可清除。")}
       </p>
       <details className="settings-guide">
-        <summary>如何获取 Cookie</summary>
+        <summary>{t("如何获取 Cookie")}</summary>
         <ol>
-          <li>浏览器登录 qoder.com.cn（国际版 qoder.com），进入「用量明细」页；</li>
-          <li>按 F12 打开开发者工具 → 网络（Network）标签，点击过滤器中的 Fetch/XHR；</li>
-          <li>右键列表中任意 qoder 域名的请求（如 big_model_credits）→ 复制 →
-            「复制请求标头」或「以 cURL 格式复制」，将整段粘贴到下方，系统会自动提取其中的 Cookie。</li>
+          <li>{t("浏览器登录 qoder.com.cn（国际版 qoder.com），进入「用量明细」页；")}</li>
+          <li>{t("按 F12 打开开发者工具 → 网络（Network）标签，点击过滤器中的 Fetch/XHR；")}</li>
+          <li>{t("右键列表中任意 qoder 域名的请求（如 big_model_credits）→ 复制 → 「复制请求标头」或「以 cURL 格式复制」，将整段粘贴到下方，系统会自动提取其中的 Cookie。")}</li>
         </ol>
       </details>
       {status?.demo ? (
-        <p className="settings-muted">浏览器演示模式：仅桌面应用可配置。</p>
+        <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>
       ) : (
         <>
           <div className="settings-directory-row">
             <input
               type="password"
               value={cookieInput}
-              placeholder="粘贴 Cookie 值 / 整段请求标头 / cURL 命令"
+              placeholder={t("粘贴 Cookie 值 / 整段请求标头 / cURL 命令")}
               spellCheck={false}
               disabled={busy}
               aria-label="Qoder Cookie"
@@ -3286,7 +3312,7 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               disabled={busy || !cookieInput.trim()}
               onClick={() => apply(cookieInput.trim())}
             >
-              保存并验证
+              {t("保存并验证")}
             </button>
           </div>
           {status?.source === "file" && (
@@ -3296,7 +3322,7 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               disabled={busy}
               onClick={() => apply(null)}
             >
-              清除已保存的 Cookie
+              {t("清除已保存的 Cookie")}
             </button>
           )}
           {feedback && (
@@ -3304,20 +3330,20 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               className={`settings-feedback settings-feedback--${feedback.tone}`}
               role={feedback.tone === "error" ? "alert" : "status"}
             >
-              {feedback.message}
+              {feedbackText(feedback)}
             </p>
           )}
           <dl className="settings-status">
             <div>
-              <dt>状态</dt>
+              <dt>{t("状态")}</dt>
               <dd>
                 {status == null
-                  ? "读取中…"
+                  ? t("读取中…")
                   : status.configured
                     ? status.source === "env"
-                      ? "已配置（环境变量）"
-                      : "已配置（本机保存）"
-                    : "未配置 · 配额卡将显示不可用"}
+                      ? t("已配置（环境变量）")
+                      : t("已配置（本机保存）")
+                    : t("未配置 · 配额卡将显示不可用")}
               </dd>
             </div>
           </dl>
@@ -3372,7 +3398,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         setDirectoryInput(value.directory || "");
       })
       .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", message: "同步设置读取失败，稍后重试。" });
+        if (!cancelled) setFeedback({ tone: "error", text: "同步设置读取失败，稍后重试。" });
       });
     return () => {
       cancelled = true;
@@ -3388,11 +3414,11 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       setDirectoryInput(next.directory || "");
       setFeedback({
         tone: "success",
-        message: directory ? "同步已开启，本机统计事件已导出。" : "同步已关闭，已清除合并的远端统计。",
+        text: directory ? "同步已开启，本机统计事件已导出。" : "同步已关闭，已清除合并的远端统计。",
       });
       onSnapshotRefresh();
     } catch (error) {
-      setFeedback({ tone: "error", message: `未能更新同步设置：${error}` });
+      setFeedback({ tone: "error", text: "未能更新同步设置：{error}", params: { error: `${error}` } });
     } finally {
       setBusy(false);
     }
@@ -3404,10 +3430,10 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
     try {
       const next = await removeSyncDevice(deviceId);
       setSettings(next);
-      setFeedback({ tone: "success", message: "设备已删除，已清除该设备的同步事件与导出文件。" });
+      setFeedback({ tone: "success", text: "设备已删除，已清除该设备的同步事件与导出文件。" });
       onSnapshotRefresh();
     } catch (error) {
-      setFeedback({ tone: "error", message: `未能删除设备：${error}` });
+      setFeedback({ tone: "error", text: "未能删除设备：{error}", params: { error: `${error}` } });
     } finally {
       setBusy(false);
       setRemovingDeviceId(null);
@@ -3420,11 +3446,11 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
   return (
     <main className="settings-section" aria-labelledby="settings-title">
       <header className="settings-header">
-        <h1 id="settings-title">设置</h1>
-        <p><strong>{activeTab.title}</strong> · {activeTab.blurb}</p>
+        <h1 id="settings-title">{t("设置")}</h1>
+        <p><strong>{t(activeTab.title)}</strong> · {t(activeTab.blurb)}</p>
       </header>
 
-      <div className="settings-tabs" role="tablist" aria-label="设置分类">
+      <div className="settings-tabs" role="tablist" aria-label={t("设置分类")}>
         {SETTINGS_TABS.map((item) => (
           <button
             key={item.id}
@@ -3434,13 +3460,13 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
             className={item.id === activeTab.id ? "is-selected" : ""}
             onClick={() => setTab(item.id)}
           >
-            {item.label}
+            {t(item.label)}
           </button>
         ))}
       </div>
 
       {settings?.demo && activeTab.id === "sync" && (
-        <p className="settings-demo-note">浏览器演示模式：仅桌面应用可配置。</p>
+        <p className="settings-demo-note">{t("浏览器演示模式：仅桌面应用可配置。")}</p>
       )}
 
       <div className="settings-grid">
@@ -3490,34 +3516,24 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         {activeTab.id === "sources" && (
           <>
             <HookCard
-              title="Claude Code 官方配额"
-              description={
-                <>
-                  安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。
-                  已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。
-                </>
-              }
+              title={t("Claude Code 官方配额")}
+              description={t("安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。 已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。")}
               getStatus={getClaudeHookStatus}
               setHook={setClaudeHook}
-              installedMessage="钩子已安装。下次 Claude Code 刷新状态栏后，此处显示官方 5h/7d 剩余额度。"
-              waitingLabel="等待 Claude Code 下次刷新状态栏"
+              // 进反馈状态，存中文原文，渲染时翻译。
+              installedMessage={"钩子已安装。下次 Claude Code 刷新状态栏后，此处显示官方 5h/7d 剩余额度。"}
+              waitingLabel={t("等待 Claude Code 下次刷新状态栏")}
               onSnapshotRefresh={onSnapshotRefresh}
             >
               <ClaudeOauthBlock onSnapshotRefresh={onSnapshotRefresh} />
             </HookCard>
             <HookCard
-              title="Antigravity CLI 官方配额"
-              description={
-                <>
-                  仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子
-                  （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留；
-                  卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。
-                </>
-              }
+              title={t("Antigravity CLI 官方配额")}
+              description={t("仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子 （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留； 卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。")}
               getStatus={getAntigravityHookStatus}
               setHook={setAntigravityHook}
-              installedMessage="钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"
-              waitingLabel="等待 Antigravity CLI 下次刷新状态"
+              installedMessage={"钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"}
+              waitingLabel={t("等待 Antigravity CLI 下次刷新状态")}
               onSnapshotRefresh={onSnapshotRefresh}
             />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
@@ -3529,13 +3545,13 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         {activeTab.id === "sync" && (
           <>
             <div className="settings-card">
-              <label htmlFor="sync-directory">同步文件夹（绝对路径）</label>
+              <label htmlFor="sync-directory">{t("同步文件夹（绝对路径）")}</label>
               <div className="settings-directory-row">
                 <input
                   id="sync-directory"
                   type="text"
                   value={directoryInput}
-                  placeholder="例如 D:\Nutstore\metrik-sync"
+                  placeholder={t("例如 {path}", { path: "D:\\Nutstore\\metrik-sync" })}
                   spellCheck={false}
                   disabled={busy || settings?.demo}
                   onChange={(event) => setDirectoryInput(event.target.value)}
@@ -3546,7 +3562,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                   disabled={busy || settings?.demo || !directoryInput.trim()}
                   onClick={() => applySync(directoryInput.trim())}
                 >
-                  {settings?.enabled ? "更新目录" : "开启同步"}
+                  {settings?.enabled ? t("更新目录") : t("开启同步")}
                 </button>
                 {settings?.enabled && (
                   <button
@@ -3555,7 +3571,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                     disabled={busy || settings?.demo}
                     onClick={() => applySync(null)}
                   >
-                    关闭同步
+                    {t("关闭同步")}
                   </button>
                 )}
               </div>
@@ -3565,29 +3581,29 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                   className={`settings-feedback settings-feedback--${feedback.tone}`}
                   role={feedback.tone === "error" ? "alert" : "status"}
                 >
-                  {feedback.message}
+                  {feedbackText(feedback)}
                 </p>
               )}
 
               {/* 读取未回来时这张卡片是空的，数据一到就整块长出来，看着像界面
                   抖了一下。先占住位置并说明在读什么。 */}
               {!settings && !feedback && (
-                <p className="settings-muted" role="status">读取同步设置…</p>
+                <p className="settings-muted" role="status">{t("读取同步设置…")}</p>
               )}
 
               {settings && !settings.demo && (
                 <dl className="settings-status">
                   <div>
-                    <dt>本机设备</dt>
+                    <dt>{t("本机设备")}</dt>
                     <dd>{settings.deviceLabel} · {settings.deviceId}</dd>
                   </div>
                   <div>
-                    <dt>上次同步</dt>
-                    <dd>{settings.enabled ? formatSyncTime(settings.lastExportMs) : "同步未开启"}</dd>
+                    <dt>{t("上次同步")}</dt>
+                    <dd>{settings.enabled ? formatSyncTime(settings.lastExportMs) : t("同步未开启")}</dd>
                   </div>
                   {settings.lastError && (
                     <div>
-                      <dt>同步告警</dt>
+                      <dt>{t("同步告警")}</dt>
                       <dd className="settings-error-text">{settings.lastError}</dd>
                     </div>
                   )}
@@ -3596,9 +3612,9 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
 
               {settings?.enabled && (
                 <div className="settings-subsection">
-                  <h3>已发现的设备</h3>
+                  <h3>{t("已发现的设备")}</h3>
                   {settings.devices.length === 0 ? (
-                    <p className="settings-muted">暂无其他设备的导出文件。其他电脑指向同一文件夹后即会显示。</p>
+                    <p className="settings-muted">{t("暂无其他设备的导出文件。其他电脑指向同一文件夹后即会显示。")}</p>
                   ) : (
                     <ul className="settings-device-list">
                       {settings.devices.map((device) => (
@@ -3607,7 +3623,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                             <div className="settings-device-info">
                               <strong>{device.label}</strong>
                               <span>{device.id}</span>
-                              <small>{device.events} 条事件 · 导出于 {formatSyncTime(device.exportedAtMs)}</small>
+                              <small>{t("{count} 条事件 · 导出于 {time}", { count: device.events, time: formatSyncTime(device.exportedAtMs) })}</small>
                             </div>
                             {removingDeviceId !== device.id && (
                               <button
@@ -3617,14 +3633,14 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                                 onClick={() => setRemovingDeviceId(device.id)}
                               >
                                 <Trash size={15} weight="light" aria-hidden="true" />
-                                删除
+                                {t("删除")}
                               </button>
                             )}
                           </div>
                           {removingDeviceId === device.id && (
                             <div className="ledger-confirmation" role="group" aria-labelledby={`device-confirm-title-${device.id}`}>
-                              <strong id={`device-confirm-title-${device.id}`}>删除该设备？</strong>
-                              <p>将移除该设备的同步事件与共享文件夹中的导出文件。若该设备仍在线，会在下次同步后重新出现。</p>
+                              <strong id={`device-confirm-title-${device.id}`}>{t("删除该设备？")}</strong>
+                              <p>{t("将移除该设备的同步事件与共享文件夹中的导出文件。若该设备仍在线，会在下次同步后重新出现。")}</p>
                               <div className="ledger-confirm-actions">
                                 <button
                                   type="button"
@@ -3632,7 +3648,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                                   disabled={busy}
                                   onClick={() => setRemovingDeviceId(null)}
                                 >
-                                  取消
+                                  {t("取消")}
                                 </button>
                                 <button
                                   type="button"
@@ -3640,7 +3656,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                                   disabled={busy}
                                   onClick={() => removeDevice(device.id)}
                                 >
-                                  {busy ? "正在删除…" : "确认删除"}
+                                  {busy ? t("正在删除…") : t("确认删除")}
                                 </button>
                               </div>
                             </div>
@@ -3670,9 +3686,9 @@ function sessionDayLabel(ms) {
   const today = new Date();
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const diffDays = Math.round((startOfDay(today) - startOfDay(date)) / 86_400_000);
-  if (diffDays === 0) return "今日";
-  if (diffDays === 1) return "昨日";
-  return date.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+  if (diffDays === 0) return t("今日");
+  if (diffDays === 1) return t("昨日");
+  return formatDate(date, { month: "long", day: "numeric" });
 }
 
 // 项目名、路径、模型名等文本可能以 = + - @ 开头，表格软件会当公式执行：
@@ -3752,43 +3768,42 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
     setDraft("");
   };
   return (
-    <section className="rules-card" aria-label="添加项目">
+    <section className="rules-card" aria-label={t("添加项目")}>
       <header className="rules-card-head">
-        <h2>添加项目</h2>
-        <button type="button" className="rules-close" onClick={onClose} aria-label="收起添加项目">
+        <h2>{t("添加项目")}</h2>
+        <button type="button" className="rules-close" onClick={onClose} aria-label={t("收起添加项目")}>
           <X size={14} weight="bold" aria-hidden="true" />
         </button>
       </header>
       <p>
-        决定哪些目录算作一个项目。默认按 git 仓库根归并，家目录、下载与系统临时目录不列为项目。
-        账本始终记录事件发生时的原始目录，这里只改变展示时的归类，移除后即恢复。
+        {t("决定哪些目录算作一个项目。默认按 git 仓库根归并，家目录、下载与系统临时目录不列为项目。 账本始终记录事件发生时的原始目录，这里只改变展示时的归类，移除后即恢复。")}
       </p>
       <div className="rules-add">
         <input
           value={draft}
-          placeholder="登记项目根目录，其下用量归并为一个项目"
+          placeholder={t("登记项目根目录，其下用量归并为一个项目")}
           spellCheck={false}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") submit(); }}
-          aria-label="项目根目录路径"
+          aria-label={t("项目根目录路径")}
         />
         <button type="button" className="ledger-button" disabled={!draft.trim() || busy} onClick={submit}>
-          登记
+          {t("登记")}
         </button>
       </div>
       {!rules ? (
-        <p className="settings-muted">正在读取规则…</p>
+        <p className="settings-muted">{t("正在读取规则…")}</p>
       ) : (
         <>
           {rules.roots.length > 0 && (
             <div className="rules-group">
-              <h3>项目根 · 子目录归并至此</h3>
+              <h3>{t("项目根 · 子目录归并至此")}</h3>
               <ul>
                 {rules.roots.map((path) => (
                   <li key={path}>
                     <PushPinSimple size={12} weight="fill" aria-hidden="true" />
                     <span title={path}>{path}</span>
-                    <button type="button" disabled={busy} onClick={() => onRemoveRoot(path)} aria-label={`移除项目根 ${path}`}>
+                    <button type="button" disabled={busy} onClick={() => onRemoveRoot(path)} aria-label={t("移除项目根 {path}", { path })}>
                       <X size={12} weight="bold" aria-hidden="true" />
                     </button>
                   </li>
@@ -3798,13 +3813,13 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
           )}
           {rules.hidden.length > 0 && (
             <div className="rules-group">
-              <h3>已隐藏 · 不作为项目展示</h3>
+              <h3>{t("已隐藏 · 不作为项目展示")}</h3>
               <ul>
                 {rules.hidden.map((path) => (
                   <li key={path}>
                     <EyeSlash size={12} weight="regular" aria-hidden="true" />
                     <span title={path}>{path}</span>
-                    <button type="button" disabled={busy} onClick={() => onRemoveHidden(path)} aria-label={`取消隐藏 ${path}`}>
+                    <button type="button" disabled={busy} onClick={() => onRemoveHidden(path)} aria-label={t("取消隐藏 {path}", { path })}>
                       <X size={12} weight="bold" aria-hidden="true" />
                     </button>
                   </li>
@@ -3813,7 +3828,7 @@ function ProjectRulesCard({ rules, busy, onAddRoot, onRemoveRoot, onRemoveHidden
             </div>
           )}
           {rules.roots.length === 0 && rules.hidden.length === 0 && (
-            <p className="settings-muted">暂无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。</p>
+            <p className="settings-muted">{t("暂无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。")}</p>
           )}
         </>
       )}
@@ -3882,12 +3897,12 @@ function ProjectShareDonut({ projects, colorByPath, onOpen }) {
     ...top.map((project) =>
       segment(project.path, project.label, project.tokens, colorByPath.get(project.path), () => onOpen(project.path)),
     ),
-    ...(otherTokens > 0 ? [segment("__other", "其他", otherTokens, "var(--viz-other)")] : []),
+    ...(otherTokens > 0 ? [segment("__other", t("其他"), otherTokens, "var(--viz-other)")] : []),
   ];
   return (
     <ShareDonut
       className="project-donut"
-      ariaLabel="项目用量占比环形图"
+      ariaLabel={t("项目用量占比环形图")}
       segments={segments}
       total={total}
       centerTokens={total}
@@ -3989,7 +4004,7 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
       setRules(saved);
       onRulesChanged();
     } catch (error) {
-      setNote({ text: `规则保存失败：${error}` });
+      setNote({ text: "规则保存失败：{error}", params: { error: `${error}` } });
     } finally {
       setRulesBusy(false);
     }
@@ -4023,7 +4038,8 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
   const hideProject = async (project) => {
     await updateRules((current) => ({ ...current, hidden: [...current.hidden, project.path] }));
     setNote({
-      text: `已隐藏 ${project.label}`,
+      text: "已隐藏 {project}",
+      params: { project: project.label },
       undo: () => removeHidden(project.path),
     });
   };
@@ -4031,9 +4047,9 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
   const noteExport = async (task) => {
     try {
       const savedPath = await task();
-      setNote({ text: savedPath ? `已导出到 ${savedPath}` : "已开始下载" });
+      setNote(savedPath ? { text: "已导出到 {path}", params: { path: savedPath } } : { text: "已开始下载" });
     } catch (error) {
-      setNote({ text: `导出失败：${error}` });
+      setNote({ text: "导出失败：{error}", params: { error: `${error}` } });
     }
   };
   const copySessionId = (sessionId) => {
@@ -4049,8 +4065,8 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
     return (
       <main className="usage-section" aria-busy="true">
         <header className="settings-header">
-          <h1>用量</h1>
-          <p>正在读取用量明细。只读取已索引的账本，不触发新的日志扫描。</p>
+          <h1>{t("用量")}</h1>
+          <p>{t("正在读取用量明细。只读取已索引的账本，不触发新的日志扫描。")}</p>
         </header>
       </main>
     );
@@ -4059,15 +4075,15 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
     return (
       <main className="usage-section">
         <header className="settings-header">
-          <h1>用量</h1>
-          <p>本地账本读取失败，明细暂不可用；未以演示数据替代。稍后重试。</p>
+          <h1>{t("用量")}</h1>
+          <p>{t("本地账本读取失败，明细暂不可用；未以演示数据替代。稍后重试。")}</p>
         </header>
       </main>
     );
   }
 
   const timeRange = (session) => {
-    const fmt = (ms) => new Date(ms).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const fmt = (ms) => formatTime(ms, { hour: "2-digit", minute: "2-digit", hour12: false });
     return `${fmt(session.startMs)}–${fmt(session.endMs)}`;
   };
 
@@ -4097,17 +4113,16 @@ function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) 
               </strong>
               <small>
                 {compactTokens(session.tokens)} tokens
-                {session.usd != null ? ` · ≈${formatUsd(session.usd)}` : " · 未计价"}
-                {` · ${session.eventCount} 条记录`}
-                {` · 缓存读 ${session.tokens ? Math.round((session.cacheRead / session.tokens) * 100) : 0}%`}
+                {session.usd != null ? ` · ≈${formatUsd(session.usd)}` : ` · ${t("未计价")}`}
+                {` · ${t("{count} 条记录", { count: session.eventCount })}`}
+                {` · ${t("缓存读 {percent}%", { percent: session.tokens ? Math.round((session.cacheRead / session.tokens) * 100) : 0 })}`}
               </small>
             </div>
             <button
               type="button"
               className={`session-id-chip ${copiedId === session.sessionId ? "session-id-chip--copied" : ""}`}
               onClick={() => copySessionId(session.sessionId)}
-              title={`复制会话 ID（可用于 resume 等操作）
-${session.sessionId}`}
+              title={t("复制会话 ID（可用于 resume 等操作）\n{id}", { id: session.sessionId })}
             >
               {copiedId === session.sessionId
                 ? <Check size={12} weight="bold" aria-hidden="true" />
@@ -4123,14 +4138,14 @@ ${session.sessionId}`}
 
   const noteBanner = note && (
     <p className="usage-note" role="status">
-      {note.text}
+      {feedbackText(note)}
       {note.undo && (
         <button
           type="button"
           disabled={rulesBusy}
           onClick={() => { setNote(null); note.undo(); }}
         >
-          撤销
+          {t("撤销")}
         </button>
       )}
     </p>
@@ -4147,14 +4162,14 @@ ${session.sessionId}`}
     const models = [...new Set(scoped.map((session) => session.model).filter(Boolean))];
     const filtered = scoped.filter((session) => modelFilter === "all" || session.model === modelFilter);
     const groups = sessionGroups(filtered);
-    const title = detail.type === "project" ? (detailMeta?.label || projectLabel(detail.path)) : "未归类会话";
+    const title = detail.type === "project" ? (detailMeta?.label || projectLabel(detail.path)) : t("未归类会话");
 
     return (
       <main className="usage-section" aria-labelledby="usage-title">
         <header className="settings-header">
           <button type="button" className="detail-back" onClick={() => openDetail(null)}>
             <CaretLeft size={12} weight="bold" aria-hidden="true" />
-            项目列表
+            {t("项目列表")}
           </button>
           <h1 id="usage-title">
             {detail.type === "project" && (
@@ -4170,19 +4185,19 @@ ${session.sessionId}`}
             {detail.type === "project" ? (
               <>
                 {detail.path}
-                {detailMeta ? ` · ${detailMeta.agents.map((id) => AGENT_META[id]?.label || id).join("、")}` : ""}
-                {` · ${scoped.length} 个会话`}
-                {detailMeta?.usd != null ? ` · 估算 ≈${formatUsd(detailMeta.usd)}` : ""}
+                {detailMeta ? ` · ${detailMeta.agents.map((id) => AGENT_META[id]?.label || id).join(t("、"))}` : ""}
+                {` · ${t("{count} 个会话", { count: scoped.length })}`}
+                {detailMeta?.usd != null ? ` · ${t("估算 ≈{usd}", { usd: formatUsd(detailMeta.usd) })}` : ""}
               </>
             ) : (
-              <>这些会话的来源不带工作目录（如 Antigravity），无法归入项目。{` ${scoped.length} 个会话。`}</>
+              <>{t("这些会话的来源不带工作目录（如 Antigravity），无法归入项目。 {count} 个会话。", { count: scoped.length })}</>
             )}
           </p>
         </header>
 
         <div className="usage-toolbar">
-          <select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} aria-label="按模型筛选">
-            <option value="all">全部模型</option>
+          <select value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} aria-label={t("按模型筛选")}>
+            <option value="all">{t("全部模型")}</option>
             {/* 值必须是原始 ID：筛选按它比对 session.model，展示才走点号写法。 */}
             {models.map((model) => <option key={model} value={model}>{modelDisplayName(model)}</option>)}
           </select>
@@ -4192,12 +4207,12 @@ ${session.sessionId}`}
             disabled={!filtered.length}
             onClick={() => noteExport(() => exportSessionsCsv(filtered))}
           >
-            导出会话 CSV（{filtered.length}）
+            {t("导出会话 CSV（{count}）", { count: filtered.length })}
           </button>
         </div>
 
         {noteBanner}
-        {groups.length === 0 && <p className="settings-muted">本周期内暂无可显示的会话。</p>}
+        {groups.length === 0 && <p className="settings-muted">{t("本周期内暂无可显示的会话。")}</p>}
         {groups.length > 0 && <div className="report-card session-board">{renderSessionRows(groups)}</div>}
       </main>
     );
@@ -4213,29 +4228,37 @@ ${session.sessionId}`}
   const maxTokens = filteredProjects.reduce((max, project) => Math.max(max, project.tokens), 0);
   const unattributedLabel = (projects.unattributedAgents || [])
     .map((id) => AGENT_META[id]?.label || id)
-    .join("、");
+    .join(t("、"));
 
   return (
     <main className="usage-section" aria-labelledby="usage-title">
       <header className="settings-header">
-        <h1 id="usage-title">用量</h1>
+        <h1 id="usage-title">{t("用量")}</h1>
         <p>
-          <strong>项目</strong> · {PERIODS.find((item) => item.id === period)?.label}内 {selectedAgentLabel
-            ? `${filteredProjects.length} 个包含 ${selectedAgentLabel} 用量的项目`
-            : `${projects.totalProjects} 个项目、${sessionsData.totalSessions} 个会话`}，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。
-          {sessionsData.isDemo ? " 当前为浏览器演示数据。" : ""}
+          <strong>{t("项目")}</strong> · {selectedAgentLabel
+            ? t("{period}内 {count} 个包含 {agent} 用量的项目，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。", {
+              period: t(PERIODS.find((item) => item.id === period)?.label),
+              count: filteredProjects.length,
+              agent: selectedAgentLabel,
+            })
+            : t("{period}内 {projects} 个项目、{sessions} 个会话，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。", {
+              period: t(PERIODS.find((item) => item.id === period)?.label),
+              projects: projects.totalProjects,
+              sessions: sessionsData.totalSessions,
+            })}
+          {sessionsData.isDemo ? ` ${t("当前为浏览器演示数据。")}` : ""}
         </p>
       </header>
 
       <div className="usage-toolbar">
         <label className="usage-filter">
-          <span>包含 Agent</span>
+          <span>{t("包含 Agent")}</span>
           <select
             value={agentFilter}
             onChange={(event) => setAgentFilter(event.target.value)}
-            aria-label="按 Agent 筛选项目"
+            aria-label={t("按 Agent 筛选项目")}
           >
-            <option value="all">全部 Agent</option>
+            <option value="all">{t("全部 Agent")}</option>
             {AGENT_ORDER.map((id) => <option key={id} value={id}>{AGENT_META[id].label}</option>)}
           </select>
         </label>
@@ -4246,7 +4269,7 @@ ${session.sessionId}`}
           onClick={() => setRulesOpen((open) => !open)}
         >
           <FolderSimple size={13} weight="bold" aria-hidden="true" />
-          添加项目
+          {t("添加项目")}
         </button>
         <button
           type="button"
@@ -4254,7 +4277,7 @@ ${session.sessionId}`}
           disabled={!filteredProjects.length}
           onClick={() => noteExport(() => exportProjectsCsv(filteredProjects))}
         >
-          导出 CSV（{filteredProjects.length}）
+          {t("导出 CSV（{count}）", { count: filteredProjects.length })}
         </button>
       </div>
 
@@ -4271,7 +4294,7 @@ ${session.sessionId}`}
         />
       )}
 
-      <section className="report-card project-board" aria-label="项目汇总">
+      <section className="report-card project-board" aria-label={t("项目汇总")}>
         {filteredProjects.length > 0 && (
           <div className="project-overview">
             <ProjectShareDonut
@@ -4287,14 +4310,14 @@ ${session.sessionId}`}
                   return (
                     <>
                       <strong>{filteredProjects.length}</strong>
-                      <span>个项目 · 未计价</span>
+                      <span>{t("个项目 · 未计价", { count: filteredProjects.length })}</span>
                     </>
                   );
                 }
                 return (
                   <>
                     <strong>≈{formatUsd(priced.reduce((sum, project) => sum + project.usd, 0))}</strong>
-                    <span>{filteredProjects.length} 个项目 · 估算成本</span>
+                    <span>{t("{count} 个项目 · 估算成本", { count: filteredProjects.length })}</span>
                   </>
                 );
               })()}
@@ -4302,7 +4325,7 @@ ${session.sessionId}`}
                 <small>
                   {projects.unattributedTokens > 0 && (
                     <button type="button" onClick={() => openDetail({ type: "unattributed" })}>
-                      未记录目录 {compactTokens(projects.unattributedTokens)}{unattributedLabel ? `（${unattributedLabel}）` : ""}
+                      {t("未记录目录 {tokens}", { tokens: compactTokens(projects.unattributedTokens) })}{unattributedLabel ? t("（{agents}）", { agents: unattributedLabel }) : ""}
                     </button>
                   )}
                   {projects.hiddenTokens > 0 && (
@@ -4310,7 +4333,7 @@ ${session.sessionId}`}
                     // 算在一起，所以不能说"已隐藏"——用户把自己的规则删干净了，
                     // 剩下的内置部分仍会让它显示，读起来像没删掉。
                     <button type="button" onClick={() => setRulesOpen(true)}>
-                      未计入项目 {compactTokens(projects.hiddenTokens)}
+                      {t("未计入项目 {tokens}", { tokens: compactTokens(projects.hiddenTokens) })}
                     </button>
                   )}
                 </small>
@@ -4321,8 +4344,8 @@ ${session.sessionId}`}
         {visibleProjects.length === 0 && (
           <p className="settings-muted">
             {projects.totalProjects === 0
-              ? "本周期内暂无带项目归属的用量。"
-              : "当前筛选条件下暂无项目。"}
+              ? t("本周期内暂无带项目归属的用量。")
+              : t("当前筛选条件下暂无项目。")}
           </p>
         )}
         {visibleProjects.map((project) => (
@@ -4347,8 +4370,8 @@ ${session.sessionId}`}
               <small>
                 {project.agents.map((id) => AGENT_META[id]?.label || id).join(" · ")}
                 {project.model ? ` · ${modelDisplayName(project.model)}` : ""}
-                {` · ${project.sessionCount} 个会话`}
-                {project.usd != null ? ` · ≈${formatUsd(project.usd)}` : " · 未计价"}
+                {` · ${t("{count} 个会话", { count: project.sessionCount })}`}
+                {project.usd != null ? ` · ≈${formatUsd(project.usd)}` : ` · ${t("未计价")}`}
               </small>
               <span className="project-bar" aria-hidden="true">
                 <i
@@ -4371,11 +4394,11 @@ ${session.sessionId}`}
                 disabled={rulesBusy}
                 aria-pressed={project.pinned}
                 title={project.pinned
-                  ? `取消登记：${project.path} 下的子目录恢复各自成行`
-                  : `登记为项目根：${project.path} 下的子目录一并归并到这一行`}
+                  ? t("取消登记：{path} 下的子目录恢复各自成行", { path: project.path })
+                  : t("登记为项目根：{path} 下的子目录一并归并到这一行", { path: project.path })}
                 aria-label={project.pinned
-                  ? `取消登记项目根 ${project.label}`
-                  : `将 ${project.label} 登记为项目根`}
+                  ? t("取消登记项目根 {project}", { project: project.label })
+                  : t("将 {project} 登记为项目根", { project: project.label })}
                 onClick={() => togglePin(project)}
               >
                 <PushPinSimple size={13} weight={project.pinned ? "fill" : "regular"} aria-hidden="true" />
@@ -4383,8 +4406,8 @@ ${session.sessionId}`}
               <button
                 type="button"
                 disabled={rulesBusy}
-                title={`隐藏 ${project.path}：其用量不再作为项目展示，可在项目归类中恢复`}
-                aria-label={`隐藏项目 ${project.label}`}
+                title={t("隐藏 {path}：其用量不再作为项目展示，可在项目归类中恢复", { path: project.path })}
+                aria-label={t("隐藏项目 {project}", { project: project.label })}
                 onClick={() => hideProject(project)}
               >
                 <EyeSlash size={13} weight="regular" aria-hidden="true" />
@@ -4398,7 +4421,7 @@ ${session.sessionId}`}
         ))}
         {filteredProjects.length > PROJECT_PREVIEW_COUNT && (
           <button type="button" className="project-expand" onClick={() => setShowAllProjects((value) => !value)}>
-            {showAllProjects ? "收起" : `显示全部 ${filteredProjects.length} 个项目`}
+            {showAllProjects ? t("收起") : t("显示全部 {count} 个项目", { count: filteredProjects.length })}
           </button>
         )}
       </section>
@@ -4523,7 +4546,7 @@ function ReportTrendChart({ weeks }) {
 
   const agents = AGENT_ORDER.filter((id) => weeks.some((week) => (week.byAgent[id] || 0) > 0));
   if (!agents.length) {
-    return <p className="settings-muted" ref={hostRef}>所选时间段内暂无已索引的用量。</p>;
+    return <p className="settings-muted" ref={hostRef}>{t("所选时间段内暂无已索引的用量。")}</p>;
   }
   const max = Math.max(1, ...weeks.flatMap((week) => agents.map((id) => week.byAgent[id] || 0)));
   const height = 210;
@@ -4542,7 +4565,7 @@ function ReportTrendChart({ weeks }) {
         className="report-trend"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`近 ${weeks.length} 周每周 token 用量趋势，按 Agent 分色`}
+        aria-label={t("近 {count} 周每周 token 用量趋势，按 Agent 分色", { count: weeks.length })}
       >
         <defs>
           {agents.map((id) => (
@@ -4585,7 +4608,7 @@ function ReportTrendChart({ weeks }) {
           ) : null,
         )}
       </svg>
-      <div className="chart-legend chart-legend--report" aria-label="图例">
+      <div className="chart-legend chart-legend--report" aria-label={t("图例")}>
         {agents.map((id) => (
           <span key={id}><i className="legend-line" style={{ background: chartColor(id) }} />{AGENT_META[id]?.label || id}</span>
         ))}
@@ -4597,13 +4620,13 @@ function ReportTrendChart({ weeks }) {
 function ReportShareDonut({ agents, totalTokens, weeksCount }) {
   const rows = agents.filter((agent) => agent.tokens > 0);
   if (!rows.length) {
-    return <p className="settings-muted">所选时间段内暂无已索引的用量。</p>;
+    return <p className="settings-muted">{t("所选时间段内暂无已索引的用量。")}</p>;
   }
   const total = rows.reduce((sum, agent) => sum + agent.tokens, 0) || 1;
   return (
     <div className="report-donut">
       <ShareDonut
-        ariaLabel={`近 ${weeksCount} 周内各 Agent 用量占比环形图`}
+        ariaLabel={t("近 {count} 周内各 Agent 用量占比环形图", { count: weeksCount })}
         segments={rows.map((agent) => ({
           key: agent.id,
           tokens: agent.tokens,
@@ -4611,7 +4634,7 @@ function ReportShareDonut({ agents, totalTokens, weeksCount }) {
         }))}
         total={total}
         centerTokens={totalTokens}
-        caption={`tokens · 近 ${weeksCount} 周`}
+        caption={t("tokens · 近 {count} 周", { count: weeksCount })}
       />
       <ul className="comp-legend">
         {rows.map((agent) => (
@@ -4681,8 +4704,8 @@ function ReportsSection({ report }) {
     return (
       <main className="reports-section" aria-busy="true">
         <header className="settings-header">
-          <h1>报告</h1>
-          <p>正在读取本地账本。报告只统计已索引的数据，不触发新的日志扫描。</p>
+          <h1>{t("报告")}</h1>
+          <p>{t("正在读取本地账本。报告只统计已索引的数据，不触发新的日志扫描。")}</p>
         </header>
       </main>
     );
@@ -4692,8 +4715,8 @@ function ReportsSection({ report }) {
     return (
       <main className="reports-section">
         <header className="settings-header">
-          <h1>报告</h1>
-          <p>本地账本读取失败，报告暂不可用；未以演示数据替代。稍后重试。</p>
+          <h1>{t("报告")}</h1>
+          <p>{t("本地账本读取失败，报告暂不可用；未以演示数据替代。稍后重试。")}</p>
         </header>
       </main>
     );
@@ -4708,11 +4731,11 @@ function ReportsSection({ report }) {
     if (!firstCell || firstCell.day > 7) return null;
     const prev = weeks[index - 1]?.find(Boolean);
     if (prev && prev.month === firstCell.month) return null;
-    return { index, label: `${firstCell.month + 1}月` };
+    return { index, label: t("{month}月", { month: firstCell.month + 1 }) };
   }).filter(Boolean);
   const activeDayCount = data.days.filter((day) => day.tokens > 0).length;
   const coverageStart = Number.isFinite(data.firstEventMs)
-    ? new Date(data.firstEventMs).toLocaleDateString("zh-CN")
+    ? formatDate(data.firstEventMs)
     : null;
   // 周趋势与构成共用同一份按档位截取的周序列；热力图仍是固定 26 周日历。
   const trendWeeks = weeklySeries(data.days, rangeWeeks);
@@ -4731,23 +4754,23 @@ function ReportsSection({ report }) {
   return (
     <main className="reports-section" aria-labelledby="reports-title">
       <header className="settings-header">
-        <h1 id="reports-title">报告</h1>
+        <h1 id="reports-title">{t("报告")}</h1>
         <p>
-          <strong>近 26 周活动</strong> · 只统计本地账本中已索引的数据（已解析 token 口径，非账单）。
-          {coverageStart ? `账本数据自 ${coverageStart} 起。` : ""}
-          {data.isDemo ? " 当前为浏览器演示数据。" : ""}
+          <strong>{t("近 26 周活动")}</strong> · {t("只统计本地账本中已索引的数据（已解析 token 口径，非账单）。")}
+          {coverageStart ? t("账本数据自 {date} 起。", { date: coverageStart }) : ""}
+          {data.isDemo ? ` ${t("当前为浏览器演示数据。")}` : ""}
         </p>
       </header>
 
       <div className="report-stats">
-        <div><strong>{compactTokens(data.totalTokens)}</strong><span>26 周总量</span></div>
-        <div><strong>{activeDayCount}</strong><span>活跃天数</span></div>
-        <div><strong>{data.streakDays}</strong><span>连续活跃天数</span></div>
+        <div><strong>{compactTokens(data.totalTokens)}</strong><span>{t("26 周总量")}</span></div>
+        <div><strong>{activeDayCount}</strong><span>{t("活跃天数")}</span></div>
+        <div><strong>{data.streakDays}</strong><span>{t("连续活跃天数")}</span></div>
       </div>
 
-      <section className="report-card" aria-label="活动可视化">
+      <section className="report-card" aria-label={t("活动可视化")}>
         <div className="report-toolbar">
-          <div className="report-view-toggle" role="group" aria-label="切换图表形式">
+          <div className="report-view-toggle" role="group" aria-label={t("切换图表形式")}>
             {REPORT_VIEWS.map((item) => (
               <button
                 type="button"
@@ -4756,12 +4779,12 @@ function ReportsSection({ report }) {
                 aria-pressed={view === item.id}
                 onClick={() => setView(item.id)}
               >
-                {item.label}
+                {t(item.label)}
               </button>
             ))}
           </div>
           {view !== "heatmap" && view !== "projects" && (
-            <div className="report-view-toggle" role="group" aria-label="统计时间段">
+            <div className="report-view-toggle" role="group" aria-label={t("统计时间段")}>
               {REPORT_RANGE_WEEKS.map((num) => (
                 <button
                   type="button"
@@ -4770,7 +4793,7 @@ function ReportsSection({ report }) {
                   aria-pressed={rangeWeeks === num}
                   onClick={() => handleRangeWeeks(num)}
                 >
-                  {num} 周
+                  {t("{num} 周", { num })}
                 </button>
               ))}
             </div>
@@ -4785,7 +4808,7 @@ function ReportsSection({ report }) {
                 <li key={project.path}>
                   <span className="project-trend-name" title={project.path}>
                     {project.label}
-                    <small>{project.activeDays} 天</small>
+                    <small>{t("{count} 天", { count: project.activeDays })}</small>
                   </span>
                   <Sparkline
                     points={project.weekly}
@@ -4795,7 +4818,7 @@ function ReportsSection({ report }) {
                   {project.recentDeltaPercent != null ? (
                     <small
                       className={project.recentDeltaPercent >= 0 ? "trend-up" : "trend-down"}
-                      title="近 7 天相对再前 7 天"
+                      title={t("近 7 天相对再前 7 天")}
                     >
                       {project.recentDeltaPercent >= 0
                         ? <ArrowUp size={10} weight="bold" aria-hidden="true" />
@@ -4809,7 +4832,7 @@ function ReportsSection({ report }) {
               ))}
             </ul>
           ) : (
-            <p className="settings-muted">该时间段内暂无可归属的项目用量。</p>
+            <p className="settings-muted">{t("该时间段内暂无可归属的项目用量。")}</p>
           )
         ) : view === "trend" ? (
           <ReportTrendChart weeks={trendWeeks} />
@@ -4822,7 +4845,7 @@ function ReportsSection({ report }) {
             <span key={month.index} style={{ gridColumnStart: month.index + 1 }}>{month.label}</span>
           ))}
         </div>
-        <div className="heatmap" style={{ "--heatmap-weeks": weeks.length }} role="img" aria-label="近 26 周每日 token 用量热力图，颜色越深用量越大">
+        <div className="heatmap" style={{ "--heatmap-weeks": weeks.length }} role="img" aria-label={t("近 26 周每日 token 用量热力图，颜色越深用量越大")}>
           {weeks.map((week, weekIndex) => (
             <div className="heatmap-week" key={weekIndex}>
               {week.map((cell, dayIndex) => (
@@ -4830,7 +4853,7 @@ function ReportsSection({ report }) {
                   <i
                     key={cell.key}
                     className={`heat-${heatLevel(cell.tokens, thresholds)}`}
-                    title={`${cell.key} · ${cell.tokens ? `${compactTokens(cell.tokens)} tokens` : "暂无用量"}`}
+                    title={`${cell.key} · ${cell.tokens ? `${compactTokens(cell.tokens)} tokens` : t("暂无用量")}`}
                   />
                 ) : (
                   <i key={`pad-${weekIndex}-${dayIndex}`} className="heat-pad" aria-hidden="true" />
@@ -4840,9 +4863,9 @@ function ReportsSection({ report }) {
           ))}
         </div>
         <div className="heatmap-scale" aria-hidden="true">
-          <span>少</span>
+          <span>{t("少")}</span>
           <i className="heat-0" /><i className="heat-1" /><i className="heat-2" /><i className="heat-3" /><i className="heat-4" />
-          <span>多</span>
+          <span>{t("多")}</span>
         </div>
           </>
         )}
@@ -4850,8 +4873,8 @@ function ReportsSection({ report }) {
       </section>
 
       <div className="report-grid">
-        <section className="report-card" aria-label="Agent 排行">
-          <h2>Agent 排行</h2>
+        <section className="report-card" aria-label={t("Agent 排行")}>
+          <h2>{t("Agent 排行")}</h2>
           <ul className="model-list">
             {/* 后端按注册表顺序返回，之前直接渲染——一个叫"排行"的列表其实没排过序。 */}
             {data.agents
@@ -4867,15 +4890,15 @@ function ReportsSection({ report }) {
                   <span className="model-track" aria-hidden="true">
                     <i style={{ transform: `scaleX(${agent.tokens / max})`, backgroundColor: meta?.accent || "#74767a" }} />
                   </span>
-                  <em>{compactTokens(agent.tokens)} · {agent.activeDays} 天</em>
+                  <em>{compactTokens(agent.tokens)} · {t("{count} 天", { count: agent.activeDays })}</em>
                 </li>
               );
             })}
           </ul>
         </section>
 
-        <section className="report-card" aria-label="模型排行">
-          <h2>模型排行</h2>
+        <section className="report-card" aria-label={t("模型排行")}>
+          <h2>{t("模型排行")}</h2>
           <ul className="model-list">
             {(data.topModels || []).slice(0, 8).map((entry) => {
               const max = data.topModels[0]?.tokens || 1;
@@ -5184,6 +5207,16 @@ export function App() {
     // 周期或 Agent 选择变化都重发快照；选择变化即便撞上在途请求也不能被合并。
     loadSnapshot(period, { ensureLatestWidgetAgents: true });
   }, [period, widgetAgents, loadSnapshot]);
+
+  // 快照里的来源说明、窗口标签、趋势刻度是后端按当时语言写的；切换语言后
+  // 重取一次，屏幕上已有的后端文字随之换成新语言。
+  const language = useLanguage();
+  const snapshotLanguageRef = useRef(language);
+  useEffect(() => {
+    if (snapshotLanguageRef.current === language) return;
+    snapshotLanguageRef.current = language;
+    loadSnapshot(currentPeriod.current, { ensureLatestWidgetAgents: true });
+  }, [language, loadSnapshot]);
 
   useEffect(() => {
     // 历史索引未补齐时快速迭代：每次快照只花掉一小段补齐预算，靠连续刷新把
@@ -5572,7 +5605,8 @@ export function App() {
         }
       : null;
     runWindowAction(() => updateTrayQuotaBadge(spec));
-  }, [trayBadge, trayBadgeEnabled]);
+    // 悬停提示是送到原生托盘的文字，切换语言时要重发。
+  }, [trayBadge, trayBadgeEnabled, language]);
 
   // 勾选即追加到末尾（勾选顺序 = 显示顺序）；首次改动时以当前自动列表为基准。
   const handleToggleStripAgent = useCallback((agentId) => {
@@ -5633,8 +5667,11 @@ export function App() {
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
   // 标签跟随快照的实际周期；切换周期扫描期间显式提示，不给旧数据贴新标签。
-  const comparisonLabel = snapshot.period === "today" ? "比近 7 日同时段" : "比前一周期";
-  const flatComparisonLabel = snapshot.period === "today" ? "与近 7 日同时段持平" : "与前一周期持平";
+  // 百分比要加粗，按占位符拆成前后两段，中间插入 <strong>。
+  const comparisonParts = (snapshot.period === "today"
+    ? (comparisonIsLower ? t("比近 7 日同时段低 {percent}") : t("比近 7 日同时段高 {percent}"))
+    : (comparisonIsLower ? t("比前一周期低 {percent}") : t("比前一周期高 {percent}"))).split("{percent}");
+  const flatComparisonLabel = snapshot.period === "today" ? t("与近 7 日同时段持平") : t("与前一周期持平");
   const switchingPeriod = !snapshot.pending && !snapshot.loadError && period !== snapshot.period;
 
   const handleNavChange = (next) => {
@@ -5773,7 +5810,7 @@ export function App() {
     requestSequence.current += 1;
     setRebuildState({
       status: "busy",
-      message: "正在清理派生统计索引并重建当前周期…",
+      text: "正在清理派生统计索引并重建当前周期…",
     });
 
     try {
@@ -5785,17 +5822,17 @@ export function App() {
       }
       setRebuildState({
         status: "success",
-        message: next.isDemo
-          ? "演示扫描完成。"
+        ...(next.isDemo
+          ? { text: "演示扫描完成。" }
           : snapshotIsPartial(next)
-            ? "扫描完成，仍有记录无法解析。更新 Metrik 后再试。"
-            : `扫描完成 · ${formatClock(next.generatedAt)}`,
+            ? { text: "扫描完成，仍有记录无法解析。更新 Metrik 后再试。" }
+            : { text: "扫描完成 · {time}", params: { time: formatClock(next.generatedAt) } }),
       });
     } catch (error) {
       console.warn("Unable to rebuild the local ledger.", error);
       setRebuildState({
         status: "error",
-        message: "扫描失败，稍后重试。Agent 日志未受影响。",
+        text: "扫描失败，稍后重试。Agent 日志未受影响。",
       });
     } finally {
       rebuildInFlight.current = false;
@@ -5895,8 +5932,8 @@ export function App() {
           className={`expanded-refresh ${IS_MAC ? "expanded-refresh--mac" : ""}`}
           onClick={handleForceRefresh}
           disabled={appBusy}
-          aria-label="强制刷新官方配额与本地统计"
-          title="强制刷新官方配额与本地统计"
+          aria-label={t("强制刷新官方配额与本地统计")}
+          title={t("强制刷新官方配额与本地统计")}
         >
           <ArrowsClockwise size={15} weight="light" aria-hidden="true" />
         </button>
@@ -5907,7 +5944,7 @@ export function App() {
             <PeriodControl period={period} onChange={setPeriod} />
             <main className="dashboard">
               <header className="hero-copy">
-                <span className="section-kicker">{PERIODS.find((item) => item.id === snapshot.period)?.label}</span>
+                <span className="section-kicker">{t(PERIODS.find((item) => item.id === snapshot.period)?.label)}</span>
                 <div className="metric-line" aria-live="polite" aria-atomic="true">
                   <h1>{snapshot.pending || snapshot.loadError ? "--" : compactTokens(visibleTokens)}</h1>
                   <span>tokens</span>
@@ -5916,22 +5953,25 @@ export function App() {
                   {switchingPeriod ? (
                     <>
                       <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
-                      正在统计{PERIODS.find((item) => item.id === period)?.label}数据，暂显示{PERIODS.find((item) => item.id === snapshot.period)?.label}
+                      {t("正在统计{period}数据，暂显示{shown}", {
+                        period: t(PERIODS.find((item) => item.id === period)?.label),
+                        shown: t(PERIODS.find((item) => item.id === snapshot.period)?.label),
+                      })}
                     </>
                   ) : snapshot.pending ? (
                     <>
                       <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
-                      正在建立本地索引，窗口仍可操作
+                      {t("正在建立本地索引，窗口仍可操作")}
                     </>
                   ) : snapshot.loadError ? (
                     <>
                       <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
-                      本地数据读取失败，未显示演示数字
+                      {t("本地数据读取失败，未显示演示数字")}
                     </>
                   ) : selectedAgent !== "all" ? (
                     <>
                       <FunnelSimple size={22} weight="light" aria-hidden="true" />
-                      仅显示 {AGENT_META[selectedAgent].label} 用量
+                      {t("仅显示 {agent} 用量", { agent: AGENT_META[selectedAgent].label })}
                     </>
                   ) : snapshot.comparisonAvailable ? (
                     <>
@@ -5940,15 +5980,16 @@ export function App() {
                       ) : (
                         <>
                           <ComparisonArrow size={22} weight="bold" aria-hidden="true" />
-                          {comparisonLabel}{comparisonIsLower ? "低" : "高"}{" "}
+                          {comparisonParts[0]}
                           <strong>{Math.abs(snapshot.comparisonPercent).toFixed(0)}%</strong>
+                          {comparisonParts[1]}
                         </>
                       )}
                     </>
                   ) : (
                     <>
                       <ClockCounterClockwise size={22} weight="light" aria-hidden="true" />
-                      {period === "today" ? "近 7 日同时段基线尚未建立" : "前一周期基线尚未建立"}
+                      {period === "today" ? t("近 7 日同时段基线尚未建立") : t("前一周期基线尚未建立")}
                     </>
                   )}
                 </p>

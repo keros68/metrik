@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { setLanguageSetting } from "./i18n.js";
 import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 
 /// 造一个窗口；顺序按后端的 quota_window_rank（five_hour → seven_day → 月度）。
@@ -122,4 +123,17 @@ test("重置倒计时：小数分钟先取整再拆分，不出现 60 分", () =
   assert.equal(formatReset(61.2), "1 小时 1 分");
   assert.equal(formatReset(2 * 1440 + 90), "2 天 1 小时");
   assert.equal(formatReset(Number.NaN), "暂不可用");
+});
+
+test("重置倒计时的英文写法", async () => {
+  await setLanguageSetting("en");
+  try {
+    assert.equal(formatReset(119.7), "2h 0m");
+    assert.equal(formatReset(1439.7), "1d 0h");
+    assert.equal(formatReset(61.2), "1h 1m");
+    assert.equal(formatReset(2 * 1440 + 90), "2d 1h");
+    assert.equal(formatReset(Number.NaN), "Unavailable");
+  } finally {
+    await setLanguageSetting("zh");
+  }
 });

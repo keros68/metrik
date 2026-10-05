@@ -15,6 +15,8 @@ const BROWSER_SETTING_KEY = "metrik:language";
 let state = { setting: "auto", language: "zh" };
 const listeners = new Set();
 const warnedMissing = new Set();
+// 与 i18n.test.js 的守卫同一个范围：CJK 标点、汉字、全角符号。
+const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
 
 function normalizeSetting(value) {
   return LANGUAGE_SETTINGS.includes(value) ? value : "auto";
@@ -83,14 +85,15 @@ function interpolate(text, params) {
 /**
  * 翻译一段界面文字。key 是中文原文；占位符写成 {name}，由 params 填充。
  * 英文条目可以是函数 (params) => string，用于复数或语序变化。
- * 缺英文条目时退回中文原文，开发模式下告警一次。
+ * 缺英文条目时退回原文；键含中文时开发模式下告警一次。
  */
 export function t(key, params) {
   if (state.language === "en") {
     const entry = Object.prototype.hasOwnProperty.call(en, key) ? en[key] : undefined;
     if (typeof entry === "function") return entry(params || {});
     if (typeof entry === "string") return interpolate(entry, params);
-    if (import.meta.env?.DEV && !warnedMissing.has(key)) {
+    // 只为中文键告警：不含中文的文字（Agent 名、数字等）本来就不需要条目。
+    if (import.meta.env?.DEV && CJK.test(key) && !warnedMissing.has(key)) {
       warnedMissing.add(key);
       console.warn(`[i18n] missing English entry: ${key}`);
     }

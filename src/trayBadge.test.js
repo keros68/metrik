@@ -8,6 +8,7 @@ import {
   trayBadgeText,
   trayBadgeTooltip,
 } from "./trayBadge.js";
+import { setLanguageSetting } from "./i18n.js";
 
 test("badge spec picks the first agent from the shared status list", () => {
   const items = [
@@ -56,6 +57,28 @@ test("badge tooltip reuses the menu-bar wording", () => {
     "Metrik · Claude 剩余 42% · 数据可能已过期",
   );
   assert.equal(trayBadgeTooltip("GLM", null, false), "Metrik · GLM 配额不可用");
+});
+
+test("badge tooltip follows the interface language", async () => {
+  await setLanguageSetting("en");
+  try {
+    assert.equal(trayBadgeTooltip("ChatGPT", 87, false), "Metrik · ChatGPT 87% left");
+    assert.equal(
+      trayBadgeTooltip("Claude", 42, true),
+      "Metrik · Claude 42% left · data may be stale",
+    );
+    assert.equal(trayBadgeTooltip("GLM", null, false), "Metrik · GLM quota unavailable");
+  } finally {
+    await setLanguageSetting("zh");
+  }
+});
+
+test("badge key changes when the tooltip text changes", () => {
+  const spec = { agent: "kimi", percent: 66, stale: false };
+  assert.notEqual(
+    trayBadgeKey({ ...spec, tooltip: "Metrik · Kimi 剩余 66%" }),
+    trayBadgeKey({ ...spec, tooltip: "Metrik · Kimi 66% left" }),
+  );
 });
 
 test("badge key changes only when agent, percent, or staleness changes", () => {

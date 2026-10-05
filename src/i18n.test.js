@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
 
 import en from "./locales/en.js";
 import { localeIsChinese, resolveLanguage, setLanguageSetting, t } from "./i18n.js";
 
-// 已完成转换的文件。转换完一个文件就把它加进来；守卫保证它不再漏出未翻译的中文。
-const CONVERTED_FILES = [
-  "src/i18n.js",
-  "src/LanguageSettings.jsx",
-  "src/QuotaSettings.jsx",
-];
+// 守卫扫描 src/ 下全部 .js / .jsx（测试文件和 locales/ 除外），新文件自动纳入。
+const SOURCE_FILES = readdirSync(new URL("./", import.meta.url), { recursive: true })
+  .map((file) => file.replaceAll("\\", "/"))
+  .filter((file) => /\.jsx?$/.test(file) && !file.endsWith(".test.js") && !file.startsWith("locales/"))
+  .sort()
+  .map((file) => `src/${file}`);
 
 const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
 const PLACEHOLDER = /\{(\w+)\}/g;
@@ -93,8 +93,9 @@ export function findI18nViolations(source, dictionary, file = "<source>") {
   return violations;
 }
 
-test("converted files route every CJK string through t() with an English entry", () => {
-  const violations = CONVERTED_FILES.flatMap((file) =>
+test("source files route every CJK string through t() with an English entry", () => {
+  assert.ok(SOURCE_FILES.includes("src/App.jsx"), SOURCE_FILES.join(", "));
+  const violations = SOURCE_FILES.flatMap((file) =>
     findI18nViolations(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), en, file));
   assert.deepEqual(violations, []);
 });

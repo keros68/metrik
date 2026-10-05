@@ -2,6 +2,8 @@
 /// 决策逻辑（取哪个数字、写什么提示）与画布渲染分开：决策部分可在 Node
 /// 单测里直接跑，画布只在浏览器里被调用。
 
+import { t } from "./i18n.js";
+
 /// 渲染边长（像素）。托盘图标在 100%–200% DPI 下最大显示 32px，
 /// 以 32 渲染、由系统按需缩小，三个档位都不会放大糊掉。
 const TRAY_BADGE_EDGE = 32;
@@ -42,17 +44,17 @@ export function trayBadgeText(percent) {
 /// 悬停提示，与 macOS 状态项同一套文案。
 export function trayBadgeTooltip(agentLabel, percent, stale) {
   const body = percent == null
-    ? `${agentLabel} 配额不可用`
-    : `${agentLabel} 剩余 ${percent}%`;
-  return stale ? `Metrik · ${body} · 数据可能已过期` : `Metrik · ${body}`;
+    ? t("{agent} 配额不可用", { agent: agentLabel })
+    : t("{agent} 剩余 {percent}%", { agent: agentLabel, percent });
+  return stale ? `Metrik · ${body} · ${t("数据可能已过期")}` : `Metrik · ${body}`;
 }
 
-/// 状态指纹：Agent、数字或过期标记任一变化才算新徽标，避免每次快照
-/// 都把同一张图标重发一遍。
+/// 状态指纹：Agent、数字、过期标记或悬停提示任一变化才算新徽标，避免每次
+/// 快照都把同一张图标重发一遍。提示参与指纹，切换界面语言后才会重发。
 export function trayBadgeKey(spec) {
   if (!spec) return null;
   const percent = spec.percent == null ? "--" : String(spec.percent);
-  return `${spec.agent}:${percent}:${spec.stale ? 1 : 0}`;
+  return `${spec.agent}:${percent}:${spec.stale ? 1 : 0}:${spec.tooltip ?? ""}`;
 }
 
 const BADGE_COLORS = {

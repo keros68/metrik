@@ -255,7 +255,10 @@ Frontend (`src/i18n.js`):
 - Put the English text in `src/locales/en.js` under the exact Chinese key.
   Interpolate with named placeholders, `t("{count} 张", { count })`; a plain
   English value keeps the key's placeholder names. Use a function value,
-  `({ count }) => …`, when plural or word order differs.
+  `({ count }) => …`, when plural or word order differs. When one Chinese text
+  needs two English renderings, pass a `context` param and branch on it in a
+  function value: `t("关闭", { context: "toggle" })` is "Turn off", plain
+  `t("关闭")` is "Close".
 - Never build Chinese UI text with `${}` template literals or string
   concatenation. Keep labels in module-level tables in Chinese and call
   `t(option.label)` at render time, never at module load. Store the Chinese

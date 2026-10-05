@@ -1239,7 +1239,7 @@ pub(crate) fn quota_window_label(lang: Lang, adapter_id: &str, key: &str) -> Str
         "five_hour" | "primary" => "Session".into(),
         "seven_day" | "secondary" => {
             if adapter_id == "claude" {
-                i18n::tr_in!(lang, "每周 · 全模型", "Weekly · All models")
+                i18n::tr_in!(lang, "每周 · 全模型", "Weekly · All")
             } else {
                 i18n::tr_in!(lang, "每周", "Weekly")
             }
@@ -3417,7 +3417,7 @@ mod tests {
         );
         assert_eq!(
             quota_window_label(Lang::En, "claude", "seven_day"),
-            "Weekly · All models"
+            "Weekly · All"
         );
         assert_eq!(quota_window_label(Lang::En, "codex", "secondary"), "Weekly");
         assert_eq!(

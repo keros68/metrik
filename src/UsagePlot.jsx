@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import uPlot from "uplot";
 import { agentPalette } from "./agentColors.js";
+import { t, useLanguage } from "./i18n.js";
 import { compactTokens } from "./tokenFormat.js";
 
 const AXIS_FONT = '12px "Geist Variable", "Segoe UI Variable", sans-serif';
@@ -17,6 +18,8 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
   const tooltipRef = useRef(null);
   const tooltipTimeRef = useRef(null);
   const tooltipValueRef = useRef(null);
+  // 坐标轴刻度由 uPlot 画在 canvas 上，数字格式跟随语言；切换语言时重建图表。
+  const language = useLanguage();
 
   // "全部"时按 Agent 分色画多条线，只画周期内有数据的；全为零时保底一条，避免空图。
   const activeAgents = useMemo(() => {
@@ -154,7 +157,7 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
       plot.destroy();
       host.replaceChildren();
     };
-  }, [activeAgents, agentLabels, formatTokens, multiLine, series, dark]);
+  }, [activeAgents, agentLabels, formatTokens, multiLine, series, dark, language]);
 
   return (
     <div className="usage-plot-shell" ref={shellRef} style={{ "--series-color": primaryColor }}>
@@ -164,10 +167,10 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
         <div className="chart-tooltip-values" ref={tooltipValueRef} />
       </div>
       <table className="sr-only">
-        <caption>当前筛选条件下的用量趋势数据</caption>
+        <caption>{t("当前筛选条件下的用量趋势数据")}</caption>
         <thead>
           <tr>
-            <th scope="col">时间</th>
+            <th scope="col">{t("时间")}</th>
             {activeAgents.map((agent) => (
               <th scope="col" key={agent}>{agentLabels[agent] || agent}</th>
             ))}
