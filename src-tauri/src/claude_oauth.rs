@@ -1,5 +1,5 @@
 use crate::domain::{sane_resets_at_ms, QuotaSample};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -57,21 +57,130 @@ const LAST_ERROR_SETTING_KEY: &str = "claude_oauth_last_error";
 pub const SOURCE_LABEL: &str = "官方配额（OAuth）";
 
 /// 直连的最近一次失败，供设置页与配额卡如实说明为什么没有数字。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeOauthFailure {
     pub at_ms: i64,
     pub message: String,
 }
 
-pub fn record_failure(connection: &rusqlite::Connection, message: &str) -> Result<()> {
-    let failure = ClaudeOauthFailure {
-        at_ms: chrono::Utc::now().timestamp_millis(),
-        message: message.to_owned(),
-    };
-    let raw =
-        serde_json::to_string(&failure).context("failed to serialize claude oauth failure")?;
+/// 落库形状：本模块自己的失败只存原因代码（与语言无关），界面文字在读取时
+/// 按当前语言生成；其余失败与旧版本的记录只有 `message` 原文。
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredFailure {
+    at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<OauthError>,
+    #[serde(default)]
+    message: String,
+}
+
+/// 直连查询失败的原因。`Display` 按当前界面语言输出。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum OauthError {
+    NoCredentials,
+    MissingScope,
+    Rejected { status: u16 },
+    RateLimited,
+    HttpStatus { status: u16 },
+    Network { detail: String },
+    UnreadableResponse,
+    UnexpectedJson,
+    NoWindows,
+}
+
+impl OauthError {
+    pub fn text(&self, lang: crate::i18n::Lang) -> String {
+        use crate::i18n::tr_in;
+        match self {
+            OauthError::NoCredentials => tr_in!(
+                lang,
+                "本机没有 Claude Code 登录凭据（环境变量、~/.claude/.credentials.json、macOS 钥匙串均未命中）",
+                "No Claude Code sign-in credentials on this computer (none in the environment variable, ~/.claude/.credentials.json or the macOS keychain)"
+            ),
+            OauthError::MissingScope => tr_in!(
+                lang,
+                "Claude 凭据缺少 user:profile 权限，无法查询用量。重新运行 claude login",
+                "The Claude credentials lack the user:profile scope, so usage can't be checked. Run claude login again"
+            ),
+            OauthError::Rejected { status } => tr_in!(
+                lang,
+                "Claude 凭据被拒（{status}），重新运行 claude login",
+                "Claude rejected the credentials ({status}). Run claude login again"
+            ),
+            OauthError::RateLimited => tr_in!(
+                lang,
+                "Claude 用量接口限流（429），稍后自动重试",
+                "The Claude usage endpoint is rate limited (429). Metrik retries automatically later"
+            ),
+            OauthError::HttpStatus { status } => tr_in!(
+                lang,
+                "Claude 用量接口返回 HTTP {status}",
+                "The Claude usage endpoint returned HTTP {status}"
+            ),
+            OauthError::Network { detail } => tr_in!(
+                lang,
+                "Claude 用量接口网络错误：{detail}",
+                "Network error reaching the Claude usage endpoint: {detail}"
+            ),
+            OauthError::UnreadableResponse => tr_in!(
+                lang,
+                "读取 Claude 用量响应失败",
+                "Couldn't read the Claude usage response"
+            ),
+            OauthError::UnexpectedJson => tr_in!(
+                lang,
+                "Claude 用量响应不是预期的 JSON",
+                "The Claude usage response is not the expected JSON"
+            ),
+            OauthError::NoWindows => tr_in!(
+                lang,
+                "Claude 用量响应缺少可用的额度窗口",
+                "The Claude usage response has no usable quota windows"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for OauthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.text(crate::i18n::current()))
+    }
+}
+
+impl std::error::Error for OauthError {}
+
+fn store_failure(connection: &rusqlite::Connection, failure: &StoredFailure) -> Result<()> {
+    let raw = serde_json::to_string(failure).context("failed to serialize claude oauth failure")?;
     crate::storage::set_app_setting(connection, LAST_ERROR_SETTING_KEY, &raw)
+}
+
+pub fn record_failure(connection: &rusqlite::Connection, message: &str) -> Result<()> {
+    store_failure(
+        connection,
+        &StoredFailure {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            reason: None,
+            message: message.to_owned(),
+        },
+    )
+}
+
+/// 本模块的失败存原因代码，换语言后读到的是新语言；其它错误存原文。
+pub fn record_error(connection: &rusqlite::Connection, error: &anyhow::Error) -> Result<()> {
+    match error.downcast_ref::<OauthError>() {
+        Some(reason) => store_failure(
+            connection,
+            &StoredFailure {
+                at_ms: chrono::Utc::now().timestamp_millis(),
+                reason: Some(reason.clone()),
+                message: String::new(),
+            },
+        ),
+        None => record_failure(connection, &error.to_string()),
+    }
 }
 
 pub fn clear_failure(connection: &rusqlite::Connection) -> Result<()> {
@@ -86,7 +195,16 @@ pub fn last_failure(connection: &rusqlite::Connection) -> Result<Option<ClaudeOa
         return Ok(None);
     }
     // 记录损坏时当作没有记录，不因为一条诊断把设置页打不开。
-    Ok(serde_json::from_str(&raw).ok())
+    let Ok(stored) = serde_json::from_str::<StoredFailure>(&raw) else {
+        return Ok(None);
+    };
+    Ok(Some(ClaudeOauthFailure {
+        at_ms: stored.at_ms,
+        message: match stored.reason {
+            Some(reason) => reason.text(crate::i18n::current()),
+            None => stored.message,
+        },
+    }))
 }
 
 #[derive(Deserialize)]
@@ -314,7 +432,7 @@ impl ClaudeOauth {
     /// 下游展示无需区分来源。
     pub fn fetch_quota_samples(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
         let Some(credentials) = self.read_credentials() else {
-            bail!("本机没有 Claude Code 登录凭据（环境变量、~/.claude/.credentials.json、macOS 钥匙串均未命中）");
+            return Err(OauthError::NoCredentials.into());
         };
         // expiresAt 只作本地诊断提示。Claude Code 的记录可能晚于服务端实际
         // 状态更新；启用直连后仍让服务端裁决一次，但 Metrik 不刷新或写回 token。
@@ -331,7 +449,7 @@ impl ClaudeOauth {
             .iter()
             .any(|scope| scope == REQUIRED_SCOPE)
         {
-            bail!("Claude 凭据缺少 user:profile 权限，无法查询用量。重新运行 claude login");
+            return Err(OauthError::MissingScope.into());
         }
         let token = credentials.access_token.clone().unwrap_or_default();
 
@@ -346,26 +464,24 @@ impl ClaudeOauth {
             .map_err(|error| match error {
                 // 错误信息里绝不能带请求头（token）。
                 ureq::Error::Status(code, _) if matches!(code, 401 | 403) => {
-                    anyhow::anyhow!("Claude 凭据被拒（{code}），重新运行 claude login")
+                    OauthError::Rejected { status: code }
                 }
-                ureq::Error::Status(429, _) => {
-                    anyhow::anyhow!("Claude 用量接口限流（429），稍后自动重试")
-                }
-                ureq::Error::Status(code, _) => {
-                    anyhow::anyhow!("Claude 用量接口返回 HTTP {code}")
-                }
-                ureq::Error::Transport(transport) => {
-                    anyhow::anyhow!("Claude 用量接口网络错误：{transport}")
-                }
+                ureq::Error::Status(429, _) => OauthError::RateLimited,
+                ureq::Error::Status(code, _) => OauthError::HttpStatus { status: code },
+                ureq::Error::Transport(transport) => OauthError::Network {
+                    detail: transport.to_string(),
+                },
             })?;
 
         let parse = || -> Result<Vec<QuotaSample>> {
-            let body = response.into_string().context("读取 Claude 用量响应失败")?;
+            let body = response
+                .into_string()
+                .map_err(|_| OauthError::UnreadableResponse)?;
             let usage: UsageResponse =
-                serde_json::from_str(&body).context("Claude 用量响应不是预期的 JSON")?;
+                serde_json::from_str(&body).map_err(|_| OauthError::UnexpectedJson)?;
             let samples = samples_from_usage(usage, chrono::Utc::now().timestamp_millis());
             if samples.is_empty() {
-                bail!("Claude 用量响应缺少可用的额度窗口");
+                return Err(OauthError::NoWindows.into());
             }
             Ok(samples)
         };
@@ -588,6 +704,55 @@ mod tests {
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
         connection
+    }
+
+    #[test]
+    fn own_failures_are_stored_as_codes_and_rendered_when_read() {
+        use crate::i18n::Lang;
+        let connection = memory_ledger();
+        let error = anyhow::Error::from(OauthError::Rejected { status: 401 });
+        record_error(&connection, &error).unwrap();
+
+        let raw = crate::storage::get_app_setting(&connection, LAST_ERROR_SETTING_KEY)
+            .unwrap()
+            .unwrap();
+        let stored: StoredFailure = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored.reason, Some(OauthError::Rejected { status: 401 }));
+        assert!(stored.message.is_empty());
+        // 测试进程的界面语言保持默认的中文。
+        assert_eq!(
+            last_failure(&connection).unwrap().unwrap().message,
+            "Claude 凭据被拒（401），重新运行 claude login"
+        );
+        assert_eq!(
+            OauthError::Rejected { status: 401 }.text(Lang::En),
+            "Claude rejected the credentials (401). Run claude login again"
+        );
+        assert_eq!(
+            OauthError::Network {
+                detail: "timed out".into()
+            }
+            .text(Lang::En),
+            "Network error reaching the Claude usage endpoint: timed out"
+        );
+
+        // 不是本模块的错误存原文。
+        record_error(&connection, &anyhow::anyhow!("lock poisoned")).unwrap();
+        assert_eq!(
+            last_failure(&connection).unwrap().unwrap().message,
+            "lock poisoned"
+        );
+
+        // 旧版本只有 atMs + message 的记录照常读出原文。
+        crate::storage::set_app_setting(
+            &connection,
+            LAST_ERROR_SETTING_KEY,
+            r#"{"atMs":5,"message":"Claude 用量接口限流（429），稍后自动重试"}"#,
+        )
+        .unwrap();
+        let legacy = last_failure(&connection).unwrap().unwrap();
+        assert_eq!(legacy.at_ms, 5);
+        assert_eq!(legacy.message, "Claude 用量接口限流（429），稍后自动重试");
     }
 
     #[test]

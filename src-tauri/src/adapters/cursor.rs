@@ -34,6 +34,7 @@ use super::{normalize_locator, AgentAdapter, ParsedScan, ScanDiagnostics, Source
 use crate::domain::{
     sane_resets_at_ms, stable_hash, ParsedSource, QuotaSample, TokenVector, UsageEvent,
 };
+use crate::i18n::tr;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use rusqlite::{types::Value as SqlValue, Connection, OpenFlags, OptionalExtension};
@@ -70,8 +71,19 @@ const AUTH_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(15 * 60);
 const TEMPORARY_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
-const NOT_SIGNED_IN: &str = "检测到 Cursor，但本机没有登录会话，读不到用量";
-const EXPIRED: &str = "Cursor 登录会话已过期，打开 Cursor 让它刷新后再试";
+fn not_signed_in() -> String {
+    tr!(
+        "检测到 Cursor，但本机没有登录会话，读不到用量",
+        "Cursor is installed, but this computer has no signed-in session, so usage can't be read"
+    )
+}
+
+fn expired() -> String {
+    tr!(
+        "Cursor 登录会话已过期，打开 Cursor 让它刷新后再试",
+        "The Cursor sign-in session has expired. Open Cursor to refresh it, then try again"
+    )
+}
 
 static PROGRESS: Mutex<Option<DayProgress>> = Mutex::new(None);
 static HEALTH: Mutex<Option<Failure>> = Mutex::new(None);
@@ -177,8 +189,8 @@ impl AgentAdapter for CursorAdapter {
             SessionState::Usable(session) if session.expires_at_ms > now + EXPIRY_MARGIN_MS => {
                 session
             }
-            SessionState::Usable(_) => bail!(EXPIRED),
-            SessionState::Missing => bail!(NOT_SIGNED_IN),
+            SessionState::Usable(_) => bail!(expired()),
+            SessionState::Missing => bail!(not_signed_in()),
         };
         if let Some(message) = active_backoff(&session.fingerprint, Instant::now()) {
             bail!(message);
@@ -227,19 +239,24 @@ impl AgentAdapter for CursorAdapter {
             return Vec::new();
         }
         match read_session(&self.state_db) {
-            Ok(SessionState::Missing) => return vec![NOT_SIGNED_IN.into()],
+            Ok(SessionState::Missing) => return vec![not_signed_in()],
             Ok(SessionState::Usable(session))
                 if session.expires_at_ms <= now_ms() + EXPIRY_MARGIN_MS =>
             {
-                return vec![EXPIRED.into()]
+                return vec![expired()]
             }
             Ok(SessionState::Usable(_)) => {}
-            Err(_) => return vec!["读取 Cursor 登录状态失败".into()],
+            Err(_) => {
+                return vec![tr!(
+                    "读取 Cursor 登录状态失败",
+                    "Couldn't read the Cursor sign-in state"
+                )]
+            }
         }
         HEALTH
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|failure| failure.message.clone()))
+            .and_then(|guard| guard.as_ref().map(|failure| failure.error.message()))
             .into_iter()
             .collect()
     }
@@ -279,8 +296,8 @@ pub fn fetch_plan_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
     let now = now_ms();
     let session = match read_session(&cursor_state_db())? {
         SessionState::Usable(session) if session.expires_at_ms > now + EXPIRY_MARGIN_MS => session,
-        SessionState::Usable(_) => bail!(EXPIRED),
-        SessionState::Missing => bail!(NOT_SIGNED_IN),
+        SessionState::Usable(_) => bail!(expired()),
+        SessionState::Missing => bail!(not_signed_in()),
     };
     let response = ureq::AgentBuilder::new()
         .timeout(timeout)
@@ -443,21 +460,75 @@ fn session_from_token(token: &str) -> Result<Session> {
     })
 }
 
-#[derive(Debug)]
+/// 拉取失败的具体原因。退避期间按读取时的界面语言出文字。
+#[derive(Clone, Copy, Debug)]
+enum Reason {
+    Http(u16),
+    Network,
+    ReadInterrupted,
+    TotalKeptChanging,
+    NotJson,
+    NotObject,
+    MissingTotal,
+    BadEventList,
+    FewerEvents,
+}
+
+impl Reason {
+    fn text(self) -> String {
+        match self {
+            Self::Http(code) => format!("HTTP {code}"),
+            Self::Network => tr!("网络错误", "network error"),
+            Self::ReadInterrupted => tr!("响应读取中断", "response read interrupted"),
+            Self::TotalKeptChanging => tr!(
+                "翻页期间事件总数持续变化",
+                "event total kept changing while paging"
+            ),
+            Self::NotJson => tr!("不是 JSON", "not JSON"),
+            Self::NotObject => tr!("响应不是对象", "response is not an object"),
+            Self::MissingTotal => tr!("缺少事件总数", "missing event total"),
+            Self::BadEventList => tr!("事件列表类型不对", "event list has the wrong type"),
+            Self::FewerEvents => tr!(
+                "事件数少于报告的总数",
+                "fewer events than the reported total"
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 enum FetchError {
     Auth,
     RateLimited,
-    Temporary(String),
-    Invalid(String),
+    Temporary(Reason),
+    Invalid(Reason),
 }
 
 impl FetchError {
     fn message(&self) -> String {
         match self {
-            Self::Auth => "Cursor 拒绝了本机的登录会话，在 Cursor 里重新登录后自动恢复".into(),
-            Self::RateLimited => "Cursor 用量接口限流，15 分钟后再试".into(),
-            Self::Temporary(reason) => format!("Cursor 用量暂时读不到（{reason}），5 分钟后再试"),
-            Self::Invalid(reason) => format!("Cursor 用量响应无法识别（{reason}），5 分钟后再试"),
+            Self::Auth => tr!(
+                "Cursor 拒绝了本机的登录会话，在 Cursor 里重新登录后自动恢复",
+                "Cursor rejected this computer's sign-in session. It recovers automatically after you sign in again in Cursor"
+            ),
+            Self::RateLimited => tr!(
+                "Cursor 用量接口限流，15 分钟后再试",
+                "The Cursor usage endpoint is rate limited. Retrying in 15 minutes"
+            ),
+            Self::Temporary(reason) => {
+                let reason = reason.text();
+                tr!(
+                    "Cursor 用量暂时读不到（{reason}），5 分钟后再试",
+                    "Cursor usage is temporarily unavailable ({reason}). Retrying in 5 minutes"
+                )
+            }
+            Self::Invalid(reason) => {
+                let reason = reason.text();
+                tr!(
+                    "Cursor 用量响应无法识别（{reason}），5 分钟后再试",
+                    "The Cursor usage response wasn't recognized ({reason}). Retrying in 5 minutes"
+                )
+            }
         }
     }
 
@@ -473,7 +544,7 @@ impl FetchError {
 struct Failure {
     fingerprint: String,
     until: Instant,
-    message: String,
+    error: FetchError,
 }
 
 fn record_failure(fingerprint: &str, error: &FetchError, now: Instant) {
@@ -481,7 +552,7 @@ fn record_failure(fingerprint: &str, error: &FetchError, now: Instant) {
         *guard = Some(Failure {
             fingerprint: fingerprint.to_owned(),
             until: now + error.backoff(),
-            message: error.message(),
+            error: error.clone(),
         });
     }
 }
@@ -496,7 +567,7 @@ fn clear_failure() {
 fn active_backoff(fingerprint: &str, now: Instant) -> Option<String> {
     let guard = HEALTH.lock().ok()?;
     let failure = guard.as_ref()?;
-    (failure.fingerprint == fingerprint && now < failure.until).then(|| failure.message.clone())
+    (failure.fingerprint == fingerprint && now < failure.until).then(|| failure.error.message())
 }
 
 struct Page {
@@ -532,22 +603,20 @@ fn fetch_page(
         Ok(response) => response,
         Err(ureq::Error::Status(401 | 403, _)) => return Err(FetchError::Auth),
         Err(ureq::Error::Status(429, _)) => return Err(FetchError::RateLimited),
-        Err(ureq::Error::Status(code, _)) => {
-            return Err(FetchError::Temporary(format!("HTTP {code}")))
-        }
-        Err(ureq::Error::Transport(_)) => return Err(FetchError::Temporary("网络错误".into())),
+        Err(ureq::Error::Status(code, _)) => return Err(FetchError::Temporary(Reason::Http(code))),
+        Err(ureq::Error::Transport(_)) => return Err(FetchError::Temporary(Reason::Network)),
     };
     let text = response
         .into_string()
-        .map_err(|_| FetchError::Temporary("响应读取中断".into()))?;
+        .map_err(|_| FetchError::Temporary(Reason::ReadInterrupted))?;
     let json: Value =
-        serde_json::from_str(&text).map_err(|_| FetchError::Invalid("不是 JSON".into()))?;
+        serde_json::from_str(&text).map_err(|_| FetchError::Invalid(Reason::NotJson))?;
     parse_page(&json).map_err(FetchError::Invalid)
 }
 
 /// 空窗口返回 `{}`；末尾的空页省略事件数组但保留总数。其余缺字段都不能当作零用量。
-fn parse_page(json: &Value) -> Result<Page, String> {
-    let object = json.as_object().ok_or("响应不是对象")?;
+fn parse_page(json: &Value) -> Result<Page, Reason> {
+    let object = json.as_object().ok_or(Reason::NotObject)?;
     if object.is_empty() {
         return Ok(Page {
             total: 0,
@@ -556,11 +625,11 @@ fn parse_page(json: &Value) -> Result<Page, String> {
     }
     let total = json_i64(object.get("totalUsageEventsCount"))
         .filter(|total| *total >= 0)
-        .ok_or("缺少事件总数")?;
+        .ok_or(Reason::MissingTotal)?;
     let rows = match object.get("usageEventsDisplay") {
         Some(Value::Array(rows)) => rows.clone(),
         None => Vec::new(),
-        Some(_) => return Err("事件列表类型不对".into()),
+        Some(_) => return Err(Reason::BadEventList),
     };
     Ok(Page { total, rows })
 }
@@ -624,7 +693,7 @@ fn collect_day(
         if progress.total.is_some_and(|total| total != page.total) {
             progress.restarts += 1;
             if progress.restarts >= MAX_RESTARTS {
-                return Err(FetchError::Temporary("翻页期间事件总数持续变化".into()));
+                return Err(FetchError::Temporary(Reason::TotalKeptChanging));
             }
             progress.next_page = 1;
             progress.total = None;
@@ -638,7 +707,7 @@ fn collect_day(
             return Ok(DayStep::Complete);
         }
         if empty || progress.next_page >= MAX_PAGES {
-            return Err(FetchError::Invalid("事件数少于报告的总数".into()));
+            return Err(FetchError::Invalid(Reason::FewerEvents));
         }
         progress.next_page += 1;
     }

@@ -50,7 +50,30 @@ impl QuotaPolicy {
 pub struct QuotaOutcome {
     pub samples: Vec<QuotaSample>,
     /// 失败原因；只有声明要留档的 provider 会被上层记下来。
-    pub failure: Option<String>,
+    pub failure: Option<QuotaFailure>,
+}
+
+/// 取数失败：原始错误留给留档方按类型存原因代码，解引用得到失败当时的文字。
+pub struct QuotaFailure {
+    message: String,
+    error: anyhow::Error,
+}
+
+impl From<anyhow::Error> for QuotaFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            error,
+        }
+    }
+}
+
+impl std::ops::Deref for QuotaFailure {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.message
+    }
 }
 
 /// 取数前从账本读出的开关快照。provider 不直接碰数据库——落库与设置读写
@@ -105,7 +128,7 @@ pub trait QuotaProvider: Send + Sync {
     /// 失败原因是否留档给用户看。默认不留：多数来源在没配凭据时失败是常态，
     /// 留档只会制造噪声。Claude 直连是例外——它是用户显式开启的，失败必须
     /// 有交代。
-    fn record_failure(&self, _connection: &Connection, _message: &str) -> Result<()> {
+    fn record_failure(&self, _connection: &Connection, _error: &anyhow::Error) -> Result<()> {
         Ok(())
     }
 
@@ -325,7 +348,7 @@ pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> 
             continue;
         }
         match &outcome.failure {
-            Some(message) => provider.record_failure(connection, message)?,
+            Some(failure) => provider.record_failure(connection, &failure.error)?,
             None if !samples.is_empty() => provider.clear_failure(connection)?,
             None => {}
         }
@@ -410,7 +433,7 @@ fn cached_fetch(
             );
             QuotaOutcome {
                 samples: Vec::new(),
-                failure: Some(error.to_string()),
+                failure: Some(error.into()),
             }
         }
     }
@@ -464,8 +487,8 @@ impl QuotaProvider for ClaudeQuota {
         ClaudeHook::detected().quota_samples()
     }
 
-    fn record_failure(&self, connection: &Connection, message: &str) -> Result<()> {
-        claude_oauth::record_failure(connection, message)
+    fn record_failure(&self, connection: &Connection, error: &anyhow::Error) -> Result<()> {
+        claude_oauth::record_error(connection, error)
     }
 
     fn clear_failure(&self, connection: &Connection) -> Result<()> {

@@ -33,6 +33,8 @@ use tauri::{
 use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
 use tauri_nspanel::{panel_delegate, ManagerExt, WebviewWindowExt};
 
+use crate::i18n::tr;
+
 /// NSWindowStyleMaskNonActivatingPanel：面板获得键盘焦点时不激活本 App，
 /// 用户正在用的窗口不会失焦。这是菜单栏应用与普通窗口最本质的区别。
 const NONACTIVATING_PANEL: i32 = 1 << 7;
@@ -179,9 +181,12 @@ fn initialize_native_status_item<R: Runtime>(
     tray: &tauri::tray::TrayIcon<R>,
 ) -> Result<(), String> {
     tray.with_inner_tray_icon(move |inner| {
-        let status_item = inner
-            .ns_status_item()
-            .ok_or_else(|| "macOS NSStatusItem 不可用".to_owned())?;
+        let status_item = inner.ns_status_item().ok_or_else(|| {
+            tr!(
+                "macOS NSStatusItem 不可用",
+                "macOS NSStatusItem is unavailable"
+            )
+        })?;
         let autosave_name = NSString::from_str(STATUS_ITEM_AUTOSAVE_NAME);
         status_item.setAutosaveName(Some(&autosave_name));
         // autosaveName 会恢复上次持久化的可见性；Metrik 至少保留一个 Agent，
@@ -203,7 +208,12 @@ fn normalized_percent(value: Option<f64>) -> Option<u8> {
 /// 去除，保留原始品牌轮廓；系统负责按浅/深菜单栏自动反色。
 fn provider_status_icon(source: &[u8]) -> Result<Image<'static>, String> {
     let decoded = image::load_from_memory(source)
-        .map_err(|error| format!("菜单栏品牌图标无法解码：{error}"))?
+        .map_err(|error| {
+            tr!(
+                "菜单栏品牌图标无法解码：{error}",
+                "Couldn't decode the menu bar brand icon: {error}"
+            )
+        })?
         .to_rgba8();
     let resized = image::imageops::resize(
         &decoded,
@@ -273,16 +283,16 @@ fn status_item_segments(
             let spec = STATUS_ITEMS
                 .iter()
                 .find(|spec| spec.id == agent)
-                .ok_or_else(|| format!("Metrik 未知 Agent {agent}"))?;
+                .ok_or_else(|| tr!("Metrik 未知 Agent {agent}", "Unknown Metrik agent {agent}"))?;
             let title = status_item_title(remaining[index], stale[index]);
             let availability = match normalized_percent(remaining[index]) {
-                Some(percent) => format!("剩余 {percent}%"),
-                None => "配额不可用".to_owned(),
+                Some(percent) => tr!("剩余 {percent}%", "{percent}% left"),
+                None => tr!("配额不可用", "quota unavailable"),
             };
             let freshness = if stale[index] {
-                "，数据可能已过期"
+                tr!("，数据可能已过期", ", data may be out of date")
             } else {
-                ""
+                String::new()
             };
             Ok(StatusItemSegment {
                 icon: spec.icon,
@@ -294,29 +304,42 @@ fn status_item_segments(
 }
 
 fn status_item_accessibility_label(segments: &[StatusItemSegment]) -> String {
-    format!(
-        "Metrik：{}",
-        segments
-            .iter()
-            .map(|segment| segment.accessibility_label.as_str())
-            .collect::<Vec<_>>()
-            .join("；")
-    )
+    let separator = tr!("；", "; ");
+    let labels = segments
+        .iter()
+        .map(|segment| segment.accessibility_label.as_str())
+        .collect::<Vec<_>>()
+        .join(separator.as_str());
+    tr!("Metrik：{labels}", "Metrik: {labels}")
 }
 
 fn provider_status_ns_image(source: &[u8]) -> Result<objc2::rc::Retained<NSImage>, String> {
     let icon = provider_status_icon(source)?;
     let rgba = image::RgbaImage::from_raw(icon.width(), icon.height(), icon.rgba().to_vec())
-        .ok_or_else(|| "菜单栏品牌图标像素尺寸不一致".to_owned())?;
+        .ok_or_else(|| {
+            tr!(
+                "菜单栏品牌图标像素尺寸不一致",
+                "The menu bar brand icon has inconsistent pixel dimensions"
+            )
+        })?;
     let mut encoded = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(rgba)
         .write_to(&mut encoded, image::ImageFormat::Png)
-        .map_err(|error| format!("菜单栏品牌图标无法编码：{error}"))?;
+        .map_err(|error| {
+            tr!(
+                "菜单栏品牌图标无法编码：{error}",
+                "Couldn't encode the menu bar brand icon: {error}"
+            )
+        })?;
     let encoded = encoded.into_inner();
     // dataWithBytes 会立即复制像素，返回后 Vec 可以安全释放。
     let data = unsafe { NSData::dataWithBytes_length(encoded.as_ptr().cast(), encoded.len()) };
-    let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .ok_or_else(|| "菜单栏品牌图标无法创建 NSImage".to_owned())?;
+    let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+        tr!(
+            "菜单栏品牌图标无法创建 NSImage",
+            "Couldn't create an NSImage for the menu bar brand icon"
+        )
+    })?;
     image.setSize(NSSize::new(MENU_BAR_ICON_SIZE, MENU_BAR_ICON_SIZE));
     image.setTemplate(true);
     Ok(image)
@@ -345,14 +368,24 @@ fn set_native_status_item_content<R: Runtime>(
 ) -> Result<(), String> {
     let accessibility_label = status_item_accessibility_label(&segments);
     tray.with_inner_tray_icon(move |inner| {
-        let status_item = inner
-            .ns_status_item()
-            .ok_or_else(|| "macOS NSStatusItem 不可用".to_owned())?;
-        let mtm = MainThreadMarker::new()
-            .ok_or_else(|| "macOS 菜单栏内容更新未运行在主线程".to_owned())?;
-        let button = status_item
-            .button(mtm)
-            .ok_or_else(|| "macOS NSStatusBarButton 不可用".to_owned())?;
+        let status_item = inner.ns_status_item().ok_or_else(|| {
+            tr!(
+                "macOS NSStatusItem 不可用",
+                "macOS NSStatusItem is unavailable"
+            )
+        })?;
+        let mtm = MainThreadMarker::new().ok_or_else(|| {
+            tr!(
+                "macOS 菜单栏内容更新未运行在主线程",
+                "The macOS menu bar content update is not running on the main thread"
+            )
+        })?;
+        let button = status_item.button(mtm).ok_or_else(|| {
+            tr!(
+                "macOS NSStatusBarButton 不可用",
+                "macOS NSStatusBarButton is unavailable"
+            )
+        })?;
         let attributed = NSMutableAttributedString::new();
         let font = NSFont::menuBarFontOfSize(0.0);
         let color = NSColor::labelColor();
@@ -398,15 +431,21 @@ pub fn update_status_items(
     stale: &[bool],
 ) -> Result<(), String> {
     if agents.len() != remaining.len() || agents.len() != stale.len() {
-        return Err("macOS 菜单栏状态项参数长度不一致".into());
+        return Err(tr!(
+            "macOS 菜单栏状态项参数长度不一致",
+            "The macOS menu bar status item arguments have different lengths"
+        ));
     }
 
     eprintln!("Metrik status item requested: {}", agents.join(","));
     let segments = status_item_segments(agents, remaining, stale)?;
     let tooltip = status_item_accessibility_label(&segments);
-    let tray = app
-        .tray_by_id(STATUS_ITEM_ID)
-        .ok_or_else(|| "Metrik 菜单栏状态项不存在".to_owned())?;
+    let tray = app.tray_by_id(STATUS_ITEM_ID).ok_or_else(|| {
+        tr!(
+            "Metrik 菜单栏状态项不存在",
+            "The Metrik menu bar status item does not exist"
+        )
+    })?;
     tray.set_tooltip(Some(tooltip))
         .map_err(|error| error.to_string())?;
     set_native_status_item_content(&tray, segments)?;
@@ -485,7 +524,10 @@ pub fn show_panel(app: &AppHandle) {
 /// 尺寸范围在命令入口校验；这里保持原生 NSPanel 的层级和行为不变。
 pub fn resize_panel(app: &AppHandle, width: f64, height: f64) -> Result<(), String> {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
-        return Err("macOS 菜单栏面板不存在".into());
+        return Err(tr!(
+            "macOS 菜单栏面板不存在",
+            "The macOS menu bar panel does not exist"
+        ));
     };
     window
         .set_size(LogicalSize::new(width, height))

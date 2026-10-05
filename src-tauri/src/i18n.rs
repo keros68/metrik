@@ -131,6 +131,19 @@ pub fn set_current(lang: Lang) {
     );
 }
 
+/// 英文按数量取单复数形式：`plural(count, "session", "sessions")`。
+pub fn plural<T: PartialEq + From<u8>>(
+    count: T,
+    one: &'static str,
+    other: &'static str,
+) -> &'static str {
+    if count == T::from(1) {
+        one
+    } else {
+        other
+    }
+}
+
 /// 按指定语言二选一并格式化，返回 `String`。格式参数用内联捕获的变量名。
 macro_rules! tr_in {
     ($lang:expr, $zh:literal, $en:literal $(,)?) => {{
@@ -249,5 +262,12 @@ mod tests {
             "42% left"
         );
         assert_eq!(tr_in!(Lang::En, "置顶", "Pin"), "Pin");
+    }
+
+    #[test]
+    fn plural_picks_the_singular_only_for_one() {
+        assert_eq!(plural(1_usize, "day", "days"), "day");
+        assert_eq!(plural(0_i64, "day", "days"), "days");
+        assert_eq!(plural(2_u32, "day", "days"), "days");
     }
 }

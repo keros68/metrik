@@ -543,8 +543,12 @@ async fn codex_reset_credits(
         let _guard = gate
             .lock()
             .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        app_server::read_reset_credits(std::time::Duration::from_secs(15))
-            .map_err(|_| "Codex 重置券查询失败，请确认 Codex 已登录后重试。".to_owned())
+        app_server::read_reset_credits(std::time::Duration::from_secs(15)).map_err(|_| {
+            i18n::tr!(
+                "Codex 重置券查询失败，请确认 Codex 已登录后重试。",
+                "Couldn't check Codex reset credits. Make sure Codex is signed in, then try again."
+            )
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -582,7 +586,10 @@ async fn set_macos_agent_selection(
     {
         let agents = widget_snapshot::normalize_agent_filter(&agents);
         if agents.is_empty() {
-            return Err("macOS 菜单栏至少保留一个 Agent".into());
+            return Err(i18n::tr!(
+                "macOS 菜单栏至少保留一个 Agent",
+                "Keep at least one agent in the macOS menu bar"
+            ));
         }
         let database_path = state.database_path.clone();
         let scan_gate = Arc::clone(&state.scan_gate);
@@ -618,7 +625,10 @@ async fn set_macos_agent_selection(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (agents, state);
-        Err("macOS Agent 选择仅用于 macOS".into())
+        Err(i18n::tr!(
+            "macOS Agent 选择仅用于 macOS",
+            "Agent selection is available on macOS only"
+        ))
     }
 }
 
@@ -648,7 +658,10 @@ async fn get_macos_agent_selection(state: State<'_, AppState>) -> Result<Vec<Str
     #[cfg(not(target_os = "macos"))]
     {
         let _ = state;
-        Err("macOS Agent 选择仅用于 macOS".into())
+        Err(i18n::tr!(
+            "macOS Agent 选择仅用于 macOS",
+            "Agent selection is available on macOS only"
+        ))
     }
 }
 
@@ -744,7 +757,7 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
         let safe_name = format!("{}.csv", safe_name.trim_end_matches(".csv"));
         let directory = dirs::download_dir()
             .or_else(dirs::home_dir)
-            .ok_or_else(|| "无法定位下载目录".to_owned())?;
+            .ok_or_else(|| i18n::tr!("无法定位下载目录", "Couldn't find the Downloads folder"))?;
         let mut target = directory.join(&safe_name);
         let mut counter = 1;
         while target.exists() {
@@ -752,8 +765,12 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
             target = directory.join(format!("{stem}-{counter}.csv"));
             counter += 1;
         }
-        std::fs::write(&target, content.as_bytes())
-            .map_err(|error| format!("写入 CSV 失败：{error}"))?;
+        std::fs::write(&target, content.as_bytes()).map_err(|error| {
+            i18n::tr!(
+                "写入 CSV 失败：{error}",
+                "Couldn't write the CSV file: {error}"
+            )
+        })?;
         Ok(target.to_string_lossy().into_owned())
     })
     .await
@@ -902,6 +919,8 @@ struct QoderCookieView {
     source: Option<&'static str>,
     /// 保存/清除/验证的结果描述，给设置页直接展示。
     message: Option<String>,
+    /// `message` 报告的是失败（已保存但验证失败）时为 true。
+    message_is_error: bool,
 }
 
 #[tauri::command]
@@ -911,6 +930,7 @@ async fn qoder_cookie_status() -> Result<QoderCookieView, String> {
         configured: source.is_some(),
         source,
         message: None,
+        message_is_error: false,
     })
 }
 
@@ -921,10 +941,14 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
     tauri::async_runtime::spawn_blocking(move || {
         // 宽容解析：整段请求标头 / cURL / 带 Cookie: 前缀 / 裸值都接受。
         let normalized = match cookie.as_deref() {
-            Some(raw) => Some(
-                coding_quota::normalize_qoder_cookie_input(raw)
-                    .ok_or_else(|| "粘贴内容中未找到 Cookie 行".to_owned())?,
-            ),
+            Some(raw) => Some(coding_quota::normalize_qoder_cookie_input(raw).ok_or_else(
+                || {
+                    i18n::tr!(
+                        "粘贴内容中未找到 Cookie 行",
+                        "No Cookie line found in the pasted text"
+                    )
+                },
+            )?),
             None => None,
         };
         let saved = coding_quota::write_qoder_cookie_file(normalized.as_deref())
@@ -934,38 +958,66 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
             return Ok(QoderCookieView {
                 configured: source.is_some(),
                 source,
-                message: Some("已清除本地保存的 Cookie。".to_owned()),
+                message: Some(i18n::tr!(
+                    "已清除本地保存的 Cookie。",
+                    "Cleared the locally saved cookie."
+                )),
+                message_is_error: false,
             });
         }
-        let message = match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
-            Ok(samples) => {
-                let sample = &samples[0];
-                let reset = sample
-                    .resets_at_ms
-                    .map(|at| {
-                        let minutes = (at - chrono::Utc::now().timestamp_millis()) / 60_000;
-                        if minutes > 0 {
-                            format!("，约 {} 小时后重置", (minutes + 30) / 60)
-                        } else {
-                            String::new()
-                        }
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "已保存并验证成功：Credits 剩余 {:.0}%{reset}。",
-                    sample.remaining_percent
-                )
-            }
-            Err(error) => format!("已保存，但验证失败：{error}"),
-        };
+        let (message, message_is_error) =
+            match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
+                Ok(samples) => (
+                    qoder_verified_message(
+                        i18n::current(),
+                        &samples[0],
+                        chrono::Utc::now().timestamp_millis(),
+                    ),
+                    false,
+                ),
+                Err(error) => (
+                    i18n::tr!(
+                        "已保存，但验证失败：{error}",
+                        "Saved, but verification failed: {error}"
+                    ),
+                    true,
+                ),
+            };
         Ok(QoderCookieView {
             configured: true,
             source,
             message: Some(message),
+            message_is_error,
         })
     })
     .await
     .map_err(|error| format!("qoder cookie task failed: {error}"))?
+}
+
+fn qoder_verified_message(lang: i18n::Lang, sample: &domain::QuotaSample, now_ms: i64) -> String {
+    let reset = sample
+        .resets_at_ms
+        .map(|at| {
+            let minutes = (at - now_ms) / 60_000;
+            if minutes > 0 {
+                let hours = (minutes + 30) / 60;
+                let unit = i18n::plural(hours, "hour", "hours");
+                i18n::tr_in!(
+                    lang,
+                    "，约 {hours} 小时后重置",
+                    ", resets in about {hours} {unit}"
+                )
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
+    let percent = sample.remaining_percent;
+    i18n::tr_in!(
+        lang,
+        "已保存并验证成功：Credits 剩余 {percent:.0}%{reset}。",
+        "Saved and verified: {percent:.0}% of credits left{reset}."
+    )
 }
 
 #[tauri::command]
@@ -1198,16 +1250,18 @@ fn validate_tray_quota_icon(icon: &TrayQuotaIcon) -> Result<(), String> {
         || icon.width > TRAY_ICON_MAX_EDGE
         || icon.height > TRAY_ICON_MAX_EDGE
     {
-        return Err(format!(
-            "托盘图标尺寸超出范围：{}×{}",
-            icon.width, icon.height
+        let (width, height) = (icon.width, icon.height);
+        return Err(i18n::tr!(
+            "托盘图标尺寸超出范围：{width}×{height}",
+            "Tray icon size out of range: {width}×{height}"
         ));
     }
     let expected = icon.width as usize * icon.height as usize * 4;
     if icon.rgba.len() != expected {
-        return Err(format!(
-            "托盘图标像素数据长度不匹配：{} ≠ {expected}",
-            icon.rgba.len()
+        let actual = icon.rgba.len();
+        return Err(i18n::tr!(
+            "托盘图标像素数据长度不匹配：{actual} ≠ {expected}",
+            "Tray icon pixel data length mismatch: {actual} ≠ {expected}"
         ));
     }
     Ok(())
@@ -1229,7 +1283,10 @@ fn set_tray_quota_icon(
     #[cfg(windows)]
     {
         let Some(tray) = app.tray_by_id("main") else {
-            return Err("任务栏托盘图标不存在".into());
+            return Err(i18n::tr!(
+                "任务栏托盘图标不存在",
+                "The taskbar tray icon does not exist"
+            ));
         };
         match icon {
             Some(payload) => {
@@ -1239,10 +1296,9 @@ fn set_tray_quota_icon(
                     .map_err(|error| error.to_string())?;
             }
             None => {
-                let fallback = app
-                    .default_window_icon()
-                    .cloned()
-                    .ok_or_else(|| "默认应用图标不可用".to_string())?;
+                let fallback = app.default_window_icon().cloned().ok_or_else(|| {
+                    i18n::tr!("默认应用图标不可用", "The default app icon is unavailable")
+                })?;
                 tray.set_icon(Some(fallback))
                     .map_err(|error| error.to_string())?;
             }
@@ -1487,7 +1543,10 @@ fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<()
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, nav);
-        Err("独立的完整视图窗口仅用于 macOS".into())
+        Err(i18n::tr!(
+            "独立的完整视图窗口仅用于 macOS",
+            "A separate expanded view window is available on macOS only"
+        ))
     }
 }
 
@@ -1501,7 +1560,10 @@ fn set_macos_desktop_widget_visible(app: tauri::AppHandle, visible: bool) -> Res
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, visible);
-        Err("桌面组件仅用于 macOS".into())
+        Err(i18n::tr!(
+            "桌面组件仅用于 macOS",
+            "The desktop widget is available on macOS only"
+        ))
     }
 }
 
@@ -1512,7 +1574,10 @@ fn set_macos_desktop_widget_visible(app: tauri::AppHandle, visible: bool) -> Res
 #[tauri::command]
 fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     if !(48.0..=640.0).contains(&width) || !(40.0..=2400.0).contains(&height) {
-        return Err("macOS 面板尺寸超出允许范围".into());
+        return Err(i18n::tr!(
+            "macOS 面板尺寸超出允许范围",
+            "The macOS panel size is out of the allowed range"
+        ));
     }
     #[cfg(target_os = "macos")]
     {
@@ -1521,7 +1586,10 @@ fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, width, height);
-        Err("菜单栏面板尺寸切换仅用于 macOS".into())
+        Err(i18n::tr!(
+            "菜单栏面板尺寸切换仅用于 macOS",
+            "Menu bar panel resizing is available on macOS only"
+        ))
     }
 }
 
@@ -1541,7 +1609,10 @@ fn update_macos_status_items(
     #[cfg(target_os = "macos")]
     {
         if agents.len() != remaining.len() || agents.len() != stale.len() {
-            return Err("macOS 菜单栏状态项参数长度不一致".into());
+            return Err(i18n::tr!(
+                "macOS 菜单栏状态项参数长度不一致",
+                "The macOS menu bar status item arguments have different lengths"
+            ));
         }
         // 主线程上的轮询：只读打开，不跑建表，也不和写入方抢锁。
         let saved = storage::open_database_read_only(&state.database_path)
@@ -1574,7 +1645,10 @@ fn update_macos_status_items(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, state, agents, remaining, stale);
-        Err("菜单栏用量状态项仅用于 macOS".into())
+        Err(i18n::tr!(
+            "菜单栏用量状态项仅用于 macOS",
+            "Menu bar usage status items are available on macOS only"
+        ))
     }
 }
 
@@ -2028,7 +2102,17 @@ pub fn run_statusline() {
 }
 
 pub fn run_antigravity_hook() {
+    // 状态栏文字给人读；命令行入口不走桌面 setup，按同一规则先定语言。
+    init_cli_language();
     antigravity_hook::run_hook();
+}
+
+/// 命令行入口的界面语言：账本里保存的设置，没有则跟随系统语言。
+fn init_cli_language() {
+    let setting = cli::default_ledger_path()
+        .map(|path| read_language_setting(&path))
+        .unwrap_or(i18n::Setting::Auto);
+    i18n::set_current(language_state(setting).language);
 }
 
 /// `metrik --quota-json [database-path]`：只读导出已落库的官方额度快照。
@@ -2067,6 +2151,62 @@ pub fn publish_widget_snapshot_from_database(_database_path: &Path) -> Result<Pa
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn qoder_verification_message_follows_the_requested_language() {
+        use i18n::Lang;
+        let now = 1_000_000_000_000;
+        let mut sample = domain::QuotaSample {
+            adapter_id: "qoder",
+            window_key: "credits".into(),
+            remaining_percent: 61.6,
+            resets_at_ms: Some(now + 5 * 60 * 60_000),
+            collected_at_ms: now,
+            source_label: "test".into(),
+            quality: "official_live",
+        };
+        assert_eq!(
+            qoder_verified_message(Lang::Zh, &sample, now),
+            "已保存并验证成功：Credits 剩余 62%，约 5 小时后重置。"
+        );
+        assert_eq!(
+            qoder_verified_message(Lang::En, &sample, now),
+            "Saved and verified: 62% of credits left, resets in about 5 hours."
+        );
+        sample.resets_at_ms = Some(now + 50 * 60_000);
+        assert_eq!(
+            qoder_verified_message(Lang::En, &sample, now),
+            "Saved and verified: 62% of credits left, resets in about 1 hour."
+        );
+        sample.resets_at_ms = None;
+        assert_eq!(
+            qoder_verified_message(Lang::Zh, &sample, now),
+            "已保存并验证成功：Credits 剩余 62%。"
+        );
+    }
+
+    #[test]
+    fn qoder_cookie_view_serializes_the_error_flag() {
+        let view = QoderCookieView {
+            configured: true,
+            source: Some("file"),
+            message: Some("已保存，但验证失败：HTTP 401".into()),
+            message_is_error: true,
+        };
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["messageIsError"], true);
+        assert_eq!(value["message"], "已保存，但验证失败：HTTP 401");
+        let cleared = QoderCookieView {
+            configured: false,
+            source: None,
+            message: None,
+            message_is_error: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["messageIsError"],
+            false
+        );
+    }
 
     #[test]
     fn tray_labels_follow_the_requested_language() {
