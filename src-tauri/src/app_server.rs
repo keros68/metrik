@@ -63,6 +63,9 @@ fn parse_reset_credits(result: &Value, now_secs: i64) -> ResetCreditsView {
     }
 }
 
+/// app-server 关 stdin 后自行退出的等待上限。
+const PROBE_EXIT_GRACE: Duration = Duration::from_secs(3);
+
 fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Value> {
     if std::env::var_os("METRIK_DEBUG").is_some() {
         eprintln!("app-server command: {command:?}");
@@ -139,10 +142,13 @@ fn read_usage_with_command(mut command: Command, timeout: Duration) -> Result<Va
         }
     }
 
-    // 先杀整棵进程树再关 stdin：app-server 读到 EOF 约 20ms 就自行退出，
-    // 作业对象不可用而回落到 taskkill /T 时，进程树断开会遗留它派生的子孙（如 git）。
-    child.terminate();
+    // 关 stdin 让 app-server 读到 EOF 自行退出（通常约 20ms），超时才强杀；
+    // 它派生的后代（如 git）由作业对象收掉。
     drop(stdin);
+    let exit = child.finish(PROBE_EXIT_GRACE);
+    if std::env::var_os("METRIK_DEBUG").is_some() {
+        eprintln!("app-server exit: {exit:?} (None = terminated)");
+    }
 
     quota_result(response)
 }
