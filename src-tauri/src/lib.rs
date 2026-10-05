@@ -10,6 +10,7 @@ mod detect;
 mod domain;
 mod engine;
 mod hermes_providers;
+mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;
 mod pi_providers;
@@ -437,7 +438,7 @@ async fn usage_snapshot(
                     use tauri_plugin_notification::NotificationExt;
                     app.notification()
                         .builder()
-                        .title("Metrik · 额度提醒")
+                        .title(i18n::tr!("Metrik · 额度提醒", "Metrik · Quota alert"))
                         .body(body)
                         .show()?;
                     Ok(())
@@ -1309,10 +1310,27 @@ fn configure_pinned_hover(
 #[tauri::command]
 fn sync_linux_tray_pinned(state: State<'_, LinuxTrayPinMenu>, pinned: bool) {
     state.pinned.store(pinned, Ordering::Release);
-    if let Ok(item) = state.item.lock() {
-        if let Some(item) = item.as_ref() {
-            let _ = item.set_text(if pinned { "取消置顶" } else { "置顶" });
+    state.refresh_text(i18n::current());
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxTrayPinMenu {
+    fn refresh_text(&self, lang: i18n::Lang) {
+        let pinned = self.pinned.load(Ordering::Acquire);
+        if let Ok(item) = self.item.lock() {
+            if let Some(item) = item.as_ref() {
+                let _ = item.set_text(linux_pin_label(lang, pinned));
+            }
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pin_label(lang: i18n::Lang, pinned: bool) -> String {
+    if pinned {
+        i18n::tr_in!(lang, "取消置顶", "Unpin")
+    } else {
+        i18n::tr_in!(lang, "置顶", "Pin")
     }
 }
 
@@ -1560,6 +1578,129 @@ fn update_macos_status_items(
     }
 }
 
+/// 托盘（macOS 为菜单栏）菜单里随界面语言切换的固定文字项。Linux 的置顶项
+/// 文字还取决于置顶状态，由 `LinuxTrayPinMenu` 单独维护。
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug)]
+enum TrayLabel {
+    Toggle,
+    Expanded,
+    #[cfg(target_os = "macos")]
+    Settings,
+    Quit,
+}
+
+#[cfg(desktop)]
+fn tray_label(label: TrayLabel, lang: i18n::Lang) -> String {
+    match label {
+        TrayLabel::Toggle => i18n::tr_in!(lang, "显示 / 隐藏", "Show / hide"),
+        TrayLabel::Expanded => i18n::tr_in!(lang, "完整视图", "Expanded view"),
+        #[cfg(target_os = "macos")]
+        TrayLabel::Settings => i18n::tr_in!(lang, "设置", "Settings"),
+        TrayLabel::Quit => i18n::tr_in!(lang, "退出 Metrik", "Quit Metrik"),
+    }
+}
+
+/// 记下已创建的菜单项，语言切换时就地改文字，不重建菜单。
+#[cfg(desktop)]
+#[derive(Default)]
+struct TrayMenuText {
+    items: Mutex<Vec<(tauri::menu::MenuItem<tauri::Wry>, TrayLabel)>>,
+}
+
+#[cfg(desktop)]
+impl TrayMenuText {
+    fn item(
+        &self,
+        app: &tauri::AppHandle,
+        id: &str,
+        label: TrayLabel,
+    ) -> tauri::Result<tauri::menu::MenuItem<tauri::Wry>> {
+        let item = tauri::menu::MenuItem::with_id(
+            app,
+            id,
+            tray_label(label, i18n::current()),
+            true,
+            None::<&str>,
+        )?;
+        if let Ok(mut items) = self.items.lock() {
+            items.push((item.clone(), label));
+        }
+        Ok(item)
+    }
+
+    fn refresh(&self, lang: i18n::Lang) {
+        if let Ok(items) = self.items.lock() {
+            for (item, label) in items.iter() {
+                let _ = item.set_text(tray_label(*label, lang));
+            }
+        }
+    }
+}
+
+/// 当前的语言设置与生效语言。setup 在创建托盘之前写入。
+struct UiLanguage(Mutex<i18n::LanguageState>);
+
+fn language_state(setting: i18n::Setting) -> i18n::LanguageState {
+    i18n::LanguageState {
+        setting,
+        language: i18n::resolve(setting, i18n::system_locale().as_deref()),
+    }
+}
+
+fn read_language_setting(database_path: &Path) -> i18n::Setting {
+    let stored = storage::open_database_read_only(database_path)
+        .and_then(|connection| storage::get_app_setting(&connection, i18n::SETTING_KEY))
+        .ok()
+        .flatten();
+    i18n::Setting::parse(stored.as_deref())
+}
+
+/// 每个窗口首帧渲染前读取一次。setup 尚未写入时（理论上的竞态）按系统语言回答。
+#[tauri::command]
+fn ui_language(app: tauri::AppHandle) -> i18n::LanguageState {
+    app.try_state::<UiLanguage>()
+        .and_then(|state| state.0.lock().ok().map(|value| *value))
+        .unwrap_or_else(|| language_state(i18n::Setting::Auto))
+}
+
+/// 保存语言设置并立即生效：后端文字、托盘菜单，以及经事件通知的所有窗口。
+#[tauri::command]
+async fn set_ui_language(
+    setting: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<i18n::LanguageState, String> {
+    use tauri::Emitter;
+
+    let setting = match setting.as_str() {
+        "auto" | "zh" | "en" => i18n::Setting::parse(Some(&setting)),
+        _ => return Err(format!("unsupported language setting: {setting}")),
+    };
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = storage::open_database(&path).map_err(|error| error.to_string())?;
+        storage::set_app_setting(&db, i18n::SETTING_KEY, setting.as_str())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let next = language_state(setting);
+    i18n::set_current(next.language);
+    if let Some(current) = app.try_state::<UiLanguage>() {
+        if let Ok(mut value) = current.0.lock() {
+            *value = next;
+        }
+    }
+    #[cfg(desktop)]
+    app.state::<TrayMenuText>().refresh(next.language);
+    #[cfg(target_os = "linux")]
+    app.state::<LinuxTrayPinMenu>().refresh_text(next.language);
+    let _ = app.emit(i18n::CHANGED_EVENT, next);
+    Ok(next)
+}
+
 /// 托盘菜单请求完整视图；前端监听后自己完成变形（见 windowClient 的
 /// onTrayShowExpanded）。macOS 的完整视图是独立窗口，走 macos.rs 自己的菜单栏。
 #[cfg(all(desktop, not(target_os = "macos")))]
@@ -1586,16 +1727,25 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    #[cfg(target_os = "linux")]
+    use tauri::menu::MenuItem;
+    use tauri::menu::{Menu, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::Emitter;
 
-    let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
-    let expanded = MenuItem::with_id(app, "expanded", "完整视图", true, None::<&str>)?;
+    let text = app.state::<TrayMenuText>();
+    let toggle = text.item(app.handle(), "toggle", TrayLabel::Toggle)?;
+    let expanded = text.item(app.handle(), "expanded", TrayLabel::Expanded)?;
     #[cfg(target_os = "linux")]
-    let pinned = MenuItem::with_id(app, "pinned", "置顶", true, None::<&str>)?;
+    let pinned = MenuItem::with_id(
+        app,
+        "pinned",
+        linux_pin_label(i18n::current(), false),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
+    let quit = text.item(app.handle(), "quit", TrayLabel::Quit)?;
     #[cfg(target_os = "linux")]
     let menu = Menu::with_items(app, &[&toggle, &expanded, &pinned, &separator, &quit])?;
     #[cfg(not(target_os = "linux"))]
@@ -1631,11 +1781,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "pinned" => {
                 let state = app.state::<LinuxTrayPinMenu>();
                 let next = !state.pinned.fetch_xor(true, Ordering::AcqRel);
-                if let Ok(item) = state.item.lock() {
-                    if let Some(item) = item.as_ref() {
-                        let _ = item.set_text(if next { "取消置顶" } else { "置顶" });
-                    }
-                }
+                state.refresh_text(i18n::current());
                 let _ = app.emit(TRAY_SET_PINNED, next);
             }
             "quit" => app.exit(0),
@@ -1702,27 +1848,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
-            // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
-            #[cfg(target_os = "macos")]
-            macos::setup(app)?;
-
-            #[cfg(target_os = "linux")]
-            app.manage(LinuxTrayPinMenu::default());
-
-            #[cfg(target_os = "linux")]
-            restore_linux_startup_position(app.app_handle());
-
-            #[cfg(all(desktop, not(target_os = "macos")))]
-            setup_tray(app)?;
-
-            #[cfg(windows)]
-            if let Some(window) = app.get_webview_window("main") {
-                if let Ok(hwnd) = window.hwnd() {
-                    disable_system_corner_rounding(hwnd.0 as isize);
-                }
-            }
-
             let database_path = match (
                 app.path().app_data_dir(),
                 app.path().app_local_data_dir(),
@@ -1749,6 +1874,34 @@ pub fn run() {
                     emergency_database_path()
                 }
             };
+            // 语言要在任何窗口加载、托盘与通知构建之前确定，所以数据库路径先解析。
+            let ui_language = language_state(read_language_setting(&database_path));
+            i18n::set_current(ui_language.language);
+            app.manage(UiLanguage(Mutex::new(ui_language)));
+            #[cfg(desktop)]
+            app.manage(TrayMenuText::default());
+
+            // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
+            // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
+            #[cfg(target_os = "macos")]
+            macos::setup(app)?;
+
+            #[cfg(target_os = "linux")]
+            app.manage(LinuxTrayPinMenu::default());
+
+            #[cfg(target_os = "linux")]
+            restore_linux_startup_position(app.app_handle());
+
+            #[cfg(all(desktop, not(target_os = "macos")))]
+            setup_tray(app)?;
+
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(hwnd) = window.hwnd() {
+                    disable_system_corner_rounding(hwnd.0 as isize);
+                }
+            }
+
             #[cfg(target_os = "macos")]
             match engine::build_cached_snapshot(&database_path, "today") {
                 Ok(snapshot) => {
@@ -1857,6 +2010,8 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             persist_linux_startup_position,
             set_native_theme,
+            ui_language,
+            set_ui_language,
             open_expanded_window,
             set_macos_desktop_widget_visible,
             resize_macos_panel,
@@ -1912,6 +2067,29 @@ pub fn publish_widget_snapshot_from_database(_database_path: &Path) -> Result<Pa
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn tray_labels_follow_the_requested_language() {
+        use i18n::Lang;
+        assert_eq!(tray_label(TrayLabel::Toggle, Lang::Zh), "显示 / 隐藏");
+        assert_eq!(tray_label(TrayLabel::Expanded, Lang::Zh), "完整视图");
+        assert_eq!(tray_label(TrayLabel::Quit, Lang::Zh), "退出 Metrik");
+        assert_eq!(tray_label(TrayLabel::Toggle, Lang::En), "Show / hide");
+        assert_eq!(tray_label(TrayLabel::Expanded, Lang::En), "Expanded view");
+        assert_eq!(tray_label(TrayLabel::Quit, Lang::En), "Quit Metrik");
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(tray_label(TrayLabel::Settings, Lang::Zh), "设置");
+            assert_eq!(tray_label(TrayLabel::Settings, Lang::En), "Settings");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(linux_pin_label(Lang::Zh, false), "置顶");
+            assert_eq!(linux_pin_label(Lang::Zh, true), "取消置顶");
+            assert_eq!(linux_pin_label(Lang::En, false), "Pin");
+            assert_eq!(linux_pin_label(Lang::En, true), "Unpin");
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

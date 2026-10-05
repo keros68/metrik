@@ -56,6 +56,7 @@ import { compactTokens } from "./tokenFormat.js";
 import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 import { agentPalette } from "./agentColors.js";
 import { CodexCreditsCard, QuotaAlertsCard } from "./QuotaSettings.jsx";
+import { LanguageCard } from "./LanguageSettings.jsx";
 import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
   configureQoderCookie,
@@ -3445,6 +3446,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
       <div className="settings-grid">
         {activeTab.id === "appearance" && (
           <>
+            <LanguageCard />
             <AppearanceCard
               theme={theme}
               onThemeChange={onThemeChange}

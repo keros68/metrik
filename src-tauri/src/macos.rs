@@ -24,7 +24,7 @@ use objc2_foundation::{
     NSString,
 };
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::Menu;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     ActivationPolicy, AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, Runtime, WebviewUrl,
@@ -692,10 +692,11 @@ fn remember_tray_rect(window_scale: f64, rect: Rect) {
 
 fn build_status_item(app: &AppHandle) -> tauri::Result<()> {
     // 一个原生状态项承载全部 Agent；内部片段变化不会让 ControlCenter 增删宿主。
-    let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
-    let expanded = MenuItem::with_id(app, "expanded", "完整视图", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
+    let text = app.state::<crate::TrayMenuText>();
+    let toggle = text.item(app, "toggle", crate::TrayLabel::Toggle)?;
+    let expanded = text.item(app, "expanded", crate::TrayLabel::Expanded)?;
+    let settings = text.item(app, "settings", crate::TrayLabel::Settings)?;
+    let quit = text.item(app, "quit", crate::TrayLabel::Quit)?;
     let menu = Menu::with_items(app, &[&toggle, &expanded, &settings, &quit])?;
 
     let tray = TrayIconBuilder::with_id(STATUS_ITEM_ID)

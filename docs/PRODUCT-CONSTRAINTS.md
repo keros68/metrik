@@ -137,6 +137,18 @@ change.
 - Do not expose credentials or raw provider responses through UI, logs, storage,
   sync, fixtures, or diagnostics.
 
+## Language
+
+- The UI is available in Simplified Chinese and English. The default setting
+  follows the system: a system locale whose primary language is Chinese shows
+  Chinese, and every other or unknown locale shows English. The user can pick
+  either language in settings.
+- A language change applies immediately to every open window, the tray or
+  menu-bar menu, and later notifications, without a restart. No window renders
+  in the other language before switching.
+- The language option names the two languages in their own language
+  (`简体中文`, `English`). Agent and product names are never translated.
+
 ## Platform forms
 
 - The selected visual direction is `design/reference-option-2.png`. Metrik
