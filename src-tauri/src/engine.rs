@@ -1535,7 +1535,7 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             "pi-local",
             "Pi 本地 Token",
             scanned("pi", "个会话文件", "个"),
-            "pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
+            "pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、OpenCode Go 记入 OpenCode、Kimi Code 订阅记入 Kimi、ChatGPT 订阅记入 Codex、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
         ),
         local(
             "workbuddy",
