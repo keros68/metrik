@@ -65,19 +65,13 @@ pub fn dsh_home() -> PathBuf {
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".dsh"))
 }
 
-/// 把 dsh 的 provider 路由映射到计量 Agent。provider id 来自 pi-ai 目录与 DSH
-/// 自带路由：与 Pi 共有的套餐（GLM、Qwen Token Plan、OpenCode Go）沿用
-/// `pi_providers`；Kimi Code 订阅与 ChatGPT 订阅（openai-codex）记到 Kimi、
-/// Codex 卡片，与 Hermes 的路由归属一致。`deepseek-official`、
+/// 把 dsh 的 provider 路由映射到计量 Agent。provider id 来自 pi-ai 目录（与 Pi
+/// 同一份），套餐路由的归属沿用 `pi_providers`；`deepseek-official`、
 /// `deepseek-account`（DeepSeek 平台余额）等按量计费的路由留在 dsh。
 fn credited_agent(provider: Option<&str>) -> &'static str {
-    match provider.map(str::trim) {
-        Some("kimi-coding") => "kimi",
-        Some("openai-codex") => "codex",
-        other => match crate::pi_providers::credited_agent(other) {
-            "pi" => "dsh",
-            card => card,
-        },
+    match crate::pi_providers::credited_agent(provider) {
+        "pi" => "dsh",
+        card => card,
     }
 }
 
@@ -295,7 +289,7 @@ fn parse_transcript(
         }
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             // 没有换行收尾的最后一行是正在写入的记录，不是坏行。
-            if !(index == last_line && !complete) {
+            if index != last_line || complete {
                 diagnostics.malformed_lines += 1;
             }
             continue;
@@ -468,7 +462,7 @@ fn parse_transcript(
         .events
         .into_iter()
         .flatten()
-        .filter(|pending| !pending.seq.is_some_and(|seq| seq < inherited_before))
+        .filter(|pending| pending.seq.is_none_or(|seq| seq >= inherited_before))
         .filter(|pending| pending.timestamp >= cutoff_ms)
         .map(|pending| {
             UsageEvent::new(

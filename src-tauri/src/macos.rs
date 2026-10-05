@@ -90,7 +90,7 @@ struct StatusItemSpec {
     icon: &'static [u8],
 }
 
-const STATUS_ITEMS: [StatusItemSpec; 14] = [
+const STATUS_ITEMS: [StatusItemSpec; 15] = [
     StatusItemSpec {
         id: "codex",
         name: "ChatGPT",
@@ -132,6 +132,11 @@ const STATUS_ITEMS: [StatusItemSpec; 14] = [
         icon: QODER_MARK,
     },
     StatusItemSpec {
+        id: "dsh",
+        name: "DeepSeek Harness",
+        icon: DSH_MARK,
+    },
+    StatusItemSpec {
         id: "grok",
         name: "Grok",
         icon: GROK_MARK,
@@ -160,11 +165,6 @@ const STATUS_ITEMS: [StatusItemSpec; 14] = [
         id: "minimax",
         name: "MiniMax",
         icon: MINIMAX_MARK,
-    },
-    StatusItemSpec {
-        id: "dsh",
-        name: "DeepSeek Harness",
-        icon: DSH_MARK,
     },
 ];
 
