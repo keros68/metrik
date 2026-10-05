@@ -81,6 +81,7 @@ const QWEN_MARK: &[u8] = include_bytes!("../../src/assets/qwen-app-icon.png");
 const HERMES_MARK: &[u8] = include_bytes!("../../src/assets/hermes-app-icon.png");
 const CURSOR_MARK: &[u8] = include_bytes!("../../src/assets/cursor-app-icon.png");
 const MINIMAX_MARK: &[u8] = include_bytes!("../../src/assets/minimax-app-icon.png");
+const DSH_MARK: &[u8] = include_bytes!("../../src/assets/dsh-app-icon.png");
 
 #[derive(Clone, Copy)]
 struct StatusItemSpec {
@@ -159,6 +160,11 @@ const STATUS_ITEMS: [StatusItemSpec; 14] = [
         id: "minimax",
         name: "MiniMax",
         icon: MINIMAX_MARK,
+    },
+    StatusItemSpec {
+        id: "dsh",
+        name: "DeepSeek Harness",
+        icon: DSH_MARK,
     },
 ];
 

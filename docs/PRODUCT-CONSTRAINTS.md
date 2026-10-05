@@ -121,6 +121,11 @@ change.
   provider alias; a vendor's plain pay-as-you-go endpoint is not a plan and
   stays on the Hermes card. The Hermes card carries local usage only and
   never a quota.
+- DeepSeek Harness is a harness like Pi: usage on a coding-plan route (GLM
+  Coding Plan, Kimi Code, Qwen Token Plan, OpenCode Go, ChatGPT subscription)
+  goes to that plan's card, and DeepSeek API or platform-balance usage stays
+  on the DSH card. It never feeds the DeepSeek card, which shows the official
+  balance only, and the DSH card never carries a quota.
 - Cursor carries usage and one quota window: the remaining plan allowance for
   the current billing cycle. Local bubble `tokenCount` values are mostly zero
   and are not a source. Both come from the cursor.com dashboard, so they are

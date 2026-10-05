@@ -49,6 +49,7 @@ The app interface is in Chinese. See the [user guide](docs/guide.md) for platfor
 | Qwen | pi sessions attributed by Bailian Token Plan route | ❌ |
 | Hermes | `~/.hermes/state.db` | ❌ |
 | MiniMax Code | `~/.minimax/v2/sqlite/runtime-state.sqlite` | ❌ |
+| DeepSeek Harness | `~/.dsh/sessions` (coding-plan usage goes to that plan's card) | ❌ |
 | Cursor | cursor.com dashboard per-request usage (enable in settings) | ✅ Billing cycle (enable in settings) |
 
 Gemini CLI is not supported yet. Cursor does not record per-request tokens locally; once enabled, Metrik reads the dashboard usage and remaining plan allowance with the session Cursor has already saved. The usage is account-wide and is excluded from multi-device sync. See the [user guide](docs/guide.md#claude-配额的两种读取方式) for the two ways Claude quota is read and the terms-of-service risk of the OAuth option.

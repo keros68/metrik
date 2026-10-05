@@ -13,7 +13,9 @@ use std::path::PathBuf;
 /// hermes 只有本地用量：Hermes 是 harness，走别家 coding plan 的用量按路由
 /// 归属到对应卡片（见 hermes_providers），其余直连 API 留在这张卡。
 /// cursor 只有用量：取 cursor.com 仪表盘的账号级逐次事件，需在设置里开启。
-pub const AGENT_IDS: [&str; 15] = [
+/// dsh 只有本地用量：DeepSeek Harness 是 harness，走 coding plan 的用量按
+/// provider 路由归属到对应卡片，DeepSeek 按量计费的留在这张卡。
+pub const AGENT_IDS: [&str; 16] = [
     "codex",
     "claude",
     "zcode",
@@ -23,6 +25,7 @@ pub const AGENT_IDS: [&str; 15] = [
     "workbuddy",
     "qoder",
     "deepseek",
+    "dsh",
     "grok",
     "pi",
     "qwen",
@@ -43,6 +46,7 @@ pub fn agent_label(id: &str) -> &'static str {
         "workbuddy" => "WorkBuddy",
         "qoder" => "Qoder",
         "deepseek" => "DeepSeek",
+        "dsh" => "DeepSeek Harness",
         "grok" => "Grok",
         "pi" => "Pi",
         "qwen" => "Qwen",
