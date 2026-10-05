@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 /// 一个 Agent 可以同时受几个额度窗口约束（5 小时 / 每周 / 月度）。卡片行和
 /// 胶囊格只有一个数字的位置，这个文件决定该显示哪一个。
 ///
@@ -45,12 +47,12 @@ export function bindingWindow(windows) {
 
 // 后端给的是带小数的分钟数：先整体取整再拆天/时/分，避免出现"1 小时 60 分"。
 export function formatReset(minutes) {
-  if (!Number.isFinite(minutes)) return "暂不可用";
+  if (!Number.isFinite(minutes)) return t("暂不可用");
   const total = Math.max(0, Math.round(minutes));
   if (total >= 1440) {
     const days = Math.floor(total / 1440);
     const hours = Math.floor((total % 1440) / 60);
-    return `${days} 天 ${hours} 小时`;
+    return t("{days} 天 {hours} 小时", { days, hours });
   }
-  return `${Math.floor(total / 60)} 小时 ${total % 60} 分`;
+  return t("{hours} 小时 {minutes} 分", { hours: Math.floor(total / 60), minutes: total % 60 });
 }

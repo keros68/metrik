@@ -25,6 +25,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+# 界面语言跟随系统时读取系统 locale；已随 tauri-plugin-os 进入依赖树。
+sys-locale = "0.3"
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-notification = "2"

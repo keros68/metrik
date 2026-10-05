@@ -13,6 +13,7 @@ use crate::domain::{
     ModelSummary, ProjectSummary, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView,
     UsageProjects, UsageReport, UsageSessions, UsageSnapshot, AGENT_IDS,
 };
+use crate::i18n::{self, Lang};
 use crate::pricing;
 use crate::projects::{self, ProjectResolver, Resolution};
 use crate::quota;
@@ -894,6 +895,8 @@ fn query_snapshot_at(
     report: ScanReport,
     local_now: chrono::DateTime<Local>,
 ) -> Result<UsageSnapshot> {
+    // 一次快照只取一次界面语言，标签与说明不会在中途切换时混用两种语言。
+    let lang = i18n::current();
     let today = local_now.date_naive();
     let (period, start_date) = period_start(requested_period, today);
     let comparison_days = if period == "month" { 30_i64 } else { 7_i64 };
@@ -965,7 +968,7 @@ fn query_snapshot_at(
 
     let series = (0..bucket_count)
         .map(|index| SeriesPoint {
-            label: bucket_label(period, start_date, index),
+            label: bucket_label(lang, period, start_date, index),
             tokens: AGENT_IDS
                 .iter()
                 .map(|agent| ((*agent).to_owned(), buckets[agent][index]))
@@ -1094,7 +1097,7 @@ fn query_snapshot_at(
         indexing: IndexingView {
             pending: report.backfill_pending,
         },
-        sources: source_views(report, sync::sync_view(connection).ok()),
+        sources: source_views(lang, report, sync::sync_view(connection).ok()),
         cost,
     })
 }
@@ -1211,7 +1214,7 @@ fn capitalize_model(model: &str) -> String {
         .unwrap_or_default()
 }
 
-fn quota_window_label(adapter_id: &str, key: &str) -> String {
+pub(crate) fn quota_window_label(lang: Lang, adapter_id: &str, key: &str) -> String {
     // Antigravity 的窗口键是官方桶标识（如 gemini_weekly），美化展示。
     if adapter_id == "antigravity" {
         let lower = key.to_ascii_lowercase();
@@ -1220,7 +1223,7 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
             return format!("{model} · 5h");
         } else if let Some(prefix) = lower.strip_suffix("_weekly") {
             let model = capitalize_model(prefix);
-            return format!("{model} · 每周");
+            return i18n::tr_in!(lang, "{model} · 每周", "{model} · Weekly");
         } else if let Some(prefix) = lower.strip_suffix("_7d") {
             let model = capitalize_model(prefix);
             return format!("{model} · 7d");
@@ -1230,25 +1233,25 @@ fn quota_window_label(adapter_id: &str, key: &str) -> String {
     // DeepSeek 余额窗口（balance_cny 等）：存的是金额不是百分比，前端按
     // window_key 特判渲染成金额。
     if crate::domain::is_balance_window(key) {
-        return "余额".into();
+        return i18n::tr_in!(lang, "余额", "Balance");
     }
     match key {
         "five_hour" | "primary" => "Session".into(),
         "seven_day" | "secondary" => {
             if adapter_id == "claude" {
-                "每周 · 全模型".into()
+                i18n::tr_in!(lang, "每周 · 全模型", "Weekly · All")
             } else {
-                "每周".into()
+                i18n::tr_in!(lang, "每周", "Weekly")
             }
         }
         // Claude 套餐外按量付费的已用比例（月度预算）。
-        "extra_usage" => "超额用量".into(),
+        "extra_usage" => i18n::tr_in!(lang, "超额用量", "Extra usage"),
         // Kimi Work 订阅周期的 OMNI 额度池。
-        "monthly_cycle" => "月度周期".into(),
+        "monthly_cycle" => i18n::tr_in!(lang, "月度周期", "Monthly cycle"),
         other => {
             let model = other.strip_prefix("seven_day_").unwrap_or(other);
             let pretty = capitalize_model(model);
-            format!("每周 · {pretty}")
+            i18n::tr_in!(lang, "每周 · {pretty}", "Weekly · {pretty}")
         }
     }
 }
@@ -1270,7 +1273,7 @@ fn load_agent_quota_windows(
         .query_map([adapter_id], |row| {
             let key: String = row.get(0)?;
             Ok(crate::domain::AgentQuotaWindow {
-                label: quota_window_label(adapter_id, &key),
+                label: quota_window_label(i18n::current(), adapter_id, &key),
                 view: quota_view_from_row(row, 1, now_ms)?,
                 key,
             })
@@ -1324,7 +1327,7 @@ pub(crate) fn load_visible_agent_quota_windows(
             .map(|window| (window.key.clone(), window))
             .collect();
     for mut candidate in load_agent_quota_windows(connection, "kimiwork", now_ms)? {
-        candidate.label = quota_window_label("kimi", &candidate.key);
+        candidate.label = quota_window_label(i18n::current(), "kimi", &candidate.key);
         match merged.get(&candidate.key) {
             Some(current) if !quota_candidate_is_better(current, &candidate) => {}
             _ => {
@@ -1399,20 +1402,26 @@ fn load_quota(connection: &Connection, adapter_id: &str, window_key: &str) -> Re
     }
 }
 
-fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<SourceView> {
+fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -> Vec<SourceView> {
     let discovered = |id: &str| report.discovered.get(id).copied().unwrap_or(0);
     let refreshed = |id: &str| report.refreshed.get(id).copied().unwrap_or(0);
     let errors = |id: &str| report.errors.get(id).copied().unwrap_or(0);
-    let scanned = |adapter: &str, found: &str, unit: &str| {
-        format!(
-            "发现 {} {found}，本次更新 {} {unit}。",
-            discovered(adapter),
-            refreshed(adapter)
+    // 中文按量词拼，英文按单复数取名词。
+    let scanned = |adapter: &str, found: &str, unit: &str, (one, other): (&str, &str)| {
+        let found_count = discovered(adapter);
+        let refreshed_count = refreshed(adapter);
+        let noun = if found_count == 1 { one } else { other };
+        i18n::tr_in!(
+            lang,
+            "发现 {found_count} {found}，本次更新 {refreshed_count} {unit}。",
+            "Found {found_count} {noun}, {refreshed_count} updated in this scan."
         )
     };
+    let partial_label = || i18n::tr_in!(lang, "数据不完整", "Incomplete data");
+    let exact_label = || i18n::tr_in!(lang, "精确解析", "Parsed exactly");
     // 读不了的存储形态（如 OpenCode 1.2+ 的 SQLite）也是覆盖缺口：
     // 此时的 0 是"读不到"而非"没用过"，必须标数据不完整。
-    let local = |adapter: &str, id: &str, label: &str, scanned: String, note: &str| {
+    let local = |adapter: &str, id: &str, label: String, scanned: String, note: String| {
         let diagnostics = report.diagnostics.get(adapter).cloned().unwrap_or_default();
         let errors = errors(adapter);
         let gaps = report
@@ -1424,147 +1433,275 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         let gaps = if gaps.is_empty() {
             String::new()
         } else {
-            format!("{}。", gaps.join("；"))
+            match lang {
+                Lang::Zh => format!("{}。", gaps.join("；")),
+                Lang::En => format!("{}. ", gaps.join("; ")),
+            }
         };
+        let coverage = coverage_detail(lang, &diagnostics, errors);
         SourceView {
             id: id.into(),
             kind: "local".into(),
-            label: label.into(),
-            detail: format!(
-                "{scanned}{}{gaps}{note}",
-                coverage_detail(&diagnostics, errors)
+            label,
+            detail: i18n::tr_in!(
+                lang,
+                "{scanned}{coverage}{gaps}{note}",
+                "{scanned} {coverage}{gaps}{note}"
             ),
+            scan_summary: Some(scanned),
             quality: if partial { "partial" } else { "exact" }.into(),
             quality_label: if partial {
-                "数据不完整"
+                partial_label()
             } else {
-                "精确解析"
-            }
-            .into(),
+                exact_label()
+            },
         }
     };
-    let official = |id: &str, label: &str, detail: &str| SourceView {
+    let official = |id: &str, label: String, detail: String| SourceView {
         id: id.into(),
         kind: "official".into(),
-        label: label.into(),
-        detail: detail.into(),
+        label,
+        detail,
+        scan_summary: None,
         quality: "official".into(),
-        quality_label: "官方".into(),
+        quality_label: i18n::tr_in!(lang, "官方", "Official"),
     };
     let mut views = vec![
         official(
             "codex-quota",
-            "ChatGPT / Codex 官方配额",
-            "采集主、次官方滚动窗口；桌面小组件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。",
+            i18n::tr_in!(lang, "ChatGPT / Codex 官方配额", "ChatGPT / Codex official quota"),
+            i18n::tr_in!(
+                lang,
+                "采集主、次官方滚动窗口；桌面小组件仅展示主短窗，完整视图同时展示两者。优先读取本机 ChatGPT / Codex app-server，失败时使用带时间标记的日志快照。",
+                "Collects the primary and secondary official rolling windows; the desktop widget shows only the short primary window, and the expanded view shows both. Reads the local ChatGPT / Codex app-server first and falls back to a timestamped log snapshot."
+            ),
         ),
         local(
             "codex",
             "codex-local",
-            "ChatGPT / Codex 本地 Token",
-            scanned("codex", "个近期会话", "个"),
-            "累计快照按正增量入账；总量包含未缓存输入、缓存读取与输出，子项不重复相加。",
+            i18n::tr_in!(lang, "ChatGPT / Codex 本地 Token", "ChatGPT / Codex local tokens"),
+            scanned(
+                "codex",
+                "个近期会话",
+                "个",
+                ("recent session", "recent sessions"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "累计快照按正增量入账；总量包含未缓存输入、缓存读取与输出，子项不重复相加。",
+                "Cumulative snapshots are counted by their positive increments; the total includes uncached input, cache reads and output, and the parts are not added twice."
+            ),
         ),
         local(
             "claude",
             "claude-local",
-            "Claude Code 本地 Token",
-            scanned("claude", "个近期会话", "个"),
-            "重复消息跨会话按消息标识合并；总量包含缓存读取，配额不推算。",
+            i18n::tr_in!(lang, "Claude Code 本地 Token", "Claude Code local tokens"),
+            scanned(
+                "claude",
+                "个近期会话",
+                "个",
+                ("recent session", "recent sessions"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "重复消息跨会话按消息标识合并；总量包含缓存读取，配额不推算。",
+                "Duplicate messages are merged across sessions by message ID; the total includes cache reads, and quota is never inferred."
+            ),
         ),
         local(
             "zcode",
             "zcode-local",
-            "GLM 本地 Token",
-            scanned("zcode", "个用量库", "个"),
-            "只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
+            i18n::tr_in!(lang, "GLM 本地 Token", "GLM local tokens"),
+            scanned(
+                "zcode",
+                "个用量库",
+                "个",
+                ("usage database", "usage databases"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "只读取 model_usage 统计表的逐请求计数，主会话与子代理均覆盖；不读取消息内容表。",
+                "Reads only the per-request counts in the model_usage table, covering both main sessions and subagents; the message content table is never read."
+            ),
         ),
         local(
             "opencode",
             "opencode-local",
-            "OpenCode 本地 Token",
-            scanned("opencode", "条近期消息", "条"),
-            "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
+            i18n::tr_in!(lang, "OpenCode 本地 Token", "OpenCode local tokens"),
+            scanned(
+                "opencode",
+                "条近期消息",
+                "条",
+                ("recent message", "recent messages"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
+                "Reads the message usage field and deduplicates by message ID; stays at 0 when OpenCode is not installed, with no estimate."
+            ),
         ),
         local(
             "kimi",
             "kimi-local",
-            "Kimi 本地 Token",
-            scanned("kimi", "个 wire.jsonl", "个"),
-            "只计单轮增量（usageScope=turn）与旧版 StatusUpdate（按 message_id 取分量最大值）；Kimi Work 桌面版内嵌同源内核，其会话目录一并扫描，项目归属取自各自的会话索引；未安装时保持为 0，不做推算。",
+            i18n::tr_in!(lang, "Kimi 本地 Token", "Kimi local tokens"),
+            scanned(
+                "kimi",
+                "个 wire.jsonl",
+                "个",
+                ("wire.jsonl file", "wire.jsonl files"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "只计单轮增量（usageScope=turn）与旧版 StatusUpdate（按 message_id 取分量最大值）；Kimi Work 桌面版内嵌同源内核，其会话目录一并扫描，项目归属取自各自的会话索引；未安装时保持为 0，不做推算。",
+                "Counts only per-turn increments (usageScope=turn) and legacy StatusUpdate records (the largest value per message_id); the Kimi Work desktop app embeds the same core, so its session directory is scanned too, with projects taken from each app's session index; stays at 0 when not installed, with no estimate."
+            ),
         ),
         official(
             "antigravity-quota",
-            "Antigravity 官方配额",
-            "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。",
+            i18n::tr_in!(lang, "Antigravity 官方配额", "Antigravity official quota"),
+            i18n::tr_in!(
+                lang,
+                "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。",
+                "While the IDE is running, the official quota windows are read through the private RPC of the local language server; when only the Antigravity CLI (agy) is running, the official statusLine hook provides the same official snapshot. When neither is available, the quota shows as unavailable and is never estimated."
+            ),
         ),
         local(
             "antigravity",
             "antigravity-live",
-            "Antigravity 用量",
-            scanned("antigravity", "个活跃会话", "个"),
-            "用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
+            i18n::tr_in!(lang, "Antigravity 用量", "Antigravity usage"),
+            scanned(
+                "antigravity",
+                "个活跃会话",
+                "个",
+                ("active session", "active sessions"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "用量来自本机 language server 的实时 RPC（IDE 未运行时为 0，不估算）；按 responseId 去重。尚未在装有 Antigravity 的机器上实机验收。",
+                "Usage comes from the live RPC of the local language server (0 while the IDE is not running, never estimated) and is deduplicated by responseId. Not yet verified on a machine with Antigravity installed."
+            ),
         ),
         official(
             "qoder-quota",
-            "Qoder 官方配额",
-            "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。",
+            i18n::tr_in!(lang, "Qoder 官方配额", "Qoder official quota"),
+            i18n::tr_in!(
+                lang,
+                "账户级 Credits 覆盖 Qoder、QoderWork 与 Qoder CLI；通过用户提供的官网 Cookie 读取，不读取或解密客户端登录凭据，也不把本地遥测的零 token 当作用量。",
+                "Account-level credits cover Qoder, QoderWork and Qoder CLI. They are read with the website cookie you provide; client sign-in credentials are never read or decrypted, and the zero tokens in local telemetry are not counted as usage."
+            ),
         ),
         official(
             "opencode-go-quota",
-            "OpenCode Go 官方配额",
-            "从本机凭据（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go key）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，2026-09-19 真机核验读数准确。",
+            i18n::tr_in!(lang, "OpenCode Go 官方配额", "OpenCode Go official quota"),
+            i18n::tr_in!(
+                lang,
+                "从本机凭据（OPENCODE_GO_API_KEY 环境变量、OpenCode auth.json 或 pi auth.json 的 opencode-go key）读取，一次实时 GET 官方接口，展示 5 小时/每周/每月滚动窗口；接口形状取自参考实现，2026-09-19 真机核验读数准确。",
+                "Uses local credentials (the OPENCODE_GO_API_KEY environment variable, or the opencode-go key in OpenCode auth.json or pi auth.json) for one live GET to the official endpoint, and shows the 5-hour, weekly and monthly rolling windows. The endpoint shape comes from a reference implementation; readings were verified on a real machine on 2026-09-19."
+            ),
         ),
         official(
             "deepseek-quota",
-            "DeepSeek 官方余额",
-            "官方 user/balance 接口，Bearer 鉴权；余额是金额不是百分比窗口（按币种分列，不参与低额度告警）；凭据依次尝试 DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 与 pi auth.json 的 deepseek key。",
+            i18n::tr_in!(lang, "DeepSeek 官方余额", "DeepSeek official balance"),
+            i18n::tr_in!(
+                lang,
+                "官方 user/balance 接口，Bearer 鉴权；余额是金额不是百分比窗口（按币种分列，不参与低额度告警）；凭据依次尝试 DEEPSEEK_API_KEY 环境变量、OpenCode auth.json 与 pi auth.json 的 deepseek key。",
+                "Official user/balance endpoint with Bearer authentication. The balance is an amount, not a percentage window (listed per currency and excluded from low-quota alerts). Credentials are tried in order: the DEEPSEEK_API_KEY environment variable, then the deepseek key in OpenCode auth.json and pi auth.json."
+            ),
         ),
         local(
             "grok",
             "grok-local",
-            "Grok Build 本地 Token",
-            scanned("grok", "个 updates.jsonl", "个"),
-            "只计 `_x.ai/session/update` 中带 usage 的单轮记录（按 prompt_id 去重取最后一次）；未安装 Grok Build 时保持为 0，不做推算。",
+            i18n::tr_in!(lang, "Grok Build 本地 Token", "Grok Build local tokens"),
+            scanned(
+                "grok",
+                "个 updates.jsonl",
+                "个",
+                ("updates.jsonl file", "updates.jsonl files"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "只计 `_x.ai/session/update` 中带 usage 的单轮记录（按 prompt_id 去重取最后一次）；未安装 Grok Build 时保持为 0，不做推算。",
+                "Counts only per-turn `_x.ai/session/update` records that carry usage (deduplicated by prompt_id, keeping the last); stays at 0 when Grok Build is not installed, with no estimate."
+            ),
         ),
         official(
             "grok-quota",
-            "Grok Build 官方配额",
-            "读取 Grok CLI 统一日志中的 billing credits 快照（creditUsagePercent + 周期结束时间）；质量为官方快照，非实时 HTTP 拉取。未运行过 grok 或日志无账单记录时显示不可用。",
+            i18n::tr_in!(lang, "Grok Build 官方配额", "Grok Build official quota"),
+            i18n::tr_in!(
+                lang,
+                "读取 Grok CLI 统一日志中的 billing credits 快照（creditUsagePercent + 周期结束时间）；质量为官方快照，非实时 HTTP 拉取。未运行过 grok 或日志无账单记录时显示不可用。",
+                "Reads the billing credits snapshot (creditUsagePercent and the cycle end time) from the Grok CLI unified log. It is an official snapshot, not a live HTTP fetch. Shows as unavailable if grok has never run or the log has no billing records."
+            ),
         ),
         local(
             "pi",
             "pi-local",
-            "Pi 本地 Token",
-            scanned("pi", "个会话文件", "个"),
-            "pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、OpenCode Go 记入 OpenCode、Kimi Code 订阅记入 Kimi、ChatGPT 订阅记入 Codex、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
+            i18n::tr_in!(lang, "Pi 本地 Token", "Pi local tokens"),
+            scanned("pi", "个会话文件", "个", ("session file", "session files")),
+            i18n::tr_in!(
+                lang,
+                "pi 是 harness，自身没有 coding plan：逐请求计数按 provider 响应标识去重，并按 provider 归属到对应计量卡片（GLM Coding Plan 记入 GLM、Qwen Token Plan 记入 Qwen、OpenCode Go 记入 OpenCode、Kimi Code 订阅记入 Kimi、ChatGPT 订阅记入 Codex、其余留在 Pi）；fork/clone 复制不重复入账，摘要生成与工具内嵌调用的用量一并计入，项目归属只取会话头里的工作目录。",
+                "pi is a harness with no coding plan of its own. Per-request counts are deduplicated by provider response ID and attributed by provider to the matching usage card (GLM Coding Plan to GLM, Qwen Token Plan to Qwen, OpenCode Go to OpenCode, Kimi Code subscriptions to Kimi, ChatGPT subscriptions to Codex, the rest stays in Pi). Fork and clone copies are not counted twice, usage from summary generation and tool-embedded calls is included, and the project comes only from the working directory in the session header."
+            ),
         ),
         local(
             "workbuddy",
             "workbuddy-local",
-            "WorkBuddy 本地 Token",
-            scanned("workbuddy", "个会话文件", "个"),
-            "读取 CodeBuddy Code 与 WorkBuddy 的会话转录，只计已完成的回复与工具调用，同一消息按标识取分量最大值；未安装时保持为 0，不做推算。",
+            i18n::tr_in!(lang, "WorkBuddy 本地 Token", "WorkBuddy local tokens"),
+            scanned(
+                "workbuddy",
+                "个会话文件",
+                "个",
+                ("session file", "session files"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "读取 CodeBuddy Code 与 WorkBuddy 的会话转录，只计已完成的回复与工具调用，同一消息按标识取分量最大值；未安装时保持为 0，不做推算。",
+                "Reads CodeBuddy Code and WorkBuddy session transcripts and counts only completed replies and tool calls, taking the largest value per message ID; stays at 0 when not installed, with no estimate."
+            ),
         ),
         local(
             "hermes",
             "hermes-local",
-            "Hermes 本地 Token",
-            scanned("hermes", "个用量库", "个"),
-            "只读取 state.db 的用量统计表，不读消息内容；走其他家套餐的用量按路由记到对应计量卡片，其余留在 Hermes。",
+            i18n::tr_in!(lang, "Hermes 本地 Token", "Hermes local tokens"),
+            scanned(
+                "hermes",
+                "个用量库",
+                "个",
+                ("usage database", "usage databases"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "只读取 state.db 的用量统计表，不读消息内容；走其他家套餐的用量按路由记到对应计量卡片，其余留在 Hermes。",
+                "Reads only the usage table in state.db, never message content; usage on other providers' plans is routed to the matching usage card, and the rest stays in Hermes."
+            ),
         ),
         local(
             "minimax",
             "minimax-local",
-            "MiniMax Code 本地 Token",
-            scanned("minimax", "个用量库", "个"),
-            "只读取 runtime-state.sqlite 的逐请求用量表与会话工作目录，不读消息内容；主会话、子任务与定时会话均计入。表结构取自公开参考实现，尚未用真实安装的数据核对。",
+            i18n::tr_in!(lang, "MiniMax Code 本地 Token", "MiniMax Code local tokens"),
+            scanned(
+                "minimax",
+                "个用量库",
+                "个",
+                ("usage database", "usage databases"),
+            ),
+            i18n::tr_in!(
+                lang,
+                "只读取 runtime-state.sqlite 的逐请求用量表与会话工作目录，不读消息内容；主会话、子任务与定时会话均计入。表结构取自公开参考实现，尚未用真实安装的数据核对。",
+                "Reads only the per-request usage table and session working directories in runtime-state.sqlite, never message content; main sessions, subtasks and scheduled sessions are all counted. The table layout comes from a public reference implementation and has not been checked against a real installation."
+            ),
         ),
         local(
             "dsh",
             "dsh-local",
-            "DeepSeek Harness 本地 Token",
-            scanned("dsh", "个会话", "个"),
-            "读取 ~/.dsh/sessions 下每个会话最新一代的日志，不读消息内容；回复、失败重试与压缩摘要都是真实调用，一并计入，fork 继承的父会话前缀不重复入账。走 coding plan 的用量按路由记到对应计量卡片（GLM、Kimi、Qwen、OpenCode Go、ChatGPT 订阅），DeepSeek 官方 API 与平台余额留在这张卡。格式按 DSH 源码核对，尚未用真实安装的数据核对。",
+            i18n::tr_in!(lang, "DeepSeek Harness 本地 Token", "DeepSeek Harness local tokens"),
+            scanned("dsh", "个会话", "个", ("session", "sessions")),
+            i18n::tr_in!(
+                lang,
+                "读取 ~/.dsh/sessions 下每个会话最新一代的日志，不读消息内容；回复、失败重试与压缩摘要都是真实调用，一并计入，fork 继承的父会话前缀不重复入账。走 coding plan 的用量按路由记到对应计量卡片（GLM、Kimi、Qwen、OpenCode Go、ChatGPT 订阅），DeepSeek 官方 API 与平台余额留在这张卡。格式按 DSH 源码核对，尚未用真实安装的数据核对。",
+                "Reads the latest-generation log of each session under ~/.dsh/sessions, never message content. Replies, failed retries and compaction summaries are real calls and are all counted; the parent-session prefix a fork inherits is not counted twice. Usage on a coding plan is routed to the matching usage card (GLM, Kimi, Qwen, OpenCode Go, ChatGPT subscription), and DeepSeek official API usage and platform balance stay on this card. The format was checked against the DSH source but not against a real installation."
+            ),
         ),
     ];
 
@@ -1574,17 +1711,27 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         .get("cursor")
         .is_some_and(|gaps| !gaps.is_empty());
     if discovered("cursor") > 0 || cursor_has_gaps {
-        views.push(local(
+        let days = discovered("cursor");
+        let refreshed_days = refreshed("cursor");
+        let day_noun = i18n::plural(days, "day", "days");
+        let mut cursor = local(
             "cursor",
             "cursor-local",
-            "Cursor Token（账号级）",
-            format!(
-                "近 {} 天按日读取，本次更新 {} 天。",
-                discovered("cursor"),
-                refreshed("cursor")
+            i18n::tr_in!(lang, "Cursor Token（账号级）", "Cursor tokens (account-level)"),
+            i18n::tr_in!(
+                lang,
+                "近 {days} 天按日读取，本次更新 {refreshed_days} 天。",
+                "Read day by day for the last {days} {day_noun}, {refreshed_days} updated in this scan."
             ),
-            "用量来自 cursor.com 仪表盘的逐次事件，含这个账号在所有设备上的用量，不参与多设备同步；已过去的日子只拉一次，今天和昨天每 15 分钟重拉。登录会话每次从 Cursor 的本机状态库现读，不落库。接口不带工作目录，用量不归入项目；价目表没有的模型计入未计价。",
-        ));
+            i18n::tr_in!(
+                lang,
+                "用量来自 cursor.com 仪表盘的逐次事件，含这个账号在所有设备上的用量，不参与多设备同步；已过去的日子只拉一次，今天和昨天每 15 分钟重拉。登录会话每次从 Cursor 的本机状态库现读，不落库。接口不带工作目录，用量不归入项目；价目表没有的模型计入未计价。",
+                "Usage comes from per-event records on the cursor.com dashboard and includes this account's usage on every device, so it is excluded from device sync. Past days are fetched once; today and yesterday are fetched again every 15 minutes. The sign-in session is read from Cursor's local state database each time and is never stored. The endpoint has no working directory, so usage is not attributed to projects; models missing from the price table count as unpriced."
+            ),
+        );
+        // 按日读取的说明不是"发现 … 本次更新 …"那句扫描摘要。
+        cursor.scan_summary = None;
+        views.push(cursor);
     }
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
@@ -1594,23 +1741,42 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
         views.push(SourceView {
             id: "device-sync".into(),
             kind: "sync".into(),
-            label: "多设备同步".into(),
+            label: i18n::tr_in!(lang, "多设备同步", "Device sync"),
             detail: match (&sync_status.last_error, device_count) {
-                (Some(error), _) => format!("上次同步未完全成功：{error}。合并数字可能滞后，本机统计不受影响。"),
-                (None, 0) => "已开启文件夹同步，暂无其他设备的导出文件。其他电脑指向同一文件夹后会自动合并。".into(),
-                (None, count) => format!(
-                    "已合并 {count} 台其他设备的 {remote_events} 条统计事件；导出只含事件标识、Agent、时间与 token 数，不含任何对话内容。"
+                (Some(error), _) => i18n::tr_in!(
+                    lang,
+                    "上次同步未完全成功：{error}。合并数字可能滞后，本机统计不受影响。",
+                    "The last sync did not fully succeed: {error}. Merged numbers may lag behind; local statistics are not affected."
                 ),
+                (None, 0) => i18n::tr_in!(
+                    lang,
+                    "已开启文件夹同步，暂无其他设备的导出文件。其他电脑指向同一文件夹后会自动合并。",
+                    "Folder sync is on, but no other device has exported to it yet. Another computer's data merges automatically once it points to the same folder."
+                ),
+                (None, count) => {
+                    let devices = i18n::plural(count, "device", "devices");
+                    let events = i18n::plural(remote_events, "usage event", "usage events");
+                    i18n::tr_in!(
+                        lang,
+                        "已合并 {count} 台其他设备的 {remote_events} 条统计事件；导出只含事件标识、Agent、时间与 token 数，不含任何对话内容。",
+                        "Merged {remote_events} {events} from {count} other {devices}. Exports contain only event IDs, agents, times and token counts, never conversation content."
+                    )
+                }
             },
+            scan_summary: None,
             quality: if failed { "partial" } else { "exact" }.into(),
-            quality_label: if failed { "数据不完整" } else { "精确解析" }.into(),
+            quality_label: if failed {
+                partial_label()
+            } else {
+                exact_label()
+            },
         });
     }
 
     views
 }
 
-fn coverage_detail(diagnostics: &AdapterDiagnostics, errors: usize) -> String {
+fn coverage_detail(lang: Lang, diagnostics: &AdapterDiagnostics, errors: usize) -> String {
     if diagnostics.partial_sources == 0 && errors == 0 {
         return String::new();
     }
@@ -1618,28 +1784,46 @@ fn coverage_detail(diagnostics: &AdapterDiagnostics, errors: usize) -> String {
     // 口径校验失败与"内容没读到"性质不同：前者说明读到的数字本身可能是错的，
     // 后者只是少算。两句分开写，不能混成一句"可能不完整"糊过去。
     let mismatched = (diagnostics.total_mismatches > 0).then(|| {
-        format!(
-            "⚠️ {} 条读数与来源自报的总量不一致，说明本版本对该来源的字段口径可能有误，显示的数字请勿采信，已记录待修正；",
-            diagnostics.total_mismatches
+        let mismatches = diagnostics.total_mismatches;
+        let readings = i18n::plural(mismatches, "reading disagrees", "readings disagree");
+        i18n::tr_in!(
+            lang,
+            "⚠️ {mismatches} 条读数与来源自报的总量不一致，说明本版本对该来源的字段口径可能有误，显示的数字请勿采信，已记录待修正；",
+            "⚠️ {mismatches} {readings} with the total the source reports, so this version may be reading this source's fields wrongly. Don't rely on the numbers shown; the issue has been recorded for a fix. "
         )
     });
     let skipped_lines =
         diagnostics.malformed_lines + diagnostics.unreadable_lines + diagnostics.rejected_events;
     let skipped = (diagnostics.partial_sources > 0 && skipped_lines > 0).then(|| {
-        format!(
-            "{} 个会话存在未计入的 JSONL 内容（格式异常 {} 行、文本读取失败 {} 行、身份冲突 {} 条）；",
-            diagnostics.partial_sources,
-            diagnostics.malformed_lines,
-            diagnostics.unreadable_lines,
-            diagnostics.rejected_events
+        let sessions = diagnostics.partial_sources;
+        let malformed = diagnostics.malformed_lines;
+        let unreadable = diagnostics.unreadable_lines;
+        let rejected = diagnostics.rejected_events;
+        let session_noun = i18n::plural(sessions, "session has", "sessions have");
+        let malformed_noun = i18n::plural(malformed, "line", "lines");
+        let unreadable_noun = i18n::plural(unreadable, "line", "lines");
+        let rejected_noun = i18n::plural(rejected, "identity conflict", "identity conflicts");
+        i18n::tr_in!(
+            lang,
+            "{sessions} 个会话存在未计入的 JSONL 内容（格式异常 {malformed} 行、文本读取失败 {unreadable} 行、身份冲突 {rejected} 条）；",
+            "{sessions} {session_noun} JSONL content that was not counted ({malformed} malformed {malformed_noun}, {unreadable} unreadable {unreadable_noun}, {rejected} {rejected_noun}). "
         )
     });
-    let failed = (errors > 0).then(|| format!("另有 {errors} 个会话未能完成更新；"));
-    format!(
-        "{}{}{}本周期总量仅覆盖成功解析的记录，可能不完整。",
-        mismatched.unwrap_or_default(),
-        skipped.unwrap_or_default(),
-        failed.unwrap_or_default()
+    let failed = (errors > 0).then(|| {
+        let sessions = i18n::plural(errors, "session", "sessions");
+        i18n::tr_in!(
+            lang,
+            "另有 {errors} 个会话未能完成更新；",
+            "{errors} more {sessions} could not be updated. "
+        )
+    });
+    let mismatched = mismatched.unwrap_or_default();
+    let skipped = skipped.unwrap_or_default();
+    let failed = failed.unwrap_or_default();
+    i18n::tr_in!(
+        lang,
+        "{mismatched}{skipped}{failed}本周期总量仅覆盖成功解析的记录，可能不完整。",
+        "{mismatched}{skipped}{failed}Totals for this period cover only the records that parsed successfully and may be incomplete. "
     )
 }
 
@@ -1668,24 +1852,25 @@ fn local_midnight(date: NaiveDate) -> Result<chrono::DateTime<Local>> {
         .context("local midnight is unavailable")
 }
 
-fn bucket_label(period: &str, start: NaiveDate, index: usize) -> String {
+fn bucket_label(lang: Lang, period: &str, start: NaiveDate, index: usize) -> String {
     if period == "today" {
         return format!("{index:02}:00");
     }
     let date = start + Duration::days(index as i64);
     if period == "week" {
         return match date.weekday() {
-            Weekday::Mon => "周一",
-            Weekday::Tue => "周二",
-            Weekday::Wed => "周三",
-            Weekday::Thu => "周四",
-            Weekday::Fri => "周五",
-            Weekday::Sat => "周六",
-            Weekday::Sun => "周日",
-        }
-        .into();
+            Weekday::Mon => i18n::tr_in!(lang, "周一", "Mon"),
+            Weekday::Tue => i18n::tr_in!(lang, "周二", "Tue"),
+            Weekday::Wed => i18n::tr_in!(lang, "周三", "Wed"),
+            Weekday::Thu => i18n::tr_in!(lang, "周四", "Thu"),
+            Weekday::Fri => i18n::tr_in!(lang, "周五", "Fri"),
+            Weekday::Sat => i18n::tr_in!(lang, "周六", "Sat"),
+            Weekday::Sun => i18n::tr_in!(lang, "周日", "Sun"),
+        };
     }
-    format!("{} 日", date.day())
+    let day = date.day();
+    let month = date.format("%b");
+    i18n::tr_in!(lang, "{day} 日", "{month} {day}")
 }
 
 #[cfg(test)]
@@ -2454,7 +2639,7 @@ mod tests {
             },
         );
 
-        let views = source_views(report, None);
+        let views = source_views(Lang::Zh, report, None);
         let codex = views
             .iter()
             .find(|source| source.id == "codex-local")
@@ -2478,7 +2663,7 @@ mod tests {
         let mut report = ScanReport::default();
         report.errors.insert("claude".into(), 1);
 
-        let views = source_views(report, None);
+        let views = source_views(Lang::Zh, report, None);
         let claude = views
             .iter()
             .find(|source| source.id == "claude-local")
@@ -2498,7 +2683,7 @@ mod tests {
             vec!["检测到 OpenCode 1.2+ 的 SQLite 存储（opencode.db），当前版本尚不支持读取，其中的会话未计入统计".into()],
         );
 
-        let views = source_views(report, None);
+        let views = source_views(Lang::Zh, report, None);
         let opencode = views
             .iter()
             .find(|source| source.id == "opencode-local")
@@ -2508,6 +2693,78 @@ mod tests {
         assert_eq!(opencode.quality_label, "数据不完整");
         assert!(opencode.detail.contains("SQLite"));
         assert!(opencode.detail.contains("尚不支持读取"));
+    }
+
+    #[test]
+    fn bucket_labels_follow_the_requested_language() {
+        // 2026-10-05 是周一。
+        let monday = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        assert_eq!(bucket_label(Lang::Zh, "week", monday, 0), "周一");
+        assert_eq!(bucket_label(Lang::En, "week", monday, 6), "Sun");
+        assert_eq!(bucket_label(Lang::Zh, "month", monday, 1), "6 日");
+        assert_eq!(bucket_label(Lang::En, "month", monday, 1), "Oct 6");
+        assert_eq!(bucket_label(Lang::En, "today", monday, 9), "09:00");
+    }
+
+    #[test]
+    fn scan_summary_is_the_leading_sentence_of_the_local_detail_in_either_language() {
+        let report = || {
+            let mut report = ScanReport::default();
+            report.discovered.insert("codex".into(), 3);
+            report.refreshed.insert("codex".into(), 1);
+            report.discovered.insert("cursor".into(), 7);
+            report.errors.insert("claude".into(), 1);
+            report
+        };
+        let find = |views: &[SourceView], id: &str| {
+            views.iter().find(|source| source.id == id).unwrap().clone()
+        };
+
+        let zh = source_views(Lang::Zh, report(), None);
+        let codex = find(&zh, "codex-local");
+        assert_eq!(
+            codex.scan_summary.as_deref(),
+            Some("发现 3 个近期会话，本次更新 1 个。")
+        );
+        assert!(codex
+            .detail
+            .starts_with("发现 3 个近期会话，本次更新 1 个。"));
+
+        let en = source_views(Lang::En, report(), None);
+        let codex = find(&en, "codex-local");
+        assert_eq!(
+            codex.scan_summary.as_deref(),
+            Some("Found 3 recent sessions, 1 updated in this scan.")
+        );
+        assert!(codex
+            .detail
+            .starts_with("Found 3 recent sessions, 1 updated in this scan. Cumulative"));
+        assert_eq!(codex.quality_label, "Parsed exactly");
+        let claude = find(&en, "claude-local");
+        assert_eq!(
+            claude.scan_summary.as_deref(),
+            Some("Found 0 recent sessions, 0 updated in this scan.")
+        );
+        assert_eq!(claude.quality_label, "Incomplete data");
+        assert!(claude
+            .detail
+            .contains("1 more session could not be updated."));
+        assert!(claude.detail.contains("may be incomplete."));
+
+        // 官方来源与按日读取的 Cursor 没有扫描摘要。
+        for views in [&zh, &en] {
+            assert!(find(views, "codex-quota").scan_summary.is_none());
+            assert!(find(views, "cursor-local").scan_summary.is_none());
+        }
+        assert_eq!(find(&en, "codex-quota").quality_label, "Official");
+
+        // 序列化给前端的字段名是 scanSummary。
+        let value = serde_json::to_value(find(&en, "codex-local")).unwrap();
+        assert_eq!(
+            value["scanSummary"],
+            "Found 3 recent sessions, 1 updated in this scan."
+        );
+        assert!(serde_json::to_value(find(&en, "codex-quota")).unwrap()["scanSummary"].is_null());
     }
 
     #[test]
@@ -2524,7 +2781,7 @@ mod tests {
             },
         );
 
-        let claude = source_views(report, None)
+        let claude = source_views(Lang::Zh, report, None)
             .into_iter()
             .find(|source| source.id == "claude-local")
             .unwrap();
@@ -3135,17 +3392,43 @@ mod tests {
         assert_eq!(quota_window_rank("gemini_5h").0, 0);
         assert_eq!(quota_window_rank("gemini_weekly").0, 1);
         assert_eq!(
-            quota_window_label("antigravity", "gemini_5h"),
+            quota_window_label(Lang::Zh, "antigravity", "gemini_5h"),
             "Gemini · 5h"
         );
         assert_eq!(
-            quota_window_label("antigravity", "gemini_weekly"),
+            quota_window_label(Lang::Zh, "antigravity", "gemini_weekly"),
             "Gemini · 每周"
         );
         assert_eq!(
-            quota_window_label("antigravity", "claude_weekly"),
+            quota_window_label(Lang::Zh, "antigravity", "claude_weekly"),
             "Claude · 每周"
         );
+    }
+
+    #[test]
+    fn quota_window_labels_follow_the_requested_language() {
+        assert_eq!(
+            quota_window_label(Lang::En, "antigravity", "gemini_weekly"),
+            "Gemini · Weekly"
+        );
+        assert_eq!(
+            quota_window_label(Lang::Zh, "claude", "seven_day"),
+            "每周 · 全模型"
+        );
+        assert_eq!(
+            quota_window_label(Lang::En, "claude", "seven_day"),
+            "Weekly · All"
+        );
+        assert_eq!(quota_window_label(Lang::En, "codex", "secondary"), "Weekly");
+        assert_eq!(
+            quota_window_label(Lang::En, "deepseek", "balance_cny"),
+            "Balance"
+        );
+        assert_eq!(
+            quota_window_label(Lang::En, "claude", "seven_day_opus"),
+            "Weekly · Opus"
+        );
+        assert_eq!(quota_window_label(Lang::En, "codex", "primary"), "Session");
     }
 
     #[test]

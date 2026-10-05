@@ -1,6 +1,8 @@
 /// 模型名的展示写法。只影响界面文字：入库、计价匹配、CSV 导出一律用日志里
 /// 记的原始 ID（`claude-fable-5-1`），改了就匹配不上价格表，模型会变成未计价。
 
+import { t } from "./i18n.js";
+
 /// Anthropic 的版本号用连字符（`claude-fable-5-1`），同一张列表里其他厂商都用
 /// 点号（`glm-5.3`、`gpt-5.6`、`kimi-k2.5`），并排看很跳。这里把 Claude 版本号
 /// 的连字符换成点号统一写法。
@@ -24,7 +26,7 @@ export function claudeVersionWithDots(model) {
 /// "synced-remote" 是同步事件（导出本就不含模型名，见 sync 架构约束），
 /// 不是某个叫这个名字的模型，必须说人话。
 export function modelDisplayName(model) {
-  if (model === "synced-remote") return "其他设备同步（无模型名）";
-  if (model === "unknown") return "未标注模型";
+  if (model === "synced-remote") return t("其他设备同步（无模型名）");
+  if (model === "unknown") return t("未标注模型");
   return claudeVersionWithDots(model);
 }

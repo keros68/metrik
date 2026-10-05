@@ -4,6 +4,7 @@ use crate::claude_hook::{
     is_moved_metrik_command, read_json_file, run_delegate, sweep_stale_files, write_atomically,
 };
 use crate::domain::{sane_resets_at_ms, QuotaSample};
+use crate::i18n::tr;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -134,7 +135,8 @@ fn quota_parts(payload: &QuotaFile) -> Vec<String> {
 }
 
 fn window_label(key: &str) -> String {
-    for (suffix, label) in [("_weekly", "每周"), ("_5h", "5h"), ("_7d", "7d")] {
+    let weekly = tr!("每周", "weekly");
+    for (suffix, label) in [("_weekly", weekly.as_str()), ("_5h", "5h"), ("_7d", "7d")] {
         if let Some(model) = key.strip_suffix(suffix) {
             return format!("{} {label}", capitalize(model));
         }
@@ -221,7 +223,12 @@ impl AntigravityHook {
             quota_path
         } else {
             std::env::current_dir()
-                .context("无法确定 Antigravity quota 文件的绝对路径")?
+                .with_context(|| {
+                    tr!(
+                        "无法确定 Antigravity quota 文件的绝对路径",
+                        "Couldn't determine the absolute path of the Antigravity quota file"
+                    )
+                })?
                 .join(quota_path)
         };
         Ok(StatusLineMetadata {
@@ -231,8 +238,14 @@ impl AntigravityHook {
     }
 
     fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?)
-            .context("无法写入 statusLine 元数据")
+        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?).with_context(
+            || {
+                tr!(
+                    "无法写入 statusLine 元数据",
+                    "Couldn't write the statusLine metadata"
+                )
+            },
+        )
     }
 
     /// 备份文件可能被清理工具删掉；元数据还在时从元数据回读 delegate，
@@ -248,7 +261,12 @@ impl AntigravityHook {
     /// 系统未生成短名时明确拒绝，绝不装一个永不执行的钩子。Unix 上 agy 经
     /// shell 执行，单引号包路径，与 Claude 钩子一致。
     fn hook_command(&self) -> Result<String> {
-        let executable = std::env::current_exe().context("无法确定 metrik 可执行文件的绝对路径")?;
+        let executable = std::env::current_exe().with_context(|| {
+            tr!(
+                "无法确定 metrik 可执行文件的绝对路径",
+                "Couldn't determine the absolute path of the metrik executable"
+            )
+        })?;
         #[cfg(windows)]
         {
             let path = executable.to_string_lossy();
@@ -257,9 +275,12 @@ impl AntigravityHook {
             }
             let short = windows_short_path(&executable)
                 .filter(|path| !path.contains(' '))
-                .context(
-                    "metrik 安装路径含空格且系统未生成 8.3 短名，无法为 Antigravity CLI 安装钩子",
-                )?;
+                .with_context(|| {
+                    tr!(
+                        "metrik 安装路径含空格且系统未生成 8.3 短名，无法为 Antigravity CLI 安装钩子",
+                        "The metrik install path contains spaces and the system has no 8.3 short name for it, so the hook can't be installed for Antigravity CLI"
+                    )
+                })?;
             Ok(format!("{short} {HOOK_FLAG}"))
         }
         #[cfg(not(windows))]
@@ -275,10 +296,20 @@ impl AntigravityHook {
         match std::fs::read_to_string(self.settings_path()) {
             Ok(raw) => {
                 let trimmed = raw.trim_start_matches('\u{feff}');
-                serde_json::from_str(trimmed).context("settings.json 不是有效 JSON")
+                serde_json::from_str(trimmed).with_context(|| {
+                    tr!(
+                        "settings.json 不是有效 JSON",
+                        "settings.json is not valid JSON"
+                    )
+                })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-            Err(error) => Err(error).context("无法读取 ~/.gemini/antigravity-cli/settings.json"),
+            Err(error) => Err(error).with_context(|| {
+                tr!(
+                    "无法读取 ~/.gemini/antigravity-cli/settings.json",
+                    "Couldn't read ~/.gemini/antigravity-cli/settings.json"
+                )
+            }),
         }
     }
 
@@ -286,8 +317,14 @@ impl AntigravityHook {
         std::fs::create_dir_all(&self.cli_dir)?;
         // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
         let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes())
-            .context("无法更新 ~/.gemini/antigravity-cli/settings.json")
+        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes()).with_context(
+            || {
+                tr!(
+                    "无法更新 ~/.gemini/antigravity-cli/settings.json",
+                    "Couldn't update ~/.gemini/antigravity-cli/settings.json"
+                )
+            },
+        )
     }
 
     fn status_line_is_ours(&self, settings: &Value) -> bool {
@@ -359,20 +396,29 @@ impl AntigravityHook {
             .cloned()
         {
             let Some(command) = foreign_command(&settings) else {
-                bail!(
-                    "Antigravity CLI 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。"
-                );
+                bail!(tr!(
+                    "Antigravity CLI 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。",
+                    "Antigravity CLI already has a statusLine that can't be chained (no command field). Not installed, to avoid overwriting it."
+                ));
             };
             std::fs::write(self.backup_path(), serde_json::to_string_pretty(&existing)?)
-                .context("无法备份原有 statusLine 设置")?;
+                .with_context(|| {
+                    tr!(
+                        "无法备份原有 statusLine 设置",
+                        "Couldn't back up the existing statusLine setting"
+                    )
+                })?;
             delegate = command;
         }
 
         self.write_metadata(&self.expected_metadata(delegate.clone())?)?;
 
-        let root = settings
-            .as_object_mut()
-            .context("settings.json 顶层不是对象")?;
+        let root = settings.as_object_mut().with_context(|| {
+            tr!(
+                "settings.json 顶层不是对象",
+                "The top level of settings.json is not an object"
+            )
+        })?;
         root.insert(
             "statusLine".into(),
             json!({ "type": "command", "command": self.hook_command()?, "enabled": true }),
@@ -407,9 +453,12 @@ impl AntigravityHook {
     pub fn uninstall(&self) -> Result<AntigravityHookStatus> {
         let mut settings = self.read_settings()?;
         if self.status_line_is_ours(&settings) {
-            let root = settings
-                .as_object_mut()
-                .context("settings.json 顶层不是对象")?;
+            let root = settings.as_object_mut().with_context(|| {
+                tr!(
+                    "settings.json 顶层不是对象",
+                    "The top level of settings.json is not an object"
+                )
+            })?;
             let restored = self.read_backup().or_else(|| {
                 let delegate = self.installed_delegate().filter(|d| !d.is_empty())?;
                 Some(json!({ "type": "command", "command": delegate, "enabled": true }))

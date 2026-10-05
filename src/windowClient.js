@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { platform as tauriPlatform } from "@tauri-apps/plugin-os";
 import { resolveGlassMode } from "./glassAppearance.js";
+import { t } from "./i18n.js";
 import { detectRuntimePlatform, isDesktop } from "./platformDetection";
 import {
   renderTrayQuotaBadge,
@@ -1837,7 +1838,7 @@ async function getAutostart() {
 
 async function setAutostart(enabled) {
   const api = await autostartApi();
-  if (!api) throw new Error("浏览器演示模式不能配置开机启动");
+  if (!api) throw new Error(t("浏览器演示模式不能配置开机启动"));
   if (enabled) await api.enable();
   else await api.disable();
   return api.isEnabled().catch(() => enabled);

@@ -512,6 +512,9 @@ pub struct SourceView {
     pub kind: String,
     pub label: String,
     pub detail: String,
+    /// 本地扫描的摘要句（"发现 … 本次更新 …"），`detail` 仍以它开头；
+    /// 没有这句的来源为 None。前端据此显示简要说明，不解析 `detail`。
+    pub scan_summary: Option<String>,
     pub quality: String,
     pub quality_label: String,
 }

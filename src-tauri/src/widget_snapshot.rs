@@ -75,7 +75,7 @@ struct WidgetAgent<'a> {
 #[serde(rename_all = "camelCase")]
 struct WidgetQuotaWindow<'a> {
     key: &'a str,
-    label: &'a str,
+    label: String,
     available: bool,
     remaining_percent: f64,
     resets_in_minutes: Option<f64>,
@@ -114,7 +114,12 @@ fn make_payload<'a>(
                         .filter(|window| !window.key.starts_with("balance"))
                         .map(|window| WidgetQuotaWindow {
                             key: &window.key,
-                            label: &window.label,
+                            // WidgetKit 扩展只有中文界面，窗口名也固定用中文。
+                            label: crate::engine::quota_window_label(
+                                crate::i18n::Lang::Zh,
+                                &quota.agent,
+                                &window.key,
+                            ),
                             available: window.view.available,
                             remaining_percent: window.view.remaining_percent,
                             resets_in_minutes: window.view.resets_in_minutes,

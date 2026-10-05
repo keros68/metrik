@@ -226,6 +226,74 @@ Where a source reports its own total, `TokenVector::disagrees_with_reported_tota
 - Tauri does not remove the platform webview cost: WebView2/WebKit/WebKitGTK dominates resident memory relative to the Rust process.
 - Child processes are a budgeted resource, because the refresh cadence multiplies any per-snapshot spawn. Production code starts them only through `child_process`, where every call site is a registered `Site` (a source-scan test rejects bypasses). After the first snapshot, steady-state snapshots must start none: each source throttles across snapshots (quota TTLs, the Antigravity endpoint cache), and CI enforces this with the ignored `steady_state_snapshots_start_no_child_processes` test. Windows discovery uses native process and TCP-table APIs rather than PowerShell or netstat, nothing is spawned while the session is ending, and the Codex probe runs in a kill-on-close job object so its descendants cannot outlive it.
 
+## Interface language
+
+The UI ships in Simplified Chinese (`zh`) and English (`en`). The setting is
+`auto` (default), `zh`, or `en`, stored in the `app_setting` row `ui_language`.
+`auto` resolves to `zh` when the primary subtag of the system locale is `zh` and
+to `en` otherwise, including `C`, `POSIX`, empty, and unreadable locales. On
+Linux the locale is the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG`;
+elsewhere it is the system UI language (`sys-locale`).
+
+The backend is the single authority (`src-tauri/src/i18n.rs`). Setup resolves
+the effective language from the ledger before the tray, the macOS menu bar, or
+any notification is built. Every window calls `ui_language` in `main.jsx`
+before its first render, so no window paints the other language first.
+`set_ui_language` persists a new setting, updates the tray and menu-bar item
+text in place, and emits `metrik://ui-language` with `{ setting, language }`;
+every window re-renders from the root without remounting. The browser preview
+has no backend: `?lang=zh|en` forces a language, otherwise a `metrik:language`
+localStorage override, otherwise `navigator.language`.
+
+### Rules for UI text
+
+Frontend (`src/i18n.js`):
+
+- The Chinese source text is the key. Wrap it in `t()`:
+  `<h2>{t("额度提醒")}</h2>`, `aria-label={t("界面语言")}`. In `zh`, `t()`
+  returns the key itself, so the Chinese UI is unchanged by construction.
+- Put the English text in `src/locales/en.js` under the exact Chinese key.
+  Interpolate with named placeholders, `t("{count} 张", { count })`; a plain
+  English value keeps the key's placeholder names. Use a function value,
+  `({ count }) => …`, when plural or word order differs. When one Chinese text
+  needs two English renderings, pass a `context` param and branch on it in a
+  function value: `t("关闭", { context: "toggle" })` is "Turn off", plain
+  `t("关闭")` is "Close".
+- Never build Chinese UI text with `${}` template literals or string
+  concatenation. Keep labels in module-level tables in Chinese and call
+  `t(option.label)` at render time, never at module load. Store the Chinese
+  source text in component state and translate at render, so a language switch
+  also updates messages already on screen. A `useMemo` that produces visible
+  text must list `useLanguage()` in its dependencies.
+- Format numbers and dates with `formatNumber`, `formatDateTime`, `formatDate`,
+  and `formatTime`, which follow the effective language (`zh-CN` / `en-US`);
+  do not hard-code a locale tag.
+- `src/i18n.test.js` lists the converted files. In them every string literal
+  containing CJK characters needs an English entry, and CJK JSX text, CJK JSX
+  attribute literals, and CJK inside `${}` template literals are rejected.
+  Add a file to `CONVERTED_FILES` once it is converted.
+- Exempt: comments, and literals marked with an `i18n-ignore` comment at the
+  end of the line or on the line above. Use the mark only for Chinese that is
+  not translated UI text, such as a language's own name or text matched against
+  data.
+
+Backend (`src-tauri/src/i18n.rs`):
+
+- Write user-visible text as both languages at the call site:
+  `i18n::tr!("显示 / 隐藏", "Show / hide")` returns a `String` in the current
+  language; `i18n::tr_in!(lang, …)` takes an explicit language for pure
+  functions and tests. Both strings are `format!` templates with inline
+  captured arguments, `i18n::tr!("剩余 {percent}%", "{percent}% left")`. The
+  Chinese string stays byte-identical to the text it replaces.
+- Text kept in a long-lived native object (a menu item) must be refreshed from
+  `set_ui_language`; text produced per call (notifications, command errors)
+  picks up the new language on its next call.
+- Not UI text, and never translated: log output (`eprintln!`), anything
+  persisted to SQLite or files, provider API fields and responses, and strings
+  matched against agent logs or another program's output.
+
+The macOS WidgetKit extension is not localized by this mechanism.
+
 ## Planned device sync
 
 Sync is deliberately outside the first release. The planned boundary is:

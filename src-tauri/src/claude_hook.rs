@@ -1,4 +1,5 @@
 use crate::domain::{sane_resets_at_ms, QuotaSample};
+use crate::i18n::tr;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -511,7 +512,12 @@ impl ClaudeHook {
             quota_path
         } else {
             std::env::current_dir()
-                .context("无法确定 Claude quota 文件的绝对路径")?
+                .with_context(|| {
+                    tr!(
+                        "无法确定 Claude quota 文件的绝对路径",
+                        "Couldn't determine the absolute path of the Claude quota file"
+                    )
+                })?
                 .join(quota_path)
         };
         Ok(StatusLineMetadata {
@@ -521,8 +527,14 @@ impl ClaudeHook {
     }
 
     fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?)
-            .context("无法写入 statusLine 元数据")
+        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?).with_context(
+            || {
+                tr!(
+                    "无法写入 statusLine 元数据",
+                    "Couldn't write the statusLine metadata"
+                )
+            },
+        )
     }
 
     /// 备份文件是用户可见的普通文件，会被清理 `.claude`、同步工具或杀软
@@ -558,7 +570,12 @@ impl ClaudeHook {
     /// 加零输出」，状态栏只表现为空白。Unix 上 Claude Code 经 `/bin/sh -c` 执行，
     /// 用单引号包住路径避免空格与 shell 展开。
     fn hook_command(&self) -> Result<String> {
-        let executable = std::env::current_exe().context("无法确定 metrik 可执行文件的绝对路径")?;
+        let executable = std::env::current_exe().with_context(|| {
+            tr!(
+                "无法确定 metrik 可执行文件的绝对路径",
+                "Couldn't determine the absolute path of the metrik executable"
+            )
+        })?;
         #[cfg(windows)]
         {
             Ok(format!("\"{}\" --statusline", executable.display()))
@@ -576,10 +593,20 @@ impl ClaudeHook {
         match std::fs::read_to_string(self.settings_path()) {
             Ok(raw) => {
                 let trimmed = raw.trim_start_matches('\u{feff}');
-                serde_json::from_str(trimmed).context("~/.claude/settings.json 不是有效 JSON")
+                serde_json::from_str(trimmed).with_context(|| {
+                    tr!(
+                        "~/.claude/settings.json 不是有效 JSON",
+                        "~/.claude/settings.json is not valid JSON"
+                    )
+                })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-            Err(error) => Err(error).context("无法读取 ~/.claude/settings.json"),
+            Err(error) => Err(error).with_context(|| {
+                tr!(
+                    "无法读取 ~/.claude/settings.json",
+                    "Couldn't read ~/.claude/settings.json"
+                )
+            }),
         }
     }
 
@@ -587,8 +614,14 @@ impl ClaudeHook {
         std::fs::create_dir_all(&self.claude_dir)?;
         // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
         let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes())
-            .context("无法更新 ~/.claude/settings.json")
+        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes()).with_context(
+            || {
+                tr!(
+                    "无法更新 ~/.claude/settings.json",
+                    "Couldn't update ~/.claude/settings.json"
+                )
+            },
+        )
     }
 
     fn status_line_is_ours(&self, settings: &Value) -> bool {
@@ -664,20 +697,29 @@ impl ClaudeHook {
             .cloned()
         {
             let Some(command) = foreign_command(&settings) else {
-                bail!(
-                    "Claude Code 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。"
-                );
+                bail!(tr!(
+                    "Claude Code 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。",
+                    "Claude Code already has a statusLine that can't be chained (no command field). Not installed, to avoid overwriting it."
+                ));
             };
             std::fs::write(self.backup_path(), serde_json::to_string_pretty(&existing)?)
-                .context("无法备份原有 statusLine 设置")?;
+                .with_context(|| {
+                    tr!(
+                        "无法备份原有 statusLine 设置",
+                        "Couldn't back up the existing statusLine setting"
+                    )
+                })?;
             delegate = command;
         }
 
         self.write_metadata(&self.expected_metadata(delegate.clone())?)?;
 
-        let root = settings
-            .as_object_mut()
-            .context("settings.json 顶层不是对象")?;
+        let root = settings.as_object_mut().with_context(|| {
+            tr!(
+                "settings.json 顶层不是对象",
+                "The top level of settings.json is not an object"
+            )
+        })?;
         root.insert(
             "statusLine".into(),
             json!({ "type": "command", "command": self.hook_command()?, "padding": 0 }),
@@ -725,9 +767,12 @@ impl ClaudeHook {
     pub fn uninstall(&self) -> Result<ClaudeHookStatus> {
         let mut settings = self.read_settings()?;
         if self.status_line_is_ours(&settings) {
-            let root = settings
-                .as_object_mut()
-                .context("settings.json 顶层不是对象")?;
+            let root = settings.as_object_mut().with_context(|| {
+                tr!(
+                    "settings.json 顶层不是对象",
+                    "The top level of settings.json is not an object"
+                )
+            })?;
             // 串联安装的：把用户原有的 statusLine 原样恢复。
             // 备份被删时退而求其次，用脚本里的原命令重建——宁可丢 padding
             // 之类的次要字段，也不能把用户的 statusLine 整个删掉。

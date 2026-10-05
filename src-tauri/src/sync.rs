@@ -146,13 +146,21 @@ pub fn configure(connection: &mut Connection, directory: Option<String>) -> Resu
         Some(raw) => {
             let dir = PathBuf::from(raw.trim());
             if !dir.is_absolute() {
-                bail!("同步目录必须是绝对路径");
+                bail!(crate::i18n::tr!(
+                    "同步目录必须是绝对路径",
+                    "The sync folder must be an absolute path"
+                ));
             }
             if !dir.is_dir() {
-                bail!("同步目录不存在或不是文件夹");
+                bail!(crate::i18n::tr!(
+                    "同步目录不存在或不是文件夹",
+                    "The sync folder does not exist or is not a folder"
+                ));
             }
             let probe = dir.join(format!(".metrik-probe-{}", std::process::id()));
-            std::fs::write(&probe, b"metrik").context("同步目录不可写入")?;
+            std::fs::write(&probe, b"metrik").with_context(|| {
+                crate::i18n::tr!("同步目录不可写入", "The sync folder is not writable")
+            })?;
             let _ = std::fs::remove_file(&probe);
             set_setting(connection, SETTING_SYNC_DIR, &dir.to_string_lossy())?;
             delete_setting(connection, SETTING_LAST_EXPORT_MS)?;
@@ -186,10 +194,13 @@ pub fn configure(connection: &mut Connection, directory: Option<String>) -> Resu
 pub fn remove_device(connection: &mut Connection, device_id: &str) -> Result<SyncView> {
     let (own_device_id, _) = device_identity(connection)?;
     if device_id == own_device_id {
-        bail!("无法删除本机设备");
+        bail!(crate::i18n::tr!(
+            "无法删除本机设备",
+            "This device cannot be removed"
+        ));
     }
     if !is_valid_device_id(device_id) {
-        bail!("设备标识无效");
+        bail!(crate::i18n::tr!("设备标识无效", "Invalid device ID"));
     }
 
     if let Some(dir) = sync_directory(connection)? {
@@ -212,7 +223,8 @@ pub fn sync_view(connection: &Connection) -> Result<SyncView> {
     let directory = sync_directory(connection)?;
     let last_export_ms = get_setting(connection, SETTING_LAST_EXPORT_MS)?
         .and_then(|value| value.parse::<i64>().ok());
-    let last_error = get_setting(connection, SETTING_LAST_ERROR)?;
+    let last_error = get_setting(connection, SETTING_LAST_ERROR)?
+        .map(|stored| render_last_error(crate::i18n::current(), &stored));
 
     let mut statement = connection.prepare(
         "SELECT d.device_id, d.label, d.exported_at_ms, d.last_import_ms,
@@ -261,17 +273,72 @@ pub fn run_sync(connection: &mut Connection, now_ms: i64) {
 
     let mut failures = Vec::new();
     if let Err(error) = export_local_events(connection, &enabled, now_ms) {
-        failures.push(format!("导出失败：{error:#}"));
+        failures.push(SyncFailure::Export {
+            detail: format!("{error:#}"),
+        });
     }
-    if let Err(error) = import_remote_files(connection, &enabled, now_ms) {
-        failures.push(format!("导入失败：{error:#}"));
+    match import_remote_files(connection, &enabled, now_ms) {
+        Ok(0) => {}
+        Ok(count) => failures.push(SyncFailure::UnreadableExports { count }),
+        Err(error) => failures.push(SyncFailure::Import {
+            detail: format!("{error:#}"),
+        }),
     }
 
     let _ = set_setting(connection, SETTING_LAST_EXPORT_MS, &now_ms.to_string());
     if failures.is_empty() {
         let _ = delete_setting(connection, SETTING_LAST_ERROR);
-    } else {
-        let _ = set_setting(connection, SETTING_LAST_ERROR, &failures.join("；"));
+    } else if let Ok(encoded) = serde_json::to_string(&failures) {
+        let _ = set_setting(connection, SETTING_LAST_ERROR, &encoded);
+    }
+}
+
+/// `sync.last_error` 存的是与语言无关的失败记录（JSON 数组），界面文字在读取
+/// 时按当前语言生成。`detail` 是系统或库给出的原始错误，原样保留。
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SyncFailure {
+    Export { detail: String },
+    Import { detail: String },
+    UnreadableExports { count: usize },
+}
+
+impl SyncFailure {
+    fn text(&self, lang: crate::i18n::Lang) -> String {
+        match self {
+            SyncFailure::Export { detail } => {
+                crate::i18n::tr_in!(lang, "导出失败：{detail}", "Export failed: {detail}")
+            }
+            SyncFailure::Import { detail } => {
+                crate::i18n::tr_in!(lang, "导入失败：{detail}", "Import failed: {detail}")
+            }
+            SyncFailure::UnreadableExports { count } => {
+                let files = crate::i18n::plural(*count, "export file", "export files");
+                crate::i18n::tr_in!(
+                    lang,
+                    "导入失败：{count} 个设备导出文件未能读取或解析",
+                    "Import failed: {count} device {files} could not be read or parsed"
+                )
+            }
+        }
+    }
+}
+
+/// 旧版本直接存中文句子；解析不成失败记录的值按原文显示。
+fn render_last_error(lang: crate::i18n::Lang, stored: &str) -> String {
+    match serde_json::from_str::<Vec<SyncFailure>>(stored) {
+        Ok(failures) => {
+            let separator = match lang {
+                crate::i18n::Lang::Zh => "；",
+                crate::i18n::Lang::En => "; ",
+            };
+            failures
+                .iter()
+                .map(|failure| failure.text(lang))
+                .collect::<Vec<_>>()
+                .join(separator)
+        }
+        Err(_) => stored.to_owned(),
     }
 }
 
@@ -316,7 +383,8 @@ fn export_local_events(connection: &Connection, dir: &Path, now_ms: i64) -> Resu
     installed.with_context(|| format!("failed to install sync export {}", target.display()))
 }
 
-fn import_remote_files(connection: &mut Connection, dir: &Path, now_ms: i64) -> Result<()> {
+/// 返回未能读取或解析的设备导出文件数；目录本身读不了才是错误。
+fn import_remote_files(connection: &mut Connection, dir: &Path, now_ms: i64) -> Result<usize> {
     let (own_device_id, _) = device_identity(connection)?;
     let mut failures = 0_usize;
     let entries = std::fs::read_dir(dir)
@@ -344,10 +412,7 @@ fn import_remote_files(connection: &mut Connection, dir: &Path, now_ms: i64) -> 
         }
     }
 
-    if failures > 0 {
-        bail!("{failures} 个设备导出文件未能读取或解析");
-    }
-    Ok(())
+    Ok(failures)
 }
 
 fn import_one_file(
@@ -667,6 +732,20 @@ mod tests {
 
         let view = sync_view(&local).unwrap();
         assert!(view.last_error.is_some());
+        // 存的是失败记录而不是句子，换语言后读到的是新语言的文字。
+        let stored = get_setting(&local, SETTING_LAST_ERROR).unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<SyncFailure>>(&stored).unwrap(),
+            vec![SyncFailure::UnreadableExports { count: 1 }]
+        );
+        assert_eq!(
+            render_last_error(crate::i18n::Lang::Zh, &stored),
+            "导入失败：1 个设备导出文件未能读取或解析"
+        );
+        assert_eq!(
+            render_last_error(crate::i18n::Lang::En, &stored),
+            "Import failed: 1 device export file could not be read or parsed"
+        );
         let imported: i64 = local
             .query_row(
                 "SELECT COUNT(*) FROM remote_usage_event WHERE device_id = 'good'",
@@ -784,6 +863,37 @@ mod tests {
             .unwrap();
         assert_eq!(remote, 0);
         assert!(!export_path.exists());
+    }
+
+    #[test]
+    fn stored_sync_failures_render_in_the_requested_language() {
+        use crate::i18n::Lang;
+        let stored = serde_json::to_string(&vec![
+            SyncFailure::Export {
+                detail: "failed to stage sync export /x: denied".into(),
+            },
+            SyncFailure::UnreadableExports { count: 2 },
+        ])
+        .unwrap();
+        assert_eq!(
+            render_last_error(Lang::Zh, &stored),
+            "导出失败：failed to stage sync export /x: denied；导入失败：2 个设备导出文件未能读取或解析"
+        );
+        assert_eq!(
+            render_last_error(Lang::En, &stored),
+            "Export failed: failed to stage sync export /x: denied; Import failed: 2 device export files could not be read or parsed"
+        );
+        let import = serde_json::to_string(&vec![SyncFailure::Import {
+            detail: "failed to read sync directory /y".into(),
+        }])
+        .unwrap();
+        assert_eq!(
+            render_last_error(Lang::En, &import),
+            "Import failed: failed to read sync directory /y"
+        );
+        // 旧版本存下的中文句子原样显示。
+        let legacy = "导出失败：磁盘已满；导入失败：1 个设备导出文件未能读取或解析";
+        assert_eq!(render_last_error(Lang::En, legacy), legacy);
     }
 
     #[test]

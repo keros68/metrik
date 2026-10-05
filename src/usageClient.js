@@ -1,14 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "./i18n.js";
 import { isDesktop } from "./platformDetection.js";
 
+// 演示数据扮演后端：文字在生成时按当前语言给出，与后端返回的一样已是当前语言。
 const PERIOD_SCALE = {
   today: { factor: 1, points: 24, label: (index) => `${String(index).padStart(2, "0")}:00` },
   week: {
     factor: 5.8,
     points: 7,
-    label: (index) => ["周一", "周二", "周三", "周四", "周五", "周六", "今日"][index],
+    label: (index) => t(["周一", "周二", "周三", "周四", "周五", "周六", "今日"][index]),
   },
-  month: { factor: 23.4, points: 30, label: (index) => `${index + 1} 日` },
+  month: { factor: 23.4, points: 30, label: (index) => t("{day} 日", { day: index + 1 }) },
 };
 
 function emptySeries(period) {
@@ -68,7 +70,7 @@ function demoQuotaView(remainingPercent, resetsInMinutes, overrides = {}) {
     ageMinutes: 0,
     stale: false,
     resetExpired: false,
-    sourceLabel: "演示配额",
+    sourceLabel: t("演示配额"),
     quality: "demo",
     ...overrides,
   };
@@ -116,7 +118,7 @@ function demoSnapshot(period = "today") {
         agent: "codex",
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(72, 198) },
-          { key: "seven_day", label: "每周", view: demoQuotaView(86, 8_940) },
+          { key: "seven_day", label: t("每周"), view: demoQuotaView(86, 8_940) },
         ],
       },
       {
@@ -124,22 +126,22 @@ function demoSnapshot(period = "today") {
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(94, 102) },
           // 故意做一扇陈旧窗口，让浏览器预览能走到 stale 标注路径。
-          { key: "seven_day", label: "每周 · 全模型", view: demoQuotaView(67, 6_180, { ageMinutes: 23, stale: true }) },
+          { key: "seven_day", label: t("每周 · 全模型"), view: demoQuotaView(67, 6_180, { ageMinutes: 23, stale: true }) },
         ],
       },
       {
         agent: "zcode",
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(58, 241) },
-          { key: "seven_day", label: "每周", view: demoQuotaView(81, 5_760) },
+          { key: "seven_day", label: t("每周"), view: demoQuotaView(81, 5_760) },
         ],
       },
       {
         agent: "kimi",
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(39, 92) },
-          { key: "seven_day", label: "每周", view: demoQuotaView(88, 5_490) },
-          { key: "monthly_cycle", label: "月度周期", view: demoQuotaView(78, 33_120) },
+          { key: "seven_day", label: t("每周"), view: demoQuotaView(88, 5_490) },
+          { key: "monthly_cycle", label: t("月度周期"), view: demoQuotaView(78, 33_120) },
         ],
       },
       // OpenCode Go 套餐提供官方配额：Session / 每周 / 月度周期三个百分比窗口。
@@ -147,8 +149,8 @@ function demoSnapshot(period = "today") {
         agent: "opencode",
         windows: [
           { key: "five_hour", label: "Session", view: demoQuotaView(73, 210) },
-          { key: "seven_day", label: "每周", view: demoQuotaView(81, 6_300) },
-          { key: "monthly_cycle", label: "月度周期", view: demoQuotaView(88, 30_240) },
+          { key: "seven_day", label: t("每周"), view: demoQuotaView(81, 6_300) },
+          { key: "monthly_cycle", label: t("月度周期"), view: demoQuotaView(88, 30_240) },
         ],
       },
       {
@@ -163,16 +165,16 @@ function demoSnapshot(period = "today") {
         // DeepSeek 配额-only：余额窗口的 remainingPercent 装的是金额（演示 ¥68.50），
         // 不是百分比，resetsInMinutes 恒为 null（余额不重置）。
         agent: "deepseek",
-        windows: [{ key: "balance_cny", label: "余额", view: demoQuotaView(68.5, null) }],
+        windows: [{ key: "balance_cny", label: t("余额"), view: demoQuotaView(68.5, null) }],
       },
       {
         agent: "grok",
-        windows: [{ key: "seven_day", label: "每周", view: demoQuotaView(85, 1_440) }],
+        windows: [{ key: "seven_day", label: t("每周"), view: demoQuotaView(85, 1_440) }],
       },
       // Cursor 套餐余量：按账单周期重置，开启 Cursor 用量来源后才有。
       {
         agent: "cursor",
-        windows: [{ key: "monthly_cycle", label: "月度周期", view: demoQuotaView(81, 21_600) }],
+        windows: [{ key: "monthly_cycle", label: t("月度周期"), view: demoQuotaView(81, 21_600) }],
       },
     ],
     agents: [
@@ -220,20 +222,20 @@ function demoSnapshot(period = "today") {
       { model: "deepseek-v4-flash", agent: "hermes", tokens: hermesTokens, share: (hermesTokens / totalTokens) * 100 },
     ],
     sources: [
-      { id: "codex-quota", kind: "official", label: "ChatGPT / Codex 官方配额", detail: "通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。", quality: "official", qualityLabel: "官方" },
-      { id: "codex-local", kind: "local", label: "ChatGPT / Codex 本地 Token", detail: "由 Codex Agent 会话日志中的累计快照计算正增量，并排除重复记录。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "claude-local", kind: "local", label: "Claude Code 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "zcode-local", kind: "local", label: "GLM 本地 Token", detail: "读取 model_usage 统计表的逐请求计数；不读取消息内容。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "opencode-local", kind: "local", label: "OpenCode 本地 Token", detail: "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "kimi-local", kind: "local", label: "Kimi 本地 Token", detail: "只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "antigravity-live", kind: "local", label: "Antigravity 用量", detail: "来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "workbuddy-local", kind: "local", label: "WorkBuddy 本地 Token", detail: "读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "qoder-quota", kind: "official", label: "Qoder 官方配额", detail: "覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。", quality: "official", qualityLabel: "官方" },
-      { id: "kimi-quota", kind: "official", label: "Kimi 官方配额", detail: "合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。", quality: "official", qualityLabel: "官方" },
-      { id: "grok-local", kind: "local", label: "Grok Build 本地 Token", detail: "读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。", quality: "exact", qualityLabel: "精确解析" },
-      { id: "grok-quota", kind: "official", label: "Grok Build 官方配额", detail: "读取 CLI 统一日志中的 credits 快照。", quality: "official", qualityLabel: "官方" },
-      { id: "deepseek-quota", kind: "official", label: "DeepSeek 官方余额", detail: "读取官方 API 账户余额；余额是金额不是百分比窗口，显示为货币数值且不随周期重置。", quality: "official", qualityLabel: "官方" },
-      { id: "opencode-go-quota", kind: "official", label: "OpenCode Go 官方配额", detail: "凭据取自 auth.json 的 opencode-go key 或环境变量；显示 Session/每周/月度周期窗口。", quality: "official", qualityLabel: "官方" },
+      { id: "codex-quota", kind: "official", label: t("ChatGPT / Codex 官方配额"), detail: t("通过本机 ChatGPT / Codex 服务读取滚动窗口；不接触登录凭据。"), quality: "official", qualityLabel: t("官方") },
+      { id: "codex-local", kind: "local", label: t("ChatGPT / Codex 本地 Token"), detail: t("由 Codex Agent 会话日志中的累计快照计算正增量，并排除重复记录。"), scanSummary: t("发现 {found} 个会话文件，本次更新 {updated} 个。", { found: 412, updated: 3 }), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "claude-local", kind: "local", label: t("Claude Code 本地 Token"), detail: t("读取消息 usage 字段并以消息标识去重；配额无可靠来源时不推算。"), scanSummary: t("发现 {found} 个会话文件，本次更新 {updated} 个。", { found: 186, updated: 1 }), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "zcode-local", kind: "local", label: t("GLM 本地 Token"), detail: t("读取 model_usage 统计表的逐请求计数；不读取消息内容。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "opencode-local", kind: "local", label: t("OpenCode 本地 Token"), detail: t("读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "kimi-local", kind: "local", label: t("Kimi 本地 Token"), detail: t("只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "antigravity-live", kind: "local", label: t("Antigravity 用量"), detail: t("来自本机 language server 实时 RPC；IDE 未运行时为 0，不估算。尚未实机验收。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "workbuddy-local", kind: "local", label: t("WorkBuddy 本地 Token"), detail: t("读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "qoder-quota", kind: "official", label: t("Qoder 官方配额"), detail: t("覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。"), quality: "official", qualityLabel: t("官方") },
+      { id: "kimi-quota", kind: "official", label: t("Kimi 官方配额"), detail: t("合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。"), quality: "official", qualityLabel: t("官方") },
+      { id: "grok-local", kind: "local", label: t("Grok Build 本地 Token"), detail: t("读取 sessions/**/updates.jsonl 中单轮 usage；按 prompt_id 去重。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "grok-quota", kind: "official", label: t("Grok Build 官方配额"), detail: t("读取 CLI 统一日志中的 credits 快照。"), quality: "official", qualityLabel: t("官方") },
+      { id: "deepseek-quota", kind: "official", label: t("DeepSeek 官方余额"), detail: t("读取官方 API 账户余额；余额是金额不是百分比窗口，显示为货币数值且不随周期重置。"), quality: "official", qualityLabel: t("官方") },
+      { id: "opencode-go-quota", kind: "official", label: t("OpenCode Go 官方配额"), detail: t("凭据取自 auth.json 的 opencode-go key 或环境变量；显示 Session/每周/月度周期窗口。"), quality: "official", qualityLabel: t("官方") },
     ],
     indexing: { pending: 0 },
   };
@@ -262,10 +264,10 @@ function pendingSnapshot(period = "today") {
       {
         id: "pending",
         kind: "local",
-        label: "正在建立本地索引",
-        detail: "首次升级或大型日志库可能需要几分钟；窗口操作不会被阻塞，也不会显示演示数字。",
+        label: t("正在建立本地索引"),
+        detail: t("首次升级或大型日志库可能需要几分钟；窗口操作不会被阻塞，也不会显示演示数字。"),
         quality: "unavailable",
-        qualityLabel: "读取中",
+        qualityLabel: t("读取中"),
       },
     ],
     indexing: { pending: 0 },
@@ -295,10 +297,10 @@ function unavailableSnapshot(period = "today") {
       {
         id: "load-error",
         kind: "local",
-        label: "本地统计暂不可用",
-        detail: "Metrik 不以演示数据替代失败结果。稍后重试；原始 Agent 日志不会因此被修改。",
+        label: t("本地统计暂不可用"),
+        detail: t("Metrik 不以演示数据替代失败结果。稍后重试；原始 Agent 日志不会因此被修改。"),
         quality: "unavailable",
-        qualityLabel: "未载入",
+        qualityLabel: t("未载入"),
       },
     ],
     indexing: { pending: 0 },
@@ -622,7 +624,7 @@ async function getSyncSettings() {
       enabled: false,
       directory: null,
       deviceId: "demo-device",
-      deviceLabel: "演示设备",
+      deviceLabel: t("演示设备"),
       lastExportMs: null,
       lastError: null,
       devices: [],
@@ -633,14 +635,14 @@ async function getSyncSettings() {
 
 async function configureSync(directory) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置同步");
+    throw new Error(t("浏览器演示模式不能配置同步"));
   }
   return invoke("configure_sync", { directory });
 }
 
 async function removeSyncDevice(deviceId) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能删除设备");
+    throw new Error(t("浏览器演示模式不能删除设备"));
   }
   return invoke("remove_sync_device", { deviceId });
 }
@@ -662,7 +664,7 @@ async function getClaudeHookStatus() {
 
 async function setClaudeHook(enabled) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置钩子");
+    throw new Error(t("浏览器演示模式不能配置钩子"));
   }
   return invoke("set_claude_hook", { enabled });
 }
@@ -684,7 +686,7 @@ async function getAntigravityHookStatus() {
 
 async function setAntigravityHook(enabled) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置钩子");
+    throw new Error(t("浏览器演示模式不能配置钩子"));
   }
   return invoke("set_antigravity_hook", { enabled });
 }
@@ -698,7 +700,7 @@ async function getQoderCookieStatus() {
 
 async function configureQoderCookie(cookie) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置 Cookie");
+    throw new Error(t("浏览器演示模式不能配置 Cookie"));
   }
   return invoke("configure_qoder_cookie", { cookie });
 }
@@ -718,7 +720,7 @@ async function getClaudeOauthStatus() {
 
 async function setClaudeOauth(enabled) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置官方配额来源");
+    throw new Error(t("浏览器演示模式不能配置官方配额来源"));
   }
   return invoke("set_claude_oauth", { enabled });
 }
@@ -732,7 +734,7 @@ async function getCursorUsageStatus() {
 
 async function setCursorUsage(enabled) {
   if (!isDesktop()) {
-    throw new Error("浏览器演示模式不能配置 Cursor 用量来源");
+    throw new Error(t("浏览器演示模式不能配置 Cursor 用量来源"));
   }
   return invoke("set_cursor_usage", { enabled });
 }

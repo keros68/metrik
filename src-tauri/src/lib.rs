@@ -10,6 +10,7 @@ mod detect;
 mod domain;
 mod engine;
 mod hermes_providers;
+mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;
 mod pi_providers;
@@ -437,7 +438,7 @@ async fn usage_snapshot(
                     use tauri_plugin_notification::NotificationExt;
                     app.notification()
                         .builder()
-                        .title("Metrik · 额度提醒")
+                        .title(i18n::tr!("Metrik · 额度提醒", "Metrik · Quota alert"))
                         .body(body)
                         .show()?;
                     Ok(())
@@ -542,8 +543,12 @@ async fn codex_reset_credits(
         let _guard = gate
             .lock()
             .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        app_server::read_reset_credits(std::time::Duration::from_secs(15))
-            .map_err(|_| "Codex 重置券查询失败，请确认 Codex 已登录后重试。".to_owned())
+        app_server::read_reset_credits(std::time::Duration::from_secs(15)).map_err(|_| {
+            i18n::tr!(
+                "Codex 重置券查询失败，请确认 Codex 已登录后重试。",
+                "Couldn't check Codex reset credits. Make sure Codex is signed in, then try again."
+            )
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -581,7 +586,10 @@ async fn set_macos_agent_selection(
     {
         let agents = widget_snapshot::normalize_agent_filter(&agents);
         if agents.is_empty() {
-            return Err("macOS 菜单栏至少保留一个 Agent".into());
+            return Err(i18n::tr!(
+                "macOS 菜单栏至少保留一个 Agent",
+                "Keep at least one agent in the macOS menu bar"
+            ));
         }
         let database_path = state.database_path.clone();
         let scan_gate = Arc::clone(&state.scan_gate);
@@ -617,7 +625,10 @@ async fn set_macos_agent_selection(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (agents, state);
-        Err("macOS Agent 选择仅用于 macOS".into())
+        Err(i18n::tr!(
+            "macOS Agent 选择仅用于 macOS",
+            "Agent selection is available on macOS only"
+        ))
     }
 }
 
@@ -647,7 +658,10 @@ async fn get_macos_agent_selection(state: State<'_, AppState>) -> Result<Vec<Str
     #[cfg(not(target_os = "macos"))]
     {
         let _ = state;
-        Err("macOS Agent 选择仅用于 macOS".into())
+        Err(i18n::tr!(
+            "macOS Agent 选择仅用于 macOS",
+            "Agent selection is available on macOS only"
+        ))
     }
 }
 
@@ -743,7 +757,7 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
         let safe_name = format!("{}.csv", safe_name.trim_end_matches(".csv"));
         let directory = dirs::download_dir()
             .or_else(dirs::home_dir)
-            .ok_or_else(|| "无法定位下载目录".to_owned())?;
+            .ok_or_else(|| i18n::tr!("无法定位下载目录", "Couldn't find the Downloads folder"))?;
         let mut target = directory.join(&safe_name);
         let mut counter = 1;
         while target.exists() {
@@ -751,8 +765,12 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
             target = directory.join(format!("{stem}-{counter}.csv"));
             counter += 1;
         }
-        std::fs::write(&target, content.as_bytes())
-            .map_err(|error| format!("写入 CSV 失败：{error}"))?;
+        std::fs::write(&target, content.as_bytes()).map_err(|error| {
+            i18n::tr!(
+                "写入 CSV 失败：{error}",
+                "Couldn't write the CSV file: {error}"
+            )
+        })?;
         Ok(target.to_string_lossy().into_owned())
     })
     .await
@@ -901,6 +919,8 @@ struct QoderCookieView {
     source: Option<&'static str>,
     /// 保存/清除/验证的结果描述，给设置页直接展示。
     message: Option<String>,
+    /// `message` 报告的是失败（已保存但验证失败）时为 true。
+    message_is_error: bool,
 }
 
 #[tauri::command]
@@ -910,6 +930,7 @@ async fn qoder_cookie_status() -> Result<QoderCookieView, String> {
         configured: source.is_some(),
         source,
         message: None,
+        message_is_error: false,
     })
 }
 
@@ -920,10 +941,14 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
     tauri::async_runtime::spawn_blocking(move || {
         // 宽容解析：整段请求标头 / cURL / 带 Cookie: 前缀 / 裸值都接受。
         let normalized = match cookie.as_deref() {
-            Some(raw) => Some(
-                coding_quota::normalize_qoder_cookie_input(raw)
-                    .ok_or_else(|| "粘贴内容中未找到 Cookie 行".to_owned())?,
-            ),
+            Some(raw) => Some(coding_quota::normalize_qoder_cookie_input(raw).ok_or_else(
+                || {
+                    i18n::tr!(
+                        "粘贴内容中未找到 Cookie 行",
+                        "No Cookie line found in the pasted text"
+                    )
+                },
+            )?),
             None => None,
         };
         let saved = coding_quota::write_qoder_cookie_file(normalized.as_deref())
@@ -933,38 +958,66 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
             return Ok(QoderCookieView {
                 configured: source.is_some(),
                 source,
-                message: Some("已清除本地保存的 Cookie。".to_owned()),
+                message: Some(i18n::tr!(
+                    "已清除本地保存的 Cookie。",
+                    "Cleared the locally saved cookie."
+                )),
+                message_is_error: false,
             });
         }
-        let message = match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
-            Ok(samples) => {
-                let sample = &samples[0];
-                let reset = sample
-                    .resets_at_ms
-                    .map(|at| {
-                        let minutes = (at - chrono::Utc::now().timestamp_millis()) / 60_000;
-                        if minutes > 0 {
-                            format!("，约 {} 小时后重置", (minutes + 30) / 60)
-                        } else {
-                            String::new()
-                        }
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "已保存并验证成功：Credits 剩余 {:.0}%{reset}。",
-                    sample.remaining_percent
-                )
-            }
-            Err(error) => format!("已保存，但验证失败：{error}"),
-        };
+        let (message, message_is_error) =
+            match coding_quota::fetch_qoder_quota(std::time::Duration::from_secs(10)) {
+                Ok(samples) => (
+                    qoder_verified_message(
+                        i18n::current(),
+                        &samples[0],
+                        chrono::Utc::now().timestamp_millis(),
+                    ),
+                    false,
+                ),
+                Err(error) => (
+                    i18n::tr!(
+                        "已保存，但验证失败：{error}",
+                        "Saved, but verification failed: {error}"
+                    ),
+                    true,
+                ),
+            };
         Ok(QoderCookieView {
             configured: true,
             source,
             message: Some(message),
+            message_is_error,
         })
     })
     .await
     .map_err(|error| format!("qoder cookie task failed: {error}"))?
+}
+
+fn qoder_verified_message(lang: i18n::Lang, sample: &domain::QuotaSample, now_ms: i64) -> String {
+    let reset = sample
+        .resets_at_ms
+        .map(|at| {
+            let minutes = (at - now_ms) / 60_000;
+            if minutes > 0 {
+                let hours = (minutes + 30) / 60;
+                let unit = i18n::plural(hours, "hour", "hours");
+                i18n::tr_in!(
+                    lang,
+                    "，约 {hours} 小时后重置",
+                    ", resets in about {hours} {unit}"
+                )
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
+    let percent = sample.remaining_percent;
+    i18n::tr_in!(
+        lang,
+        "已保存并验证成功：Credits 剩余 {percent:.0}%{reset}。",
+        "Saved and verified: {percent:.0}% of credits left{reset}."
+    )
 }
 
 #[tauri::command]
@@ -1197,16 +1250,18 @@ fn validate_tray_quota_icon(icon: &TrayQuotaIcon) -> Result<(), String> {
         || icon.width > TRAY_ICON_MAX_EDGE
         || icon.height > TRAY_ICON_MAX_EDGE
     {
-        return Err(format!(
-            "托盘图标尺寸超出范围：{}×{}",
-            icon.width, icon.height
+        let (width, height) = (icon.width, icon.height);
+        return Err(i18n::tr!(
+            "托盘图标尺寸超出范围：{width}×{height}",
+            "Tray icon size out of range: {width}×{height}"
         ));
     }
     let expected = icon.width as usize * icon.height as usize * 4;
     if icon.rgba.len() != expected {
-        return Err(format!(
-            "托盘图标像素数据长度不匹配：{} ≠ {expected}",
-            icon.rgba.len()
+        let actual = icon.rgba.len();
+        return Err(i18n::tr!(
+            "托盘图标像素数据长度不匹配：{actual} ≠ {expected}",
+            "Tray icon pixel data length mismatch: {actual} ≠ {expected}"
         ));
     }
     Ok(())
@@ -1228,7 +1283,10 @@ fn set_tray_quota_icon(
     #[cfg(windows)]
     {
         let Some(tray) = app.tray_by_id("main") else {
-            return Err("任务栏托盘图标不存在".into());
+            return Err(i18n::tr!(
+                "任务栏托盘图标不存在",
+                "The taskbar tray icon does not exist"
+            ));
         };
         match icon {
             Some(payload) => {
@@ -1238,10 +1296,9 @@ fn set_tray_quota_icon(
                     .map_err(|error| error.to_string())?;
             }
             None => {
-                let fallback = app
-                    .default_window_icon()
-                    .cloned()
-                    .ok_or_else(|| "默认应用图标不可用".to_string())?;
+                let fallback = app.default_window_icon().cloned().ok_or_else(|| {
+                    i18n::tr!("默认应用图标不可用", "The default app icon is unavailable")
+                })?;
                 tray.set_icon(Some(fallback))
                     .map_err(|error| error.to_string())?;
             }
@@ -1309,10 +1366,27 @@ fn configure_pinned_hover(
 #[tauri::command]
 fn sync_linux_tray_pinned(state: State<'_, LinuxTrayPinMenu>, pinned: bool) {
     state.pinned.store(pinned, Ordering::Release);
-    if let Ok(item) = state.item.lock() {
-        if let Some(item) = item.as_ref() {
-            let _ = item.set_text(if pinned { "取消置顶" } else { "置顶" });
+    state.refresh_text(i18n::current());
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxTrayPinMenu {
+    fn refresh_text(&self, lang: i18n::Lang) {
+        let pinned = self.pinned.load(Ordering::Acquire);
+        if let Ok(item) = self.item.lock() {
+            if let Some(item) = item.as_ref() {
+                let _ = item.set_text(linux_pin_label(lang, pinned));
+            }
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pin_label(lang: i18n::Lang, pinned: bool) -> String {
+    if pinned {
+        i18n::tr_in!(lang, "取消置顶", "Unpin")
+    } else {
+        i18n::tr_in!(lang, "置顶", "Pin")
     }
 }
 
@@ -1469,7 +1543,10 @@ fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<()
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, nav);
-        Err("独立的完整视图窗口仅用于 macOS".into())
+        Err(i18n::tr!(
+            "独立的完整视图窗口仅用于 macOS",
+            "A separate expanded view window is available on macOS only"
+        ))
     }
 }
 
@@ -1483,7 +1560,10 @@ fn set_macos_desktop_widget_visible(app: tauri::AppHandle, visible: bool) -> Res
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, visible);
-        Err("桌面组件仅用于 macOS".into())
+        Err(i18n::tr!(
+            "桌面组件仅用于 macOS",
+            "The desktop widget is available on macOS only"
+        ))
     }
 }
 
@@ -1494,7 +1574,10 @@ fn set_macos_desktop_widget_visible(app: tauri::AppHandle, visible: bool) -> Res
 #[tauri::command]
 fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     if !(48.0..=640.0).contains(&width) || !(40.0..=2400.0).contains(&height) {
-        return Err("macOS 面板尺寸超出允许范围".into());
+        return Err(i18n::tr!(
+            "macOS 面板尺寸超出允许范围",
+            "The macOS panel size is out of the allowed range"
+        ));
     }
     #[cfg(target_os = "macos")]
     {
@@ -1503,7 +1586,10 @@ fn resize_macos_panel(app: tauri::AppHandle, width: f64, height: f64) -> Result<
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, width, height);
-        Err("菜单栏面板尺寸切换仅用于 macOS".into())
+        Err(i18n::tr!(
+            "菜单栏面板尺寸切换仅用于 macOS",
+            "Menu bar panel resizing is available on macOS only"
+        ))
     }
 }
 
@@ -1523,7 +1609,10 @@ fn update_macos_status_items(
     #[cfg(target_os = "macos")]
     {
         if agents.len() != remaining.len() || agents.len() != stale.len() {
-            return Err("macOS 菜单栏状态项参数长度不一致".into());
+            return Err(i18n::tr!(
+                "macOS 菜单栏状态项参数长度不一致",
+                "The macOS menu bar status item arguments have different lengths"
+            ));
         }
         // 主线程上的轮询：只读打开，不跑建表，也不和写入方抢锁。
         let saved = storage::open_database_read_only(&state.database_path)
@@ -1556,8 +1645,134 @@ fn update_macos_status_items(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, state, agents, remaining, stale);
-        Err("菜单栏用量状态项仅用于 macOS".into())
+        Err(i18n::tr!(
+            "菜单栏用量状态项仅用于 macOS",
+            "Menu bar usage status items are available on macOS only"
+        ))
     }
+}
+
+/// 托盘（macOS 为菜单栏）菜单里随界面语言切换的固定文字项。Linux 的置顶项
+/// 文字还取决于置顶状态，由 `LinuxTrayPinMenu` 单独维护。
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug)]
+enum TrayLabel {
+    Toggle,
+    Expanded,
+    #[cfg(target_os = "macos")]
+    Settings,
+    Quit,
+}
+
+#[cfg(desktop)]
+fn tray_label(label: TrayLabel, lang: i18n::Lang) -> String {
+    match label {
+        TrayLabel::Toggle => i18n::tr_in!(lang, "显示 / 隐藏", "Show / hide"),
+        TrayLabel::Expanded => i18n::tr_in!(lang, "完整视图", "Expanded view"),
+        #[cfg(target_os = "macos")]
+        TrayLabel::Settings => i18n::tr_in!(lang, "设置", "Settings"),
+        TrayLabel::Quit => i18n::tr_in!(lang, "退出 Metrik", "Quit Metrik"),
+    }
+}
+
+/// 记下已创建的菜单项，语言切换时就地改文字，不重建菜单。
+#[cfg(desktop)]
+#[derive(Default)]
+struct TrayMenuText {
+    items: Mutex<Vec<(tauri::menu::MenuItem<tauri::Wry>, TrayLabel)>>,
+}
+
+#[cfg(desktop)]
+impl TrayMenuText {
+    fn item(
+        &self,
+        app: &tauri::AppHandle,
+        id: &str,
+        label: TrayLabel,
+    ) -> tauri::Result<tauri::menu::MenuItem<tauri::Wry>> {
+        let item = tauri::menu::MenuItem::with_id(
+            app,
+            id,
+            tray_label(label, i18n::current()),
+            true,
+            None::<&str>,
+        )?;
+        if let Ok(mut items) = self.items.lock() {
+            items.push((item.clone(), label));
+        }
+        Ok(item)
+    }
+
+    fn refresh(&self, lang: i18n::Lang) {
+        if let Ok(items) = self.items.lock() {
+            for (item, label) in items.iter() {
+                let _ = item.set_text(tray_label(*label, lang));
+            }
+        }
+    }
+}
+
+/// 当前的语言设置与生效语言。setup 在创建托盘之前写入。
+struct UiLanguage(Mutex<i18n::LanguageState>);
+
+fn language_state(setting: i18n::Setting) -> i18n::LanguageState {
+    i18n::LanguageState {
+        setting,
+        language: i18n::resolve(setting, i18n::system_locale().as_deref()),
+    }
+}
+
+fn read_language_setting(database_path: &Path) -> i18n::Setting {
+    let stored = storage::open_database_read_only(database_path)
+        .and_then(|connection| storage::get_app_setting(&connection, i18n::SETTING_KEY))
+        .ok()
+        .flatten();
+    i18n::Setting::parse(stored.as_deref())
+}
+
+/// 每个窗口首帧渲染前读取一次。setup 尚未写入时（理论上的竞态）按系统语言回答。
+#[tauri::command]
+fn ui_language(app: tauri::AppHandle) -> i18n::LanguageState {
+    app.try_state::<UiLanguage>()
+        .and_then(|state| state.0.lock().ok().map(|value| *value))
+        .unwrap_or_else(|| language_state(i18n::Setting::Auto))
+}
+
+/// 保存语言设置并立即生效：后端文字、托盘菜单，以及经事件通知的所有窗口。
+#[tauri::command]
+async fn set_ui_language(
+    setting: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<i18n::LanguageState, String> {
+    use tauri::Emitter;
+
+    let setting = match setting.as_str() {
+        "auto" | "zh" | "en" => i18n::Setting::parse(Some(&setting)),
+        _ => return Err(format!("unsupported language setting: {setting}")),
+    };
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = storage::open_database(&path).map_err(|error| error.to_string())?;
+        storage::set_app_setting(&db, i18n::SETTING_KEY, setting.as_str())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let next = language_state(setting);
+    i18n::set_current(next.language);
+    if let Some(current) = app.try_state::<UiLanguage>() {
+        if let Ok(mut value) = current.0.lock() {
+            *value = next;
+        }
+    }
+    #[cfg(desktop)]
+    app.state::<TrayMenuText>().refresh(next.language);
+    #[cfg(target_os = "linux")]
+    app.state::<LinuxTrayPinMenu>().refresh_text(next.language);
+    let _ = app.emit(i18n::CHANGED_EVENT, next);
+    Ok(next)
 }
 
 /// 托盘菜单请求完整视图；前端监听后自己完成变形（见 windowClient 的
@@ -1586,16 +1801,25 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    #[cfg(target_os = "linux")]
+    use tauri::menu::MenuItem;
+    use tauri::menu::{Menu, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::Emitter;
 
-    let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
-    let expanded = MenuItem::with_id(app, "expanded", "完整视图", true, None::<&str>)?;
+    let text = app.state::<TrayMenuText>();
+    let toggle = text.item(app.handle(), "toggle", TrayLabel::Toggle)?;
+    let expanded = text.item(app.handle(), "expanded", TrayLabel::Expanded)?;
     #[cfg(target_os = "linux")]
-    let pinned = MenuItem::with_id(app, "pinned", "置顶", true, None::<&str>)?;
+    let pinned = MenuItem::with_id(
+        app,
+        "pinned",
+        linux_pin_label(i18n::current(), false),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Metrik", true, None::<&str>)?;
+    let quit = text.item(app.handle(), "quit", TrayLabel::Quit)?;
     #[cfg(target_os = "linux")]
     let menu = Menu::with_items(app, &[&toggle, &expanded, &pinned, &separator, &quit])?;
     #[cfg(not(target_os = "linux"))]
@@ -1631,11 +1855,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "pinned" => {
                 let state = app.state::<LinuxTrayPinMenu>();
                 let next = !state.pinned.fetch_xor(true, Ordering::AcqRel);
-                if let Ok(item) = state.item.lock() {
-                    if let Some(item) = item.as_ref() {
-                        let _ = item.set_text(if next { "取消置顶" } else { "置顶" });
-                    }
-                }
+                state.refresh_text(i18n::current());
                 let _ = app.emit(TRAY_SET_PINNED, next);
             }
             "quit" => app.exit(0),
@@ -1702,27 +1922,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
-            // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
-            #[cfg(target_os = "macos")]
-            macos::setup(app)?;
-
-            #[cfg(target_os = "linux")]
-            app.manage(LinuxTrayPinMenu::default());
-
-            #[cfg(target_os = "linux")]
-            restore_linux_startup_position(app.app_handle());
-
-            #[cfg(all(desktop, not(target_os = "macos")))]
-            setup_tray(app)?;
-
-            #[cfg(windows)]
-            if let Some(window) = app.get_webview_window("main") {
-                if let Ok(hwnd) = window.hwnd() {
-                    disable_system_corner_rounding(hwnd.0 as isize);
-                }
-            }
-
             let database_path = match (
                 app.path().app_data_dir(),
                 app.path().app_local_data_dir(),
@@ -1749,6 +1948,34 @@ pub fn run() {
                     emergency_database_path()
                 }
             };
+            // 语言要在任何窗口加载、托盘与通知构建之前确定，所以数据库路径先解析。
+            let ui_language = language_state(read_language_setting(&database_path));
+            i18n::set_current(ui_language.language);
+            app.manage(UiLanguage(Mutex::new(ui_language)));
+            #[cfg(desktop)]
+            app.manage(TrayMenuText::default());
+
+            // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
+            // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
+            #[cfg(target_os = "macos")]
+            macos::setup(app)?;
+
+            #[cfg(target_os = "linux")]
+            app.manage(LinuxTrayPinMenu::default());
+
+            #[cfg(target_os = "linux")]
+            restore_linux_startup_position(app.app_handle());
+
+            #[cfg(all(desktop, not(target_os = "macos")))]
+            setup_tray(app)?;
+
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(hwnd) = window.hwnd() {
+                    disable_system_corner_rounding(hwnd.0 as isize);
+                }
+            }
+
             #[cfg(target_os = "macos")]
             match engine::build_cached_snapshot(&database_path, "today") {
                 Ok(snapshot) => {
@@ -1857,6 +2084,8 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             persist_linux_startup_position,
             set_native_theme,
+            ui_language,
+            set_ui_language,
             open_expanded_window,
             set_macos_desktop_widget_visible,
             resize_macos_panel,
@@ -1873,7 +2102,17 @@ pub fn run_statusline() {
 }
 
 pub fn run_antigravity_hook() {
+    // 状态栏文字给人读；命令行入口不走桌面 setup，按同一规则先定语言。
+    init_cli_language();
     antigravity_hook::run_hook();
+}
+
+/// 命令行入口的界面语言：账本里保存的设置，没有则跟随系统语言。
+fn init_cli_language() {
+    let setting = cli::default_ledger_path()
+        .map(|path| read_language_setting(&path))
+        .unwrap_or(i18n::Setting::Auto);
+    i18n::set_current(language_state(setting).language);
 }
 
 /// `metrik --quota-json [database-path]`：只读导出已落库的官方额度快照。
@@ -1912,6 +2151,85 @@ pub fn publish_widget_snapshot_from_database(_database_path: &Path) -> Result<Pa
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn qoder_verification_message_follows_the_requested_language() {
+        use i18n::Lang;
+        let now = 1_000_000_000_000;
+        let mut sample = domain::QuotaSample {
+            adapter_id: "qoder",
+            window_key: "credits".into(),
+            remaining_percent: 61.6,
+            resets_at_ms: Some(now + 5 * 60 * 60_000),
+            collected_at_ms: now,
+            source_label: "test".into(),
+            quality: "official_live",
+        };
+        assert_eq!(
+            qoder_verified_message(Lang::Zh, &sample, now),
+            "已保存并验证成功：Credits 剩余 62%，约 5 小时后重置。"
+        );
+        assert_eq!(
+            qoder_verified_message(Lang::En, &sample, now),
+            "Saved and verified: 62% of credits left, resets in about 5 hours."
+        );
+        sample.resets_at_ms = Some(now + 50 * 60_000);
+        assert_eq!(
+            qoder_verified_message(Lang::En, &sample, now),
+            "Saved and verified: 62% of credits left, resets in about 1 hour."
+        );
+        sample.resets_at_ms = None;
+        assert_eq!(
+            qoder_verified_message(Lang::Zh, &sample, now),
+            "已保存并验证成功：Credits 剩余 62%。"
+        );
+    }
+
+    #[test]
+    fn qoder_cookie_view_serializes_the_error_flag() {
+        let view = QoderCookieView {
+            configured: true,
+            source: Some("file"),
+            message: Some("已保存，但验证失败：HTTP 401".into()),
+            message_is_error: true,
+        };
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["messageIsError"], true);
+        assert_eq!(value["message"], "已保存，但验证失败：HTTP 401");
+        let cleared = QoderCookieView {
+            configured: false,
+            source: None,
+            message: None,
+            message_is_error: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["messageIsError"],
+            false
+        );
+    }
+
+    #[test]
+    fn tray_labels_follow_the_requested_language() {
+        use i18n::Lang;
+        assert_eq!(tray_label(TrayLabel::Toggle, Lang::Zh), "显示 / 隐藏");
+        assert_eq!(tray_label(TrayLabel::Expanded, Lang::Zh), "完整视图");
+        assert_eq!(tray_label(TrayLabel::Quit, Lang::Zh), "退出 Metrik");
+        assert_eq!(tray_label(TrayLabel::Toggle, Lang::En), "Show / hide");
+        assert_eq!(tray_label(TrayLabel::Expanded, Lang::En), "Expanded view");
+        assert_eq!(tray_label(TrayLabel::Quit, Lang::En), "Quit Metrik");
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(tray_label(TrayLabel::Settings, Lang::Zh), "设置");
+            assert_eq!(tray_label(TrayLabel::Settings, Lang::En), "Settings");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(linux_pin_label(Lang::Zh, false), "置顶");
+            assert_eq!(linux_pin_label(Lang::Zh, true), "取消置顶");
+            assert_eq!(linux_pin_label(Lang::En, false), "Pin");
+            assert_eq!(linux_pin_label(Lang::En, true), "Unpin");
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

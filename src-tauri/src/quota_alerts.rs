@@ -81,9 +81,11 @@ pub fn check(
             continue;
         }
         let name = crate::domain::agent_label(&quota.agent);
-        send(&format!(
-            "{name} · {}：剩余 {:.1}%",
-            window.label, window.view.remaining_percent
+        let label = &window.label;
+        let remaining = window.view.remaining_percent;
+        send(&crate::i18n::tr!(
+            "{name} · {label}：剩余 {remaining:.1}%",
+            "{name} · {label}: {remaining:.1}% left"
         ))?;
         state.notified_low = true;
         state.last_sent_ms = Some(now);

@@ -2388,7 +2388,9 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .period-control button {
   min-width: 0;
   min-height: 40px;
-  padding: 0 15px;
+  /* 文字居中且不折行；"30 days" 比 "30 天" 宽，左右留白收到 10px 才放得下。 */
+  padding: 0 10px;
+  white-space: nowrap;
   color: #4d4f53;
   background: transparent;
   border: 0;
@@ -2890,6 +2892,11 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   align-items: center;
   gap: 10px;
   margin-top: 9px;
+}
+
+/* 英文标签更长（"Weekly · Sonnet"、"Gemini · Weekly" ≈80px），标签列加宽到一行放下。 */
+:lang(en) .quota-bar-row {
+  grid-template-columns: 84px minmax(0, 1fr) auto auto;
 }
 
 .quota-bar-row small {

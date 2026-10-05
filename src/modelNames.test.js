@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setLanguageSetting } from "./i18n.js";
 import { claudeVersionWithDots, modelDisplayName } from "./modelNames.js";
 
 test("Claude version numbers are shown with dots", () => {
@@ -34,4 +35,15 @@ test("placeholder rows still read as sentences, not model names", () => {
   assert.equal(modelDisplayName("synced-remote"), "其他设备同步（无模型名）");
   assert.equal(modelDisplayName("unknown"), "未标注模型");
   assert.equal(modelDisplayName("claude-fable-5-1"), "claude-fable-5.1");
+});
+
+test("placeholder rows are translated, model IDs are not", async () => {
+  await setLanguageSetting("en");
+  try {
+    assert.equal(modelDisplayName("synced-remote"), "Synced from other devices (no model name)");
+    assert.equal(modelDisplayName("unknown"), "Unlabeled model");
+    assert.equal(modelDisplayName("claude-fable-5-1"), "claude-fable-5.1");
+  } finally {
+    await setLanguageSetting("zh");
+  }
 });

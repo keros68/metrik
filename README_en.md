@@ -28,9 +28,9 @@ Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usa
 
 1. Open [Releases](https://github.com/keros68/metrik/releases/latest) and download the installer for your system: `Metrik_*_x64-setup.exe` for Windows x64, `Metrik_*_universal.dmg` for macOS, or `Metrik_*_amd64.deb` / `AppImage` for Ubuntu 24.04 x86_64.
 2. Install and run it. The installers are not yet signed with commercial Windows / Apple code signing certificates, so allow the app manually on first launch.
-3. On launch, Metrik detects installed agents and reads their logs and quota. Choose which agents to show under "显示的 Agent" (Displayed agents) in settings; agents not detected on this machine can still be enabled manually.
+3. On launch, Metrik detects installed agents and reads their logs and quota. Choose which agents to show under "Displayed agents" in settings; agents not detected on this machine can still be enabled manually.
 
-The app interface is in Chinese. See the [user guide](docs/guide.md) for platform details, data definitions, and known limitations.
+The interface is available in English and Simplified Chinese. It follows the system language by default and can be changed under "Appearance and scale" in settings. See the [user guide](docs/guide.md) (in Chinese) for platform details, data definitions, and known limitations.
 
 ## Supported agents
 

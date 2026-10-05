@@ -204,7 +204,13 @@ impl AgentAdapter for WorkbuddyAdapter {
         // 存在即说明有本版本读不到的历史。
         self.legacy_db
             .as_ref()
-            .map(|path| format!("旧版数据库暂不支持读取：{}", path.display()))
+            .map(|path| {
+                let path = path.display();
+                crate::i18n::tr!(
+                    "旧版数据库暂不支持读取：{path}",
+                    "The legacy database can't be read yet: {path}"
+                )
+            })
             .into_iter()
             .collect()
     }
