@@ -296,7 +296,8 @@ change.
 ### Linux
 
 - The supported Linux release baseline is Ubuntu 24.04 on x86_64. Releases
-  provide both a Debian package and an AppImage built on that exact runner.
+  provide both a Debian package and an AppImage. Both are built on Ubuntu
+  22.04 so that they require no glibc newer than 2.35.
 - Linux uses the floating compact card, horizontal/vertical quota strip, and
   expanded view. It uses the shared content hierarchy, not Windows DWM APIs or
   macOS panel/WidgetKit behavior.

@@ -88,6 +88,6 @@ metrik --quota-json <db-path>  # 显式指定账本路径
 ## 已知限制
 
 1. 安装包未做数字签名，首次运行需手动放行；Windows 未预装 WebView2 时安装程序需联网获取运行时。
-2. Linux 仅覆盖 Ubuntu 24.04 x86_64，其它发行版与架构尚未验证，需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
+2. Linux 仅在 Ubuntu 24.04 x86_64 上验证。安装包需要 glibc 2.35 或更高版本，其它发行版尚未验证；其它架构需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
 3. Antigravity 需对应 IDE 处于运行状态才有数据。
 4. 首次索引大体量日志会占用一段 CPU 与磁盘，界面可正常操作，未覆盖完整历史的数值会标注说明。
