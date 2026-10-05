@@ -360,7 +360,9 @@ fn insert_or_merge_usage_event(
     // component-wise maxima (identical copies are no-ops) and reject only a
     // contradictory model, exactly like Claude. Pi credits each event to the
     // billing agent (GLM, Qwen, ...), so recognise it by the source adapter.
-    let mergeable_pi_entry = source_adapter == "pi";
+    // DeepSeek Harness forks copy calls the same way (message and compaction
+    // ids unchanged) and credit by route too.
+    let mergeable_harness_entry = matches!(source_adapter, "pi" | "dsh");
     // WorkBuddy 同一身份渐进更新（见 adapters::workbuddy），跨扫描同样取分量最大值。
     let mergeable_workbuddy_message = event.adapter_id == "workbuddy";
     // Hermes 的用量行是累计计数器（per-API-call 增量累加），每次扫描都会重新
@@ -370,13 +372,13 @@ fn insert_or_merge_usage_event(
     let mergeable_hermes_usage = event.event_key.starts_with("hermes:");
     let mergeable = mergeable_claude_message
         || mergeable_antigravity_response
-        || mergeable_pi_entry
+        || mergeable_harness_entry
         || mergeable_workbuddy_message
         || mergeable_hermes_usage;
     // A contradictory model makes the provider message ambiguous. Reject only
     // this observation; the caller will commit the source's other valid events
     // and surface partial coverage through scan diagnostics.
-    if mergeable_claude_message || mergeable_pi_entry || mergeable_workbuddy_message {
+    if mergeable_claude_message || mergeable_harness_entry || mergeable_workbuddy_message {
         if let (Some(stored_model), Some(candidate_model)) =
             (stored.model.as_deref(), event.model.as_deref())
         {
@@ -846,18 +848,23 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// pi 的 /fork、/clone 把同一 responseId 的条目原样复制进新会话文件；
-    /// 复制品的 payload 带新会话 id，必须在账本层合并为一个事件，而不是报
-    /// 身份冲突把整个源打掉。
+    /// pi 的 /fork、/clone 与 DeepSeek Harness 的 fork 把同一次调用原样复制进
+    /// 新会话文件；复制品的 payload 带新会话 id，必须在账本层合并为一个事件，
+    /// 而不是报身份冲突把整个源打掉。
     #[test]
-    fn pi_fork_copy_observes_one_event() {
-        // pi 按计费方归属：GLM 套餐的用量记在 zcode 名下，同样要合并。
-        for credited in ["pi", "zcode"] {
-            pi_fork_copy_merges_for(credited);
+    fn harness_fork_copy_observes_one_event() {
+        // harness 按计费方归属：GLM 套餐的用量记在 zcode 名下，同样要合并。
+        for (harness, credited) in [
+            ("pi", "pi"),
+            ("pi", "zcode"),
+            ("dsh", "dsh"),
+            ("dsh", "zcode"),
+        ] {
+            harness_fork_copy_merges_for(harness, credited);
         }
     }
 
-    fn pi_fork_copy_merges_for(credited: &'static str) {
+    fn harness_fork_copy_merges_for(harness: &'static str, credited: &'static str) {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
@@ -889,13 +896,13 @@ mod tests {
 
         replace_source(
             &mut connection,
-            &source("source-parent", "pi", vec![original]),
+            &source("source-parent", harness, vec![original]),
             0,
         )
         .unwrap();
         replace_source(
             &mut connection,
-            &source("source-fork", "pi", vec![copied]),
+            &source("source-fork", harness, vec![copied]),
             0,
         )
         .unwrap();

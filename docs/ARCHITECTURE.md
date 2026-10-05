@@ -21,6 +21,7 @@ Grok updates ────┤
 Pi JSONL ────────┤
 Hermes SQLite ───┤
 MiniMax SQLite ──┤
+DSH JSONL (zstd) ┤
 Cursor dashboard ┘
 
 Codex app-server ─────────┐
@@ -54,6 +55,7 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - Pi: provider `responseId` only (unique across 849 local assistant rows; the one row without it is an aborted message that falls back to the entry ID). `/fork` and `/clone` copy entries verbatim into a new session file, so a copy observes the same event with a different session in its payload and merges component-wise like Claude. Compaction and branch-summary summary usage is counted as its own event; the directory name is a lossy encoding and project attribution comes only from the header `cwd`.
 - Hermes: the full route row — session id, model, billing provider, base URL, billing mode, and task — from the `session_model_usage` primary key. Rows are cumulative counters re-read on every scan, so observations merge component-wise like Antigravity (keyed by the `hermes:` event-key prefix, since credited adapters differ); the timestamp is `last_seen`, so a long session's tokens land on its final active day. Forks and subagents only backfill metadata and never copy usage rows, so there is no replay risk.
 - MiniMax Code: the `local_runtime_token_usage` integer row id. Each row is one request (a delta, never merged); main sessions, sub-tasks, and scheduled sessions share the table, and project attribution comes from `local_runtime_sessions.workspace_dir`. The schema follows CC Switch's public reader and its fixtures and has not yet been checked against a real install.
+- DeepSeek Harness: the per-call `message.id` for replies and `compactionId` for compaction summaries — both UUIDs that a fork copies verbatim, so a copy merges component-wise like Pi; failed or retried attempts (`assistant/attempt`) carry no id and use session id plus `seq`. A fork's inherited prefix (events before the last `session/end-seed {inherited:true}`, or before `seedLength` in v0/v1 headers) belongs to the parent and is skipped, which is what keeps id-less attempts from being counted twice. A later settlement for the same (turn, step) replaces the earlier one unless `llm/retry-started` closed that slot. Format migration writes a new `session.vN` generation beside the old files, so each session directory is read from its highest generation only. The format follows DSH's own source and has not yet been checked against a real install.
 - Cursor: one dashboard usage event. The payload has no request id, so identity is timestamp, conversation id, model, and the token components; an identical fingerprint repeated within one day gets an occurrence suffix, so parallel calls in the same millisecond are both counted. Events are deltas and are never merged component-wise.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
 
@@ -105,6 +107,13 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   own cards; direct and custom APIs stay under Hermes. Attribution keys on the
   plan-specific billing base URL, never on the user-editable provider alias.
   The Hermes card carries local usage only, never a quota.
+- **DeepSeek Harness**: a harness like Pi, attributed per provider route:
+  GLM Coding Plan (`zai`, `zai-coding-cn`), Qwen Token Plan, and OpenCode Go
+  as for Pi, plus Kimi Code (`kimi-coding`) and the ChatGPT subscription
+  (`openai-codex`). DeepSeek's own routes (`deepseek-official`,
+  `deepseek-account` platform balance) are pay-as-you-go and stay on the DSH
+  card, separate from the DeepSeek balance card. The DSH card carries local
+  usage only, never a quota.
 - **Cursor**: usage and one quota window, both off until enabled in settings
   (`cursor_usage_enabled`). Per-request tokens come from
   `get-filtered-usage-events` on cursor.com, authenticated with the session

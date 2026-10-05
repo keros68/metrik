@@ -11,6 +11,7 @@ const AGENT_LINE_COLORS = {
   grok: { stroke: "#8a919a", fill: "rgba(138, 145, 154, 0.09)" },
   qoder: { stroke: "#4a7fa5", fill: "rgba(74, 127, 165, 0.09)" },
   deepseek: { stroke: "#7a8df8", fill: "rgba(122, 141, 248, 0.09)" },
+  dsh: { stroke: "#5c669c", fill: "rgba(92, 102, 156, 0.09)" },
   qwen: { stroke: "#8f76e0", fill: "rgba(143, 118, 224, 0.09)" },
   pi: { stroke: "#9aa0a6", fill: "rgba(154, 160, 166, 0.09)" },
   hermes: { stroke: "#7d8085", fill: "rgba(125, 128, 133, 0.09)" },

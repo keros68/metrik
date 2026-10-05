@@ -1,7 +1,7 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, GrokAdapter,
-    HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter, ScanDiagnostics,
-    SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
+    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, DshAdapter,
+    GrokAdapter, HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter,
+    ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
 };
 #[cfg(test)]
 use crate::claude_hook;
@@ -749,6 +749,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(PiAdapter::detected()),
         Box::new(HermesAdapter::detected()),
         Box::new(MinimaxAdapter::detected()),
+        Box::new(DshAdapter::detected()),
         Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
     let mut report = ScanReport::default();
@@ -1557,6 +1558,13 @@ fn source_views(report: ScanReport, sync_status: Option<SyncView>) -> Vec<Source
             "MiniMax Code 本地 Token",
             scanned("minimax", "个用量库", "个"),
             "只读取 runtime-state.sqlite 的逐请求用量表与会话工作目录，不读消息内容；主会话、子任务与定时会话均计入。表结构取自公开参考实现，尚未用真实安装的数据核对。",
+        ),
+        local(
+            "dsh",
+            "dsh-local",
+            "DeepSeek Harness 本地 Token",
+            scanned("dsh", "个会话", "个"),
+            "读取 ~/.dsh/sessions 下每个会话最新一代的日志，不读消息内容；回复、失败重试与压缩摘要都是真实调用，一并计入，fork 继承的父会话前缀不重复入账。走 coding plan 的用量按路由记到对应计量卡片（GLM、Kimi、Qwen、OpenCode Go、ChatGPT 订阅），DeepSeek 官方 API 与平台余额留在这张卡。格式按 DSH 源码核对，尚未用真实安装的数据核对。",
         ),
     ];
 
@@ -3311,6 +3319,7 @@ mod tests {
             Box::new(PiAdapter::detected()),
             Box::new(HermesAdapter::detected()),
             Box::new(MinimaxAdapter::detected()),
+            Box::new(DshAdapter::detected()),
         ];
 
         for adapter in adapters {

@@ -39,6 +39,7 @@ import chatgptAppIcon from "./assets/chatgpt-app-icon.png";
 import claudeAppIcon from "./assets/claude-app-icon.jpg";
 import cursorAppIcon from "./assets/cursor-app-icon.png";
 import deepseekAppIcon from "./assets/deepseek-app-icon.png";
+import dshAppIcon from "./assets/dsh-app-icon.png";
 import hermesAppIcon from "./assets/hermes-app-icon.png";
 import kimiAppIcon from "./assets/kimi-app-icon.png";
 import minimaxAppIcon from "./assets/minimax-app-icon.png";
@@ -226,6 +227,15 @@ const AGENT_META = {
     accent: "#4d6bfe",
     iconSrc: deepseekAppIcon,
     iconClass: "agent-icon--deepseek",
+  },
+  dsh: {
+    // DeepSeek Harness：只有本地用量，走 coding plan 的部分记在对应卡片。
+    label: "DeepSeek Harness",
+    // 墨蓝：贴合 DSH 图标的深色鲸鱼，比 deepseek 的 #4d6bfe 暗得多、
+    // 比 qoder 的 #3a7ca5 偏紫，相邻时不混。
+    accent: "#3f4a85",
+    iconSrc: dshAppIcon,
+    iconClass: "agent-icon--dsh",
   },
   grok: {
     // xAI Grok Build：本地单轮 usage + CLI 日志里的周 Credits 快照。
