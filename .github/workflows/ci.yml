@@ -77,9 +77,10 @@ jobs:
           # 没有实机验收之前不声称可用。
           - platform: macos-latest
             target: aarch64-apple-darwin
-          # Linux 发布基线固定为 Ubuntu 24.04 x86_64；ubuntu-latest 的滚动
-          # 升级不能替代目标系统本身的编译与打包验证。
-          - platform: ubuntu-24.04
+          # Linux 安装包固定在 Ubuntu 22.04 x86_64 上构建，与 release.yml 一致：
+          # 产物所需的 glibc 不高于 2.35，在受支持基线 Ubuntu 24.04 上同样
+          # 可用。不跟随 ubuntu-latest 滚动，否则所需的 glibc 会随之升高。
+          - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.platform }}

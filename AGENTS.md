@@ -31,8 +31,8 @@ or a declared combination.
   compile-time platform signal. WebView user-agent detection is not an
   authoritative platform switch.
 - Pull requests should state their affected scope. CI must build and test
-  Windows, macOS, and Ubuntu 24.04 x86_64, and every affected shell needs a
-  native smoke check before release.
+  Windows, macOS, and Linux x86_64 (on the Ubuntu 22.04 build host), and every
+  affected shell needs a native smoke check before release.
 - Do not bump application versions during feature work. Release preparation is
   a separate, serialized maintainer operation.
 
