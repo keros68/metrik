@@ -5,7 +5,7 @@
 //! moonshot / zai / gemini / xai / minimax 七个官方第一方 API 的 provider，两源数值分歧记在
 //! 生成文件头部待人工核对。构建期由 `scripts/update-pricing.mjs` 生成 `pricing_table.rs`
 //! （`npm run pricing:update`）。运行时不联网——价格随发版更新，留在 git 里可审计。
-//! `.github/workflows/pricing-refresh.yml` 每周跑一次并开 PR，人工核对 diff 后合并。
+//! `.github/workflows/pricing-refresh.yml` 每半个月跑一次并开 PR，人工核对 diff 后合并。
 //!
 //! ## 匹配规则：精确匹配，绝不前缀猜测
 //!
