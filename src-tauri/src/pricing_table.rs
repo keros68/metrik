@@ -16,7 +16,7 @@
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-10-04";
+pub const PRICING_AS_OF: &str = "2026-10-05";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -197,6 +197,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-audio-mini-2025-12-15", Pricing { input: 0.6, cache_read: 0.6, cache_write: 0.0, output: 2.4 }),
     ("gpt-daybreak-blue-latest", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
     ("gpt-daybreak-red-latest", Pricing { input: 12.5, cache_read: 1.25, cache_write: 15.625, output: 75.0 }),
+    ("gpt-rosalind-research", Pricing { input: 5.0, cache_read: 0.5, cache_write: 0.0, output: 25.0 }),
     ("grok-4.20", Pricing { input: 1.25, cache_read: 0.2, cache_write: 0.0, output: 2.5 }),
     ("grok-4.20-0309", Pricing { input: 1.25, cache_read: 0.2, cache_write: 0.0, output: 2.5 }),
     ("grok-4.20-0309-non-reasoning", Pricing { input: 1.25, cache_read: 0.2, cache_write: 0.0, output: 2.5 }),
