@@ -1,6 +1,6 @@
 name: Pricing refresh
 
-# 每周一 03:00 UTC 重新生成价格表，有变化就开 PR。
+# 每月 1 日和 15 日 03:00 UTC 重新生成价格表，有变化就开 PR。
 #
 # 不自动合并：上游偶尔会成批改写某个 provider 的价目（LiteLLM 一次刷新就把整个
 # grok 系列从 $3/$15 改到 $1.25/$2.5），未经核对合进去等于把「猜价格」搬进
@@ -15,7 +15,7 @@ name: Pricing refresh
 # PAT 来推分支。
 on:
   schedule:
-    - cron: "0 3 * * 1"
+    - cron: "0 3 1,15 * *"
   workflow_dispatch:
 
 permissions:

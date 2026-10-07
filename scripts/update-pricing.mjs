@@ -16,7 +16,7 @@
 // （如 deepseek-v4-pro），本脚本只生成 pricing_table.rs，不会覆盖它。
 //
 // 用法：npm run pricing:update   （改完提交生成的 .rs 文件）
-// .github/workflows/pricing-refresh.yml 每周替你跑一次，有变化就开 PR 等人核对。
+// .github/workflows/pricing-refresh.yml 每半个月替你跑一次，有变化就开 PR 等人核对。
 // 也可离线：node scripts/update-pricing.mjs <LiteLLM json 路径> <models.dev json 路径>
 
 import { readFileSync, writeFileSync } from "node:fs";
