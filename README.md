@@ -66,6 +66,10 @@ npm run desktop:build  # 构建安装包
 
 Ubuntu 构建依赖与测试命令见[开发说明](docs/development.md)。
 
+## 相关项目
+
+- [yourmem](https://github.com/keros68/yourmem)：在本机归档和搜索各 Agent 的对话原文，保存项目记忆。Metrik 只统计用量，需要找回历史对话时使用 yourmem。
+
 ## 许可证
 
 [AGPL-3.0-or-later](LICENSE)，Copyright © 2026 keros68。分发修改版，或基于修改版对外提供网络服务时，需按 AGPL-3.0 开放对应源码。v0.10.0 及更早版本适用 MIT。

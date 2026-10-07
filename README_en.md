@@ -66,6 +66,10 @@ npm run desktop:build  # build installers
 
 See the [development notes](docs/development.md) for Ubuntu build dependencies and test commands.
 
+## Related projects
+
+- [yourmem](https://github.com/keros68/yourmem): archives and searches the full conversations of each agent on your machine and keeps project memory. Metrik only tracks usage; use yourmem to find past conversations.
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE), Copyright © 2026 keros68. If you distribute a modified version, or provide a network service based on one, you must release the corresponding source under AGPL-3.0. v0.10.0 and earlier are under MIT.
