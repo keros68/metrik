@@ -10,6 +10,10 @@ change.
   Keep them visibly separate and never present an estimate as official billing.
 - Never synthesize a comparison curve or replace a failed desktop read with demo
   numbers. Missing and stale data must be labeled explicitly.
+- Claude Code and Codex response-speed collection is off by default and requires
+  explicit opt-in for each client; it must preserve existing external exporters,
+  pair timing and output tokens from the same request, never duplicate token
+  usage, and never estimate or backfill unmeasured history.
 - Manual refresh requests `usage_snapshot` with `force: true`, bypassing quota
   TTL caches. A failed refresh retains the last rows and marks them stale; it
   never clears them silently within the same account. An observed account

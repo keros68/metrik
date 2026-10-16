@@ -117,6 +117,23 @@ impl ModelAccrual {
     }
 }
 
+fn add_collected_model_timings(
+    connection: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+    models: &mut HashMap<(String, String), ModelAccrual>,
+) -> Result<()> {
+    for timing in crate::speed_store::model_timings(connection, start_ms, end_ms)? {
+        let model = models.entry((timing.agent, timing.model)).or_default();
+        // The dedicated timing stream is authoritative for these two agents.
+        // It contributes speed metadata only, never processed tokens or cost.
+        model.response_output = timing.output_tokens;
+        model.response_duration_ms = timing.duration_ms;
+        model.response_sample_count = timing.sample_count;
+    }
+    Ok(())
+}
+
 /// 一个 Agent 在周期内的 processed token 分量拆解。远端同步事件不带分量，
 /// 按 0 计入，不会伪造精度。
 #[derive(Clone, Copy, Default)]
@@ -342,6 +359,7 @@ fn report_at(connection: &Connection, local_now: chrono::DateTime<Local>) -> Res
         })
         .collect();
 
+    add_collected_model_timings(connection, start_ms, end_ms, &mut model_totals)?;
     let mut top_models: Vec<ModelSummary> = model_totals
         .into_iter()
         .map(|((agent, model), accrual)| accrual.into_summary(agent, model, total_tokens))
@@ -1062,6 +1080,7 @@ fn query_snapshot_at(
     // 安装探针只碰文件系统与已配置的凭据，一次快照查一遍即可。
     let installed = detect::installed_agents();
 
+    add_collected_model_timings(connection, start_ms, end_ms, &mut model_totals)?;
     let mut models: Vec<ModelSummary> = model_totals
         .into_iter()
         .map(|((agent, model), accrual)| accrual.into_summary(agent, model, total_tokens))
@@ -3300,6 +3319,188 @@ mod tests {
             summary.response_tokens_per_second,
             Some(20000.0 / (2.0 * i64::MAX as f64))
         );
+    }
+
+    #[test]
+    fn collected_response_speed_weights_clients_without_recounting_usage_or_changing_zcode() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let local_now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+        for (id, agent, model, output, duration) in [
+            ("codex-usage", "codex", "gpt-5", 500, None),
+            ("claude-usage", "claude", "gpt-5", 700, None),
+            ("untimed-usage", "codex", "untimed-model", 9000, None),
+            ("zcode-usage", "zcode", "legacy-zcode-model", 60, Some(2000)),
+        ] {
+            insert_test_response_sample(&connection, id, agent, model, at, output, duration);
+        }
+        let before =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+        let before_report = report_at(&connection, local_now).unwrap();
+        assert!(before.cost.total_usd > 0.0);
+        assert!(before.cost.unpriced_tokens > 0);
+
+        let samples: Vec<_> = [
+            ("codex-fast", "codex", "gpt-5", 100, 1000.0),
+            ("codex-slow", "codex", "gpt-5", 100, 9000.0),
+            ("claude-first", "claude", "gpt-5", 30, 1000.0),
+            ("claude-second", "claude", "gpt-5", 90, 2000.0),
+            ("timing-only", "codex", "timing-only-model", 50, 1000.0),
+        ]
+        .into_iter()
+        .map(
+            |(id, agent, model, output_tokens, duration_ms)| crate::speed_telemetry::SpeedSample {
+                id: crate::domain::stable_hash(id),
+                agent: agent.into(),
+                model: model.into(),
+                occurred_at_ms: at,
+                output_tokens,
+                duration_ms,
+            },
+        )
+        .collect();
+        crate::speed_store::store_samples(&mut connection, &samples, local_now.timestamp_millis())
+            .unwrap();
+        // A repeated export also passes through the persistence boundary.
+        crate::speed_store::store_samples(&mut connection, &samples, local_now.timestamp_millis())
+            .unwrap();
+        let after =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+        let report = report_at(&connection, local_now).unwrap();
+
+        for (agent, model, expected_rate, expected_count) in [
+            ("codex", "gpt-5", Some(20.0), 2),
+            ("claude", "gpt-5", Some(40.0), 2),
+            ("codex", "timing-only-model", Some(50.0), 1),
+            ("zcode", "legacy-zcode-model", Some(30.0), 1),
+            ("codex", "untimed-model", None, 0),
+        ] {
+            let model_summary = after
+                .models
+                .iter()
+                .find(|entry| entry.agent == agent && entry.model == model)
+                .unwrap();
+            // 200/10s = 20; the per-request arithmetic mean would be 55.56.
+            // The untimed ledger output must never enter this numerator.
+            assert_eq!(model_summary.response_tokens_per_second, expected_rate);
+            assert_eq!(model_summary.response_sample_count, expected_count);
+            let historical = report
+                .top_models
+                .iter()
+                .find(|entry| entry.agent == agent && entry.model == model)
+                .unwrap();
+            assert_eq!(historical.response_tokens_per_second, expected_rate);
+            assert_eq!(historical.response_sample_count, expected_count);
+        }
+        let timing_only = after
+            .models
+            .iter()
+            .find(|entry| entry.model == "timing-only-model")
+            .unwrap();
+        assert_eq!(timing_only.tokens, 0);
+        assert_eq!(timing_only.share, 0.0);
+        assert_eq!(after.total_tokens, before.total_tokens);
+        assert_eq!(report.total_tokens, before_report.total_tokens);
+        assert_eq!(
+            serde_json::to_value(&after.agents).unwrap(),
+            serde_json::to_value(&before.agents).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&after.series).unwrap(),
+            serde_json::to_value(&before.series).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&after.cost).unwrap(),
+            serde_json::to_value(&before.cost).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&report.days).unwrap(),
+            serde_json::to_value(&before_report.days).unwrap()
+        );
+        let usage_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(usage_count, 4);
+    }
+
+    #[test]
+    fn collected_response_speed_uses_half_open_local_period_and_report_windows() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let local_now = test_local_time(today, 12);
+        let now = local_now.timestamp_millis();
+        let start_today = local_midnight(today).unwrap().timestamp_millis();
+        let start_week = local_midnight(today - Duration::days(6))
+            .unwrap()
+            .timestamp_millis();
+        let start_report = local_midnight(today - Duration::days(REPORT_WINDOW_DAYS - 1))
+            .unwrap()
+            .timestamp_millis();
+        let mut samples = Vec::new();
+        for agent in ["claude", "codex"] {
+            for (id, occurred_at_ms, output_tokens, duration_ms) in [
+                ("before-report", start_report - 1, 9999, 1.0),
+                ("report-start", start_report, 100, 1000.0),
+                ("before-week", start_week - 1, 100, 1000.0),
+                ("week-start", start_week, 100, 1000.0),
+                ("before-today", start_today - 1, 100, 1000.0),
+                ("today-start", start_today, 100, 5000.0),
+                ("now", now, 100, 1000.0),
+                ("after-now", now + 1, 9999, 1.0),
+            ] {
+                samples.push(crate::speed_telemetry::SpeedSample {
+                    id: crate::domain::stable_hash(&format!("{agent}|{id}")),
+                    agent: agent.into(),
+                    model: "collected-model".into(),
+                    occurred_at_ms,
+                    output_tokens,
+                    duration_ms,
+                });
+            }
+        }
+        crate::speed_store::store_samples(&mut connection, &samples, now).unwrap();
+        for (period, expected_count, output, duration) in [
+            ("today", 2, 200.0, 6000.0),
+            ("week", 4, 400.0, 8000.0),
+            ("month", 5, 500.0, 9000.0),
+        ] {
+            let snapshot =
+                query_snapshot_at(&connection, period, ScanReport::default(), local_now).unwrap();
+            assert_eq!(snapshot.models.len(), 2);
+            for model in &snapshot.models {
+                assert_eq!(model.response_sample_count, expected_count);
+                assert_eq!(
+                    model.response_tokens_per_second,
+                    Some(output * 1000.0 / duration)
+                );
+                assert_eq!(model.tokens, 0);
+                assert_eq!(model.share, 0.0);
+            }
+            assert_eq!(snapshot.total_tokens, 0);
+            assert_eq!(snapshot.cost.total_usd, 0.0);
+        }
+        let report = report_at(&connection, local_now).unwrap();
+        assert_eq!(report.top_models.len(), 2);
+        for model in &report.top_models {
+            assert_eq!(model.response_sample_count, 6);
+            assert_eq!(model.response_tokens_per_second, Some(60.0));
+            assert_eq!(model.tokens, 0);
+        }
+        assert_eq!(report.total_tokens, 0);
+        assert!(report.days.is_empty());
+        assert!(report.first_event_ms.is_none());
+        assert!(report.last_event_ms.is_none());
+        assert!(report
+            .agents
+            .iter()
+            .all(|agent| agent.tokens == 0 && agent.active_days == 0));
     }
 
     #[test]

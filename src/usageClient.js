@@ -739,6 +739,27 @@ async function setCursorUsage(enabled) {
   return invoke("set_cursor_usage", { enabled });
 }
 
+async function getResponseSpeedStatus() {
+  if (!isDesktop()) {
+    return {
+      demo: true,
+      running: false,
+      sources: ["claude", "codex"].map((id) => ({
+        id, enabled: false, configured: false, conflict: false,
+        sampleCount: 0, lastSampleAtMs: null, error: null,
+      })),
+    };
+  }
+  return invoke("response_speed_status");
+}
+
+async function setResponseSpeedCollection(agentId, enabled) {
+  if (!isDesktop()) {
+    throw new Error(t("浏览器演示模式不能配置响应速度采集"));
+  }
+  return invoke("set_response_speed_collection", { agentId, enabled });
+}
+
 loadUsageSnapshot.demo = demoSnapshot;
 loadUsageSnapshot.initial = (period = "today") => (
   isDesktop() ? pendingSnapshot(period) : demoSnapshot(period)
@@ -765,6 +786,8 @@ export {
   setClaudeOauth,
   getCursorUsageStatus,
   setCursorUsage,
+  getResponseSpeedStatus,
+  setResponseSpeedCollection,
   getQoderCookieStatus,
   configureQoderCookie,
 };

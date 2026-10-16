@@ -18,6 +18,9 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+flate2 = "1"
+httparse = "1"
+prost = "0.13"
 rusqlite = { version = "0.38", features = ["bundled"] }
 # 明确只用 ring provider：默认同时启用 ring 与 aws-lc-rs 时，rustls 0.23
 # 无法自动确定 CryptoProvider 会 panic（antigravity 自签 TLS 首次真机命中）。
@@ -34,9 +37,13 @@ tauri-plugin-opener = "2"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
+toml_edit = "0.20.2"
 ureq = "2"
 walkdir = "2"
 zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

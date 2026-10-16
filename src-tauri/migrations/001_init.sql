@@ -93,3 +93,17 @@ CREATE TABLE IF NOT EXISTS sync_device (
     exported_at_ms INTEGER NOT NULL,
     last_import_ms INTEGER NOT NULL
 );
+
+-- Local opt-in request timing is independent of the token ledger: telemetry
+-- enriches speed statistics and must never create a second usage event.
+CREATE TABLE IF NOT EXISTS response_speed_sample (
+    sample_id       TEXT PRIMARY KEY,
+    adapter_id      TEXT NOT NULL CHECK (adapter_id IN ('claude', 'codex')),
+    model           TEXT NOT NULL,
+    occurred_at_ms  INTEGER NOT NULL,
+    output_tokens   INTEGER NOT NULL CHECK (output_tokens > 0),
+    duration_ms     REAL NOT NULL CHECK (duration_ms > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_response_speed_sample_time
+    ON response_speed_sample(occurred_at_ms);

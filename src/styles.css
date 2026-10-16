@@ -3599,6 +3599,44 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 
 .settings-card h2 { margin: 0 0 14px; font-size: 17px; letter-spacing: -0.02em; }
 
+.response-speed-privacy { margin-top: 10px; }
+.response-speed-sources { margin-top: 18px; }
+.response-speed-source { padding: 15px 0; border-top: 1px solid rgba(31, 33, 36, 0.08); }
+.response-speed-source-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 6px; }
+.response-speed-source h3 { margin: 0; font-size: 14px; font-weight: 580; }
+.settings-card .response-speed-switch { display: inline-flex; flex-shrink: 0; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.response-speed-switch input {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  background: rgba(31, 33, 36, 0.16);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 180ms var(--motion);
+}
+.response-speed-switch input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: transform 180ms var(--motion);
+}
+.response-speed-switch input:checked { background: var(--blue); }
+.response-speed-switch input:checked::after { transform: translateX(14px); }
+.response-speed-switch input:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.response-speed-switch input:disabled { cursor: default; opacity: 0.5; }
+.response-speed-sample-count { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0 0; color: #55575b; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.response-speed-sample-count span { color: #83858a; }
+.response-speed-refresh { min-height: 34px; padding: 0 12px; margin-top: 4px; }
+
 .desktop-widget-setting {
   display: flex;
   align-items: center;
@@ -5218,6 +5256,10 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 :root[data-theme="dark"] .settings-status dt { color: var(--d-faint); }
 :root[data-theme="dark"] .settings-error-text { color: #e6906f; }
 :root[data-theme="dark"] .settings-muted { color: var(--d-faint); }
+:root[data-theme="dark"] .response-speed-source { border-top-color: var(--d-hairline); }
+:root[data-theme="dark"] .response-speed-switch input:not(:checked) { background: rgba(255, 255, 255, 0.2); }
+:root[data-theme="dark"] .response-speed-sample-count { color: var(--d-ink-3); }
+:root[data-theme="dark"] .response-speed-sample-count span { color: var(--d-faint); }
 :root[data-theme="dark"] .settings-about a:hover { color: var(--d-muted); }
 :root[data-theme="dark"] .settings-guide { color: var(--d-muted); }
 :root[data-theme="dark"] .settings-guide summary { color: #7fabef; }

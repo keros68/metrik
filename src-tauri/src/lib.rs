@@ -20,7 +20,11 @@ mod pricing;
 mod projects;
 mod quota;
 mod quota_alerts;
+mod response_speed;
 mod schema;
+mod speed_config;
+mod speed_store;
+mod speed_telemetry;
 mod storage;
 mod sync;
 #[cfg(target_os = "macos")]
@@ -52,6 +56,7 @@ struct AppState {
     database_path: PathBuf,
     scan_gate: Arc<Mutex<()>>,
     quota_cache: SharedQuotaCache,
+    response_speed: Arc<response_speed::Collector>,
     #[cfg(target_os = "linux")]
     pinned_hover_monitor: Arc<pinned_hover::Monitor>,
 }
@@ -815,6 +820,44 @@ async fn cursor_usage_status(
     })
     .await
     .map_err(|error| format!("cursor usage status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn response_speed_status(
+    state: State<'_, AppState>,
+) -> Result<response_speed::CollectionStatus, String> {
+    let collector = Arc::clone(&state.response_speed);
+    tauri::async_runtime::spawn_blocking(move || {
+        collector.status().map_err(|_| {
+            i18n::tr!(
+                "响应速度采集状态读取失败。",
+                "Could not read response-speed collection status."
+            )
+            .to_owned()
+        })
+    })
+    .await
+    .map_err(|_| "response-speed status task failed".to_owned())?
+}
+
+#[tauri::command]
+async fn set_response_speed_collection(
+    agent_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<response_speed::CollectionStatus, String> {
+    let collector = Arc::clone(&state.response_speed);
+    let scan_gate = Arc::clone(&state.scan_gate);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "response-speed setting unavailable".to_owned())?;
+        collector
+            .set_enabled(&agent_id, enabled)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "response-speed setting task failed".to_owned())?
 }
 
 #[tauri::command]
@@ -2039,10 +2082,15 @@ pub fn run() {
                 ),
             }
 
+            let response_speed = Arc::new(response_speed::Collector::new(database_path.clone()));
+            if response_speed.restore().is_err() {
+                eprintln!("Metrik could not start its optional response-speed collector");
+            }
             app.manage(AppState {
                 database_path,
                 scan_gate: Arc::new(Mutex::new(())),
                 quota_cache: Arc::new(Mutex::new(HashMap::new())),
+                response_speed,
                 #[cfg(target_os = "linux")]
                 pinned_hover_monitor: Arc::new(pinned_hover::Monitor::default()),
             });
@@ -2061,6 +2109,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             usage_snapshot,
+            response_speed_status,
+            set_response_speed_collection,
             quota_snapshot,
             quota_alert_settings,
             set_quota_alerts,

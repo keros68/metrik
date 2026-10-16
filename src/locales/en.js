@@ -349,6 +349,31 @@ export default {
     "When on, the Metrik tray icon shows the percentage left for the top agent in the list, or -- without reliable quota. The number keeps updating every 5 minutes while the window is hidden.",
   "图标改为显示余量数字": "Show the percentage left on the icon",
 
+  // Settings: optional local response speed collection (App.jsx)
+  "Claude / Codex 响应速度": "Claude / Codex response speed",
+  "默认关闭。分别开启后，重启对应客户端或会话，才开始采集新请求；不会补算历史速度。": "Off by default. Enable each source separately, then restart its client or session to collect new requests. Historical speed is not backfilled.",
+  "只在本机保存模型名、输出 token 数与计时数字，不保存对话或凭据。统计的是含等待与思考的响应均速，不是纯生成或实时速度。": "Stores only model names, output token counts and timing numbers on this device, never conversations or credentials. Measures average response speed including waiting and thinking, not pure generation or live speed.",
+  "采集 {agent} 响应速度": "Collect {agent} response speed",
+  "正在更新…": "Updating…",
+  "响应速度采集状态读取失败，请刷新状态后重试。": "Couldn't read the response speed collection status. Refresh the status to try again.",
+  "响应速度采集设置已更新。": "Response speed collection settings updated.",
+  "已停止采集，保留已有统计。": "Collection stopped. Existing statistics are kept.",
+  "响应速度采集设置未能更新，请检查状态后重试。": "Couldn't update response speed collection settings. Check the status and try again.",
+  "暂时无法确认当前采集状态": "Current collection status is unavailable",
+  "配置已变动 · 保留现有外部遥测配置，采集已暂停。": "Configuration changed · existing external telemetry is preserved. Collection is paused.",
+  "已有外部遥测配置 · 保留原配置，无法开启采集。": "External telemetry is already configured. Its configuration is preserved and collection can't be enabled.",
+  "配置已变动 · 采集已暂停，请检查客户端配置。": "Configuration changed · collection is paused. Check the client configuration.",
+  "未开启 · 不采集新请求": "Off · new requests are not collected",
+  "已开启 · 本机采集服务未运行，请关闭后重新开启。": "On · the local collector is not running. Turn collection off and on again.",
+  "已收到样本 · 只统计有完整计时的已完成请求": "Samples received · only completed requests with full timing are included",
+  "已开启 · 等待新请求；请先重启对应客户端或会话。": "On · waiting for new requests. Restart the corresponding client or session first.",
+  "最近样本 {time}": "Latest sample {time}",
+  "本机已收集 {count} 个有效样本": ({ count }) => `Collected ${count} timed ${count === "1" ? "sample" : "samples"} on this device`,
+  "刷新采集状态": "Refresh collection status",
+  "数据来源与采集": "Data sources and collection",
+  "配置官方配额读取方式与可选的响应速度采集。官方配额、本地解析用量与估算成本始终分开呈现。": "Configure official quota sources and optional response speed collection. Official quota, locally parsed usage and estimated cost remain separate.",
+  "浏览器演示模式不能配置响应速度采集": "Response speed collection can't be configured in the browser demo",
+
   // Settings: Cursor and Qoder sources (App.jsx)
   "Cursor 用量来源状态读取失败。": "Couldn't read the Cursor usage source status.",
   "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。":
