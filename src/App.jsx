@@ -66,10 +66,12 @@ import {
   getClaudeHookStatus,
   getClaudeOauthStatus,
   getCursorUsageStatus,
+  getResponseSpeedStatus,
   getAntigravityHookStatus,
   getQoderCookieStatus,
   setClaudeOauth,
   setCursorUsage,
+  setResponseSpeedCollection,
   getSyncSettings,
   getUsageReport,
   exportCsvFile,
@@ -3315,6 +3317,166 @@ function CursorUsageCard({ onSnapshotRefresh }) {
   );
 }
 
+const RESPONSE_SPEED_SOURCES = [
+  { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+];
+
+function ResponseSpeedCollectionCard({ onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(null);
+  const [readFailed, setReadFailed] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const mounted = useRef(false);
+  const inFlight = useRef(false);
+  const previousStatus = useRef(null);
+  const refreshSnapshot = useRef(onSnapshotRefresh);
+  refreshSnapshot.current = onSnapshotRefresh;
+
+  const acceptStatus = useCallback((next, forceRefresh = false) => {
+    const changed = previousStatus.current !== null
+      && JSON.stringify(previousStatus.current) !== JSON.stringify(next);
+    previousStatus.current = next;
+    setStatus(next);
+    setReadFailed(false);
+    if (changed || forceRefresh) refreshSnapshot.current();
+  }, []);
+
+  const readStatus = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setLoading(true);
+    setFeedback(null);
+    try {
+      const next = await getResponseSpeedStatus();
+      if (mounted.current) acceptStatus(next);
+    } catch {
+      if (mounted.current) {
+        setReadFailed(true);
+        setFeedback({ tone: "error", text: "响应速度采集状态读取失败，请刷新状态后重试。" });
+      }
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setLoading(false);
+    }
+  }, [acceptStatus]);
+
+  useEffect(() => {
+    mounted.current = true;
+    readStatus();
+    const refreshVisible = () => {
+      if (document.visibilityState !== "hidden") readStatus();
+    };
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      mounted.current = false;
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  }, [readStatus]);
+
+  const toggle = async (agentId, enabled) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(agentId);
+    setFeedback(null);
+    try {
+      const next = await setResponseSpeedCollection(agentId, enabled);
+      if (mounted.current) {
+        acceptStatus(next, true);
+        setFeedback({ tone: "success", text: enabled ? "响应速度采集设置已更新。" : "已停止采集，保留已有统计。" });
+      } else {
+        refreshSnapshot.current();
+      }
+    } catch {
+      // A config can change between reading and toggling. Re-read so a conflict
+      // is visible immediately without retrying the write or replacing it.
+      try {
+        const next = await getResponseSpeedStatus();
+        if (mounted.current) acceptStatus(next);
+      } catch {
+        if (mounted.current) setReadFailed(true);
+      }
+      if (mounted.current) {
+        setFeedback({ tone: "error", text: "响应速度采集设置未能更新，请检查状态后重试。" });
+      }
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
+
+  return (
+    <div className="settings-card response-speed-card" aria-busy={loading || busy !== null}>
+      <h2>{t("Claude / Codex 响应速度")}</h2>
+      <p className="settings-muted">
+        {t("默认关闭。分别开启后，重启对应客户端或会话，才开始采集新请求；不会补算历史速度。")}
+      </p>
+      <p className="settings-muted response-speed-privacy">
+        {t("只在本机保存模型名、输出 token 数与计时数字，不保存对话或凭据。统计的是含等待与思考的响应均速，不是纯生成或实时速度。")}
+      </p>
+      {status?.demo && <p className="settings-muted response-speed-privacy">{t("浏览器演示模式：仅桌面应用可配置。")}</p>}
+      <div className="response-speed-sources" aria-live="polite">
+        {RESPONSE_SPEED_SOURCES.map(({ id, label }) => {
+          const source = status?.sources.find((entry) => entry.id === id);
+          const hasSamples = Number.isInteger(source?.sampleCount) && source.sampleCount > 0;
+          return (
+            <section className="response-speed-source" key={id} aria-labelledby={`response-speed-${id}`}>
+              <div className="response-speed-source-heading">
+                <h3 id={`response-speed-${id}`}>{label}</h3>
+                <label className="response-speed-switch">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={source?.enabled === true}
+                    disabled={!source || status.demo || loading || busy !== null || readFailed || (!source.enabled && source.conflict)}
+                    aria-label={t("采集 {agent} 响应速度", { agent: label })}
+                    aria-describedby={`response-speed-state-${id}`}
+                    onChange={(event) => toggle(id, event.target.checked)}
+                  />
+                  <span>{source ? source.enabled ? t("已开启") : t("未开启") : loading ? t("读取中…") : t("未提供")}</span>
+                </label>
+              </div>
+              <p className="settings-muted" id={`response-speed-state-${id}`}>
+                {busy === id ? t("正在更新…")
+                  : loading ? t("读取中…")
+                    : !source || readFailed ? t("暂时无法确认当前采集状态")
+                      : source.conflict ? source.enabled
+                        ? t("配置已变动 · 保留现有外部遥测配置，采集已暂停。")
+                        : t("已有外部遥测配置 · 保留原配置，无法开启采集。")
+                        : source.enabled && !source.configured ? t("配置已变动 · 采集已暂停，请检查客户端配置。")
+                          : !source.enabled ? t("未开启 · 不采集新请求")
+                            : !status.running ? t("已开启 · 本机采集服务未运行，请关闭后重新开启。")
+                              : hasSamples ? t("已收到样本 · 只统计有完整计时的已完成请求")
+                                : t("已开启 · 等待新请求；请先重启对应客户端或会话。")}
+              </p>
+              {hasSamples && (
+                <p className="response-speed-sample-count">
+                  {t("本机已收集 {count} 个有效样本", { count: formatNumber(source.sampleCount) })}
+                  {Number.isFinite(source.lastSampleAtMs) && (
+                    <span>{t("最近样本 {time}", { time: formatDateTime(source.lastSampleAtMs, { hour12: false }) })}</span>
+                  )}
+                </p>
+              )}
+              {source?.error && <p className="settings-feedback settings-feedback--error" role="alert">{t(source.error)}</p>}
+            </section>
+          );
+        })}
+      </div>
+      <button type="button" className="ledger-button response-speed-refresh" disabled={loading || busy !== null} onClick={readStatus}>
+        {loading ? t("读取中…") : t("刷新采集状态")}
+      </button>
+      {feedback && (
+        <p className={`settings-feedback settings-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
+          {feedbackText(feedback)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function QoderQuotaCard({ onSnapshotRefresh }) {
   const [status, setStatus] = useState(null);
   const [cookieInput, setCookieInput] = useState("");
@@ -3447,8 +3609,8 @@ const SETTINGS_TABS = [
   {
     id: "sources",
     label: "数据来源",
-    title: "官方配额来源",
-    blurb: "配置各 Agent 的官方配额读取方式。官方配额、本地解析用量与估算成本是三类不同事实，界面上始终分开呈现。",
+    title: "数据来源与采集",
+    blurb: "配置官方配额读取方式与可选的响应速度采集。官方配额、本地解析用量与估算成本始终分开呈现。",
   },
   {
     id: "sync",
@@ -3591,6 +3753,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
         )}
         {activeTab.id === "sources" && (
           <>
+            <ResponseSpeedCollectionCard onSnapshotRefresh={onSnapshotRefresh} />
             <HookCard
               title={t("Claude Code 官方配额")}
               description={t("安装一个只提取 5h/7d 剩余额度的状态栏（statusLine）钩子（不读对话内容、不碰登录凭据）。 已有自定义 statusLine 会自动串联、原样保留；卸载时恢复原状。")}

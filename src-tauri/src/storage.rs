@@ -566,6 +566,12 @@ pub fn prune_old_events(connection: &Connection, cutoff_ms: i64) -> Result<()> {
         "DELETE FROM usage_event WHERE occurred_at_ms < ?1",
         [cutoff_ms],
     )?;
+    // Captured timings are not rebuildable from logs, but share the ledger's
+    // retention horizon even when both collectors have been disabled.
+    connection.execute(
+        "DELETE FROM response_speed_sample WHERE occurred_at_ms < ?1",
+        [cutoff_ms],
+    )?;
     Ok(())
 }
 

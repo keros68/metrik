@@ -138,6 +138,15 @@ local; the existing sync format is unchanged. Schema upgrades add a nullable
 column in place, preserving old usage. Same-payload rescans enrich timing;
 counter merges never pair an older duration with newly increased output.
 
+Claude Code and Codex have a separate, off-by-default path: an explicitly
+enabled client exporter sends local OTLP data to a metadata-only decoder, which
+writes `response_speed_sample`. The same period/model aggregation combines
+these paired timing samples with local-log timing without adding token-usage
+events or changing usage totals. Existing external exporters are preserved;
+only new requests after client restart can be measured. Samples stay local
+and use a 182-day retention window. See [Response speed collection](response-speed.md)
+for setup, supported client formats, request correlation and privacy boundaries.
+
 ## Quota
 
 Quota rows are replaced wholesale, never merged, so a window a plan no longer has cannot linger as a stale row:
