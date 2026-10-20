@@ -937,7 +937,7 @@ function ModelResponseSpeedHelp() {
         <Info size={13} weight="regular" aria-hidden="true" />
       </button>
       <span id="model-speed-explanation" role="tooltip" className="model-speed-tooltip">
-        {t("仅统计当前周期内有完整计时的已完成请求：输出 token 总和 ÷ 响应总耗时。耗时包含等待和思考；这是历史响应均速，不是纯生成速度或实时速度。")}
+        {t("历史响应均速：输出 token 总数 ÷ 总耗时（含等待和思考）。")}
       </span>
     </div>
   );
