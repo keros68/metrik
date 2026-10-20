@@ -144,7 +144,7 @@ export default {
   "另有 {tokens} tokens 因无可靠定价未计入。": " Another {tokens} tokens are excluded because no reliable pricing exists.",
   "模型分布": "Models",
   "响应均速（含等待）": "Response avg (incl. wait)",
-  "仅统计当前周期内有完整计时的已完成请求：输出 token 总和 ÷ 响应总耗时。耗时包含等待和思考；这是历史响应均速，不是纯生成速度或实时速度。": "Uses only completed requests with full timing in the selected period: total output tokens divided by total response duration. Duration includes waiting and thinking. This is a historical response average, not pure generation speed or live speed.",
+  "历史响应均速：输出 token 总数 ÷ 总耗时（含等待和思考）。": "Historical response speed: total output tokens ÷ total duration (including waiting and thinking).",
   "{count} 个有效样本": ({ count }) => `${count} timed ${count === "1" ? "sample" : "samples"}`,
   "暂无计时": "No timing data",
   "正在读取本机趋势": "Reading the local trend",
