@@ -116,15 +116,13 @@ change.
   usage only and never a quota; the GLM quota source additionally accepts the
   key pi stores so a pi-only install still shows the GLM quota on the GLM
   card.
-- Hermes (Nous Research's agent CLI) is a harness like Pi: it has no coding
-  plan of its own and bills whatever upstream it is configured for. Its
-  recorded usage is attributed by billing route — GLM Coding Plan, Kimi Code,
-  and ChatGPT/Codex subscription endpoints to their own cards, everything
-  else (direct and custom APIs) to the Hermes card. Attribution keys on the
-  billing base URL's plan-specific endpoint, never on the user-editable
-  provider alias; a vendor's plain pay-as-you-go endpoint is not a plan and
-  stays on the Hermes card. The Hermes card carries local usage only and
-  never a quota.
+- Hermes (Nous Research's agent CLI) is a harness with no coding plan of its
+  own. Agent consumption and official plan allowance are separate dimensions:
+  every token Hermes records stays under the Hermes card regardless of the
+  upstream billing route, while official Kimi, GLM, Codex, and other quota
+  windows remain independent observations from their own sources. Never move
+  Hermes usage onto a plan card or use a plan's quota as Hermes usage. The
+  Hermes card carries local usage only and never a quota.
 - DeepSeek Harness is a harness like Pi: usage on a coding-plan route (GLM
   Coding Plan, Kimi Code, Qwen Token Plan, OpenCode Go, ChatGPT subscription)
   goes to that plan's card, and DeepSeek API or platform-balance usage stays
