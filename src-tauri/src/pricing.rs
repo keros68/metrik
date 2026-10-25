@@ -85,9 +85,16 @@ impl Pricing {
     }
 }
 
-/// 手动补充的官方第一方价目（生成表之外）：模型太新、两个来源都未收录时
-/// 按官方定价页临时补齐，**收录后即删**——两处都留会让手工值一直压过生成值，
-/// 官方调价后刷新生成表也不生效。查找时先于生成表命中。
+/// 手动补充/覆盖的官方第一方价目。查找时先于生成表命中。两类：
+///
+/// 一、生成表没有的（模型太新、两个来源都未收录）：按官方定价页临时补齐，
+/// **收录后即删**——两处都留会让手工值一直压过生成值，官方调价后刷新生成表
+/// 也不生效。
+///
+/// 二、生成表收录了但数值错：LiteLLM 的 glm-4.5 家族缓存命中价停在 z.ai 改
+/// 用独立缓存计价之前，把命中价记成了未打折的输入价；models.dev 的数值与
+/// 官方页一致，但两源分歧时沿用 LiteLLM。这类条目在上游修正、与生成表数值
+/// 一致后即删。
 ///
 /// 已被生成表收录、数值与手工值一致的条目从这里删掉（如 glm-5.2、kimi-k3、
 /// glm-5-turbo）；下面的测试仍按各自官方定价页的数值断言，钉的是价格本身，
@@ -107,6 +114,10 @@ impl Pricing {
 ///   公布价；缓存两项官方尚未逐模型列出，按百炼计费文档的通用规则推算——
 ///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
 ///   规则推算不是逐模型报价，官方列出后应替换。
+/// - glm-4.5 / -air / -airx / -x / -v：z.ai 官方定价页
+///   docs.z.ai/guides/overview/pricing（2026-10-25 核对）。缓存命中列
+///   $0.11 / $0.03 / $0.22 / $0.45 / $0.11；输入输出与 LiteLLM 现值一致，
+///   只覆盖命中价。LiteLLM 修正后此处即删。
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
     (
         "deepseek-flash",
@@ -153,6 +164,53 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
             output: 6.0,
         },
     ),
+    // glm-4.5 家族：官方缓存命中价（见上）。输入/输出沿用 LiteLLM，只覆盖
+    // 命中价这一列——LiteLLM 的 0.6/0.2/1.1/2.2/0.6 是「无缓存折扣」的旧值。
+    (
+        "glm-4.5",
+        Pricing {
+            input: 0.6,
+            cache_read: 0.11,
+            cache_write: 0.0,
+            output: 2.2,
+        },
+    ),
+    (
+        "glm-4.5-air",
+        Pricing {
+            input: 0.2,
+            cache_read: 0.03,
+            cache_write: 0.0,
+            output: 1.1,
+        },
+    ),
+    (
+        "glm-4.5-airx",
+        Pricing {
+            input: 1.1,
+            cache_read: 0.22,
+            cache_write: 0.0,
+            output: 4.5,
+        },
+    ),
+    (
+        "glm-4.5-x",
+        Pricing {
+            input: 2.2,
+            cache_read: 0.45,
+            cache_write: 0.0,
+            output: 8.9,
+        },
+    ),
+    (
+        "glm-4.5v",
+        Pricing {
+            input: 0.6,
+            cache_read: 0.11,
+            cache_write: 0.0,
+            output: 1.8,
+        },
+    ),
 ];
 
 /// 官方按时段分价的模型：谷段单价 = 表内标准价 × 0.5。
@@ -193,6 +251,26 @@ const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
     ),
 ];
 
+/// 官方已公布生效日的调价：(模型, 生效时刻, 新价)。生效后的事件按新价计，
+/// 之前的事件仍按当时的价——与 RETIRED_ROUTES 一样按事件时间戳分段，不重算
+/// 历史。上游价格表只反映「当前价」，不会在官方公布的生效日自动翻转，这里
+/// 先行接管；生成表刷新成新价、数值一致后删除本条目。
+///
+/// - gemini-4-argon：Google 定价页（2026-10-25 核对）输入 $2、缓存命中
+///   $0.10、输出 $10（含思考 token）是限时价，只到 2026-11-30；2026-12-01
+///   起输入 $4、缓存 $0.20、输出 $20。页面只写日期未写时刻，按 UTC 午夜
+///   生效计。Batch/Flex/Priority 档与 grounding 不计。
+const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing)] = &[(
+    "gemini-4-argon",
+    1_796_083_200_000,
+    Pricing {
+        input: 4.0,
+        cache_read: 0.2,
+        cache_write: 0.0,
+        output: 20.0,
+    },
+)];
+
 /// 订阅制 coding plan 的模型 ID → 同一模型的官方第一方 API 价（估算口径）。
 /// 仅限"同一模型"，且要有官方佐证，不是看名字像就归一：
 /// - Kimi Code 订阅记的 `kimi-code/k3` 就是 kimi-k3 本身，
@@ -203,9 +281,17 @@ const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
 ///   的订阅额度消耗约为 k3-256k 的两倍，但那讲的是套餐额度，不是逐 token 价；
 ///   官方未公布 256k 档单独的 API 价目，Kimi 官方又历来按上下文档分价
 ///   （kimi-latest-8k/32k/128k），官方公布后再分档。
-/// - `kimi-for-coding` 是 Kimi Code 文档模型表里的固定模型 ID，版本一栏写明
-///   "Kimi K2.7 Code"（2026-08-31 核对），按 kimi-k2.7-code 官方 API 价估算。
-///   其高速变体 kimi-for-coding-highspeed 官方价目单列（标准版两倍），未收录。
+/// - `kimi-for-coding` 曾按 K2.7 Code 计价（2026-08-31 核对）；2026-10-25
+///   官方模型表把它改映射到 K2.8 Preview，而 K2.8 Preview 没有逐 token 的
+///   官方 API 价目——别名删除，宁可 unpriced 也不按过期的官方佐证猜价。
+///   其高速变体 `kimi-for-coding-highspeed` 官方仍映射 K2.7 Code Highspeed，
+///   按该模型官方 API 价估算。
+/// - K3.1 Pro（2026-10-23 发布）的订阅写法：Kimi Code 记 `kimi-code/k3.1-pro`
+///   （第三方工具集成文档同款 ID），Hermes 记裸名 `k3.1-pro`；官方模型表
+///   写明它们就是 K3.1 Pro / K3.1 Pro Highspeed 本身，按官方 API 价估算
+///   （kimi.ai 定价页 2026-10-25 核对：$2/$0.20/写 $2(5m)/$10，高速档
+///   $4/$0.20/写 $4/$20）。`kimi-code/k2.8-preview` 的 ID 存在但 K2.8
+///   Preview 无 API 价目，与 kimi-code/k4 一样保持 unpriced。
 /// - ZCode coding-plan 记的 `GLM-5.2`、`GLM-5.3`、`GLM-5.3-Flash` 只是
 ///   glm-5.2、glm-5.3、glm-5.3-flash 的大小写变体，同一模型。
 /// - Grok Build 订阅记的 `grok-4.5-build`：docs.x.ai 模型页里 grok-4.5 的官方
@@ -220,8 +306,8 @@ const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
 ///   核对）。Pi 经 OpenCode Go、千问 Token Plan 记的就是这些小写版本名，
 ///   分别是 deepseek-v4-flash、deepseek-v4-pro、deepseek-flash 本身。
 ///
-/// 没有官方价的订阅 ID 继续unpriced；kimi-for-coding 已有官方佐证（K2.7
-/// Code），见上。
+/// 没有官方价的订阅 ID 继续 unpriced（kimi-for-coding → K2.8 Preview、
+/// kimi-code/k2.8-preview、kimi-code/k4 等），见上。
 const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("GLM-5.2", "glm-5.2"),
     ("GLM-5.3", "glm-5.3"),
@@ -229,7 +315,11 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("kimi-code/k3", "kimi-k3"),
     ("kimi-code/k3-256k", "kimi-k3"),
     ("k3", "kimi-k3"),
-    ("kimi-for-coding", "kimi-k2.7-code"),
+    ("kimi-code/k3.1-pro", "kimi-k3.1-pro"),
+    ("kimi-code/k3.1-pro-highspeed", "kimi-k3.1-pro-highspeed"),
+    ("k3.1-pro", "kimi-k3.1-pro"),
+    ("k3.1-pro-highspeed", "kimi-k3.1-pro-highspeed"),
+    ("kimi-for-coding-highspeed", "kimi-k2.7-code-highspeed"),
     ("grok-4.5-build", "grok-4.5"),
     ("codex-auto-review", "gpt-5.4"),
     ("deepseek-v4-flash-0731", "deepseek-v4-flash"),
@@ -283,6 +373,13 @@ fn resolve(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
         .find(|(retired, from_ms, _)| *retired == model && occurred_at_ms >= *from_ms)
     {
         return exact(target).map(|pricing| (target, pricing));
+    }
+    // 再看官方公布的调价是否已在这一刻生效。
+    if let Some(&(_, _, scheduled)) = SCHEDULED_PRICE_CHANGES
+        .iter()
+        .find(|(changed, from_ms, _)| *changed == model && occurred_at_ms >= *from_ms)
+    {
+        return Some((model, scheduled));
     }
     if let Some(pricing) = exact(model) {
         return Some((model, pricing));
@@ -573,18 +670,50 @@ mod tests {
         assert!(price_for("kimi-code/k4", ANY_TIME_MS).is_none());
         assert!(price_for("kimi-code/kimi-for-coding", ANY_TIME_MS).is_none());
 
-        // kimi-for-coding 官方文档写明是 Kimi K2.7 Code（2026-08-31 核对），
-        // 按 kimi-k2.7-code 官方 API 价估算：页面只标人民币（缓存命中 ¥1.30 /
-        // 未命中 ¥6.50 / 输出 ¥27），输入输出官方注明与 K2.6 同价、缓存按
-        // ¥1.30/¥1.10 等比。
-        let k27 = price_for("kimi-for-coding", ANY_TIME_MS).expect("kimi-for-coding priced");
-        assert_eq!(k27.input, 0.95);
-        assert_eq!(k27.cache_read, 0.19);
-        assert_eq!(k27.output, 4.0);
-        let k27_api = price_for("kimi-k2.7-code", ANY_TIME_MS).expect("kimi-k2.7-code priced");
-        assert_eq!(k27_api.input, k27.input);
-        assert_eq!(k27_api.cache_read, k27.cache_read);
-        assert_eq!(k27_api.output, k27.output);
+        // kimi-for-coding 官方模型表 2026-10-25 起映射 K2.8 Preview，而
+        // K2.8 Preview 没有逐 token 官方价目——旧的 K2.7 Code 佐证
+        // （2026-08-31 核对）已过期，别名删除，宁可 unpriced 也不猜价。
+        // 高速变体官方仍映射 K2.7 Code Highspeed（$1.9/$0.38/$8.0，标准版两倍）。
+        assert!(price_for("kimi-for-coding", ANY_TIME_MS).is_none());
+        let highspeed = price_for("kimi-for-coding-highspeed", ANY_TIME_MS)
+            .expect("kimi-for-coding-highspeed priced");
+        let k27hs = price_for("kimi-k2.7-code-highspeed", ANY_TIME_MS)
+            .expect("kimi-k2.7-code-highspeed priced");
+        assert_eq!(
+            (highspeed.input, highspeed.cache_read, highspeed.output),
+            (1.9, 0.38, 8.0)
+        );
+        assert_eq!(
+            (highspeed.input, highspeed.output),
+            (k27hs.input, k27hs.output)
+        );
+
+        // K3.1 Pro（2026-10-23 发布）：kimi.ai 官方定价页输入 $2、缓存 $0.20、
+        // 缓存写入 $2（5m 档）、输出 $10；高速档 $4/$0.20/$4/$20，与 models.dev
+        // 一致。Kimi Code 记的 kimi-code/k3.1-pro 与 Hermes 裸名按同一官方价估算。
+        let k31 = price_for("kimi-k3.1-pro", ANY_TIME_MS).expect("kimi-k3.1-pro priced");
+        assert_eq!(
+            (k31.input, k31.cache_read, k31.cache_write, k31.output),
+            (2.0, 0.2, 2.0, 10.0)
+        );
+        let k31hs = price_for("kimi-k3.1-pro-highspeed", ANY_TIME_MS)
+            .expect("kimi-k3.1-pro-highspeed priced");
+        assert_eq!(k31hs.input, 4.0);
+        assert_eq!(k31hs.output, 20.0);
+        assert_eq!(
+            price_for("kimi-code/k3.1-pro", ANY_TIME_MS)
+                .expect("alias priced")
+                .input,
+            k31.input
+        );
+        assert_eq!(
+            price_for("k3.1-pro", ANY_TIME_MS)
+                .expect("alias priced")
+                .output,
+            k31.output
+        );
+        // K2.8 Preview 没有 API 价目：订阅 ID 不得蒙混。
+        assert!(price_for("kimi-code/k2.8-preview", ANY_TIME_MS).is_none());
     }
 
     #[test]
@@ -808,9 +937,77 @@ mod tests {
         // Lyria 按图片收费，LiteLLM 的 token 价是 0 占位，不得显示成免费。
         assert!(price_for("lyria-3.5", ANY_TIME_MS).is_none());
         assert!(price_for("lyria-3-pro-preview", ANY_TIME_MS).is_none());
-        // GPT-5.5-Cyber 模型已公开，但官方价目仍不可核验。
-        assert!(price_for("gpt-5.5-cyber", ANY_TIME_MS).is_none());
         // 未知模型带日期后缀也不能靠剥后缀蒙混过关。
         assert!(price_for("totally-made-up-20260101", ANY_TIME_MS).is_none());
+    }
+
+    #[test]
+    fn gpt_5_5_cyber_priced_once_official_rates_were_published() {
+        // OpenAI 官方定价页（2026-10-25 核对）：Cyber 系输入 $12.5、缓存命中
+        // $1.25、输出 $75，与 LiteLLM 一致——UNVERIFIED_PRICING 解禁。
+        // gpt-5.6-cyber 同价但官方另有缓存写入价（5m 档 $15.625）。
+        let cyber = price_for("gpt-5.5-cyber", ANY_TIME_MS).expect("cyber priced");
+        assert_eq!(
+            (
+                cyber.input,
+                cyber.cache_read,
+                cyber.cache_write,
+                cyber.output
+            ),
+            (12.5, 1.25, 0.0, 75.0)
+        );
+        assert_eq!(
+            price_for("gpt-5.5-cyber-preview", ANY_TIME_MS)
+                .expect("preview priced")
+                .output,
+            75.0
+        );
+        let newer = price_for("gpt-5.6-cyber", ANY_TIME_MS).expect("5.6 cyber priced");
+        assert_eq!(
+            (newer.input, newer.cache_write, newer.output),
+            (12.5, 15.625, 75.0)
+        );
+    }
+
+    #[test]
+    fn glm_4_5_family_cache_hits_use_official_zai_rates() {
+        // z.ai 官方定价页（2026-10-25 核对）：4.5 家族的缓存命中早已改为独立
+        // 低价，LiteLLM 全家停在「命中价 = 未打折输入价」的旧值（glm-4.5v 见
+        // 生成表头的两源分歧），models.dev 与官方一致但分歧时沿用 LiteLLM，
+        // 所以 MANUAL_PRICING 覆盖，输入/输出两列不动。
+        let base = price_for("glm-4.5", ANY_TIME_MS).expect("priced");
+        assert_eq!((base.input, base.cache_read, base.output), (0.6, 0.11, 2.2));
+        let air = price_for("glm-4.5-air", ANY_TIME_MS).expect("priced");
+        assert_eq!(air.cache_read, 0.03);
+        let airx = price_for("glm-4.5-airx", ANY_TIME_MS).expect("priced");
+        assert_eq!((airx.input, airx.cache_read, airx.output), (1.1, 0.22, 4.5));
+        let big = price_for("glm-4.5-x", ANY_TIME_MS).expect("priced");
+        assert_eq!(big.cache_read, 0.45);
+        let vision = price_for("glm-4.5v", ANY_TIME_MS).expect("priced");
+        assert_eq!(
+            (vision.input, vision.cache_read, vision.output),
+            (0.6, 0.11, 1.8)
+        );
+    }
+
+    #[test]
+    fn gemini_4_argon_price_doubles_at_the_official_cutover() {
+        // Google 定价页（2026-10-25 核对）：$2/$0.10/$10（含思考 token）是
+        // 限时价，只到 2026-11-30；2026-12-01 起输入 $4、缓存 $0.20、输出
+        // $20。按事件时间戳分段，历史事件不重算；生成表刷新到新价后此
+        // 覆盖即删。
+        let before = price_for("gemini-4-argon", 1_796_083_199_999).expect("priced");
+        assert_eq!(
+            (before.input, before.cache_read, before.output),
+            (2.0, 0.1, 10.0)
+        );
+        let after = price_for("gemini-4-argon", 1_796_083_200_000).expect("priced");
+        assert_eq!(
+            (after.input, after.cache_read, after.output),
+            (4.0, 0.2, 20.0)
+        );
+        // 限时分段只对生效时刻负责：8 月的老事件按当时的限时价。
+        let old = price_for("gemini-4-argon", ANY_TIME_MS).expect("priced");
+        assert_eq!(old.input, 2.0);
     }
 }
