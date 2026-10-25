@@ -270,9 +270,8 @@ const AGENT_META = {
     iconClass: "agent-icon--qwen",
   },
   hermes: {
-    // Hermes（Nous Research）是 harness：与 pi 同样没有自己的套餐，走别家
-    // coding plan 的用量按路由归属到对应卡片（GLM / Kimi / ChatGPT），其余
-    // 直连 API 留在这张卡；不显示配额。
+    // Hermes（Nous Research）是 harness：这张卡统计 Hermes 的全部本地消耗，
+    // 不按上游套餐拆走；它自身没有套餐，官方套餐余量由对应来源独立展示。
     label: "Hermes",
     // 官方应用图标是黑白 nous-girl 圆角瓦片（戴耳机的少女，四角透明）；
     // 强调色取与 pi 银灰相邻但更深的暖灰，两张中性卡在图里不互相混淆。

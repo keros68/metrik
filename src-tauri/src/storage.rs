@@ -24,9 +24,10 @@ pub const PARSER_VERSION: i64 = 7;
 /// Antigravity 9 重扫旧来源，让嵌套解码失败与零响应输出的口径异常正确标为不完整；
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
+/// Hermes 8 重扫 Hermes 来源，让所有用量回到实际执行工具，不再按套餐路由拆卡。
 pub fn parser_version_for(adapter: &str) -> i64 {
     match adapter {
-        "codex" | "pi" | "zcode" => 8,
+        "codex" | "pi" | "zcode" | "hermes" => 8,
         "antigravity" => 10,
         _ => PARSER_VERSION,
     }
@@ -395,9 +396,9 @@ fn insert_or_merge_usage_event(
     // WorkBuddy 同一身份渐进更新（见 adapters::workbuddy），跨扫描同样取分量最大值。
     let mergeable_workbuddy_message = event.adapter_id == "workbuddy";
     // Hermes 的用量行是累计计数器（per-API-call 增量累加），每次扫描都会重新
-    // 观察到更大的数——与 Antigravity 的活会话快照同型。归属可能记到别的卡片
-    // （见 hermes_providers），所以按事件键的 `hermes:` 前缀识别，不按 adapter。
-    // model 与路由全列都在事件键里，矛盾模型到不了合并路径，无需拒绝分支。
+    // 观察到更大的数——与 Antigravity 的活会话快照同型。按事件键的 `hermes:`
+    // 前缀识别，完整路由仍保留在键里；model 与路由全列都在事件键里，矛盾模型
+    // 到不了合并路径，无需拒绝分支。
     let mergeable_hermes_usage = event.event_key.starts_with("hermes:");
     let mergeable = mergeable_claude_message
         || mergeable_antigravity_response
@@ -1074,11 +1075,9 @@ mod tests {
     }
 
     /// Hermes 的用量行是累计计数器：同一路由行重扫时会观察到更大的数。
-    /// 事件按 `hermes:` 前缀做分量最大值合并——即使归属记到了别的卡片
-    /// （hermes_providers 把 GLM/Kimi/Codex 计划的路由记过去），也照常合并，
-    /// 不按 adapter_id 判断。
+    /// 事件按 `hermes:` 前缀做分量最大值合并，完整路由仍在事件键中。
     #[test]
-    fn hermes_cumulative_reobservations_merge_component_wise_across_credits() {
+    fn hermes_cumulative_reobservations_merge_component_wise() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
@@ -1087,8 +1086,7 @@ mod tests {
             "hermes:sess-1|glm-5.2|custom|https://open.bigmodel.cn/api/coding/paas/v4||".to_owned();
         let observed = |input: i64, cache_read: i64, output: i64, last_seen_ms: i64| {
             UsageEvent::new(
-                // 归属在 adapter 层落到 GLM 卡片，事件键仍是 hermes 命名空间。
-                "zcode",
+                "hermes",
                 event_key.clone(),
                 last_seen_ms,
                 "sess-1".into(),
@@ -1130,6 +1128,59 @@ mod tests {
         assert_eq!(input, 260, "分量取重扫后的更大值");
         assert_eq!(processed, 260 + 700 + 45);
         assert_eq!(occurred, 2_000, "时间戳跟随 last_seen 前移");
+    }
+
+    #[test]
+    fn hermes_route_reattribution_replaces_old_credit_events_without_duplicates() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let event_key = "hermes:sess-1|k3|custom|https://api.kimi.com/coding/v1||".to_owned();
+        let event = |adapter| {
+            UsageEvent::new(
+                adapter,
+                event_key.clone(),
+                1_000,
+                "sess-1".into(),
+                Some("k3".into()),
+                TokenVector {
+                    input_uncached: 100,
+                    cache_read: 300,
+                    output: 20,
+                    ..Default::default()
+                },
+                "exact",
+            )
+        };
+        replace_source(
+            &mut connection,
+            &source("hermes-db", "hermes", vec![event("kimi")]),
+            0,
+        )
+        .unwrap();
+
+        replace_source(
+            &mut connection,
+            &source("hermes-db", "hermes", vec![event("hermes")]),
+            0,
+        )
+        .unwrap();
+
+        let (events, observations, processed, old_credit_events): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'hermes'),
+                        (SELECT COUNT(*) FROM event_observation),
+                        (SELECT SUM(processed_tokens) FROM usage_event),
+                        (SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'kimi')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(events, 1);
+        assert_eq!(observations, 1);
+        assert_eq!(processed, 420);
+        assert_eq!(old_credit_events, 0, "旧套餐归属事件必须随重扫清理");
     }
 
     #[test]

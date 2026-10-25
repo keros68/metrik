@@ -7,7 +7,7 @@
 //! BigModel CN）→ `zcode`（GLM 卡片，与 zcode 桌面端同一账户额度）；Qwen Token
 //! Plan 各变体 → `qwen`；OpenCode Go（`opencode-go`，2026-09 真机补录）→
 //! `opencode`；Kimi Code 订阅（`kimi-coding`）→ `kimi`；ChatGPT Plus/Pro 订阅
-//! （`openai-codex`）→ `codex`，与 Hermes 的路由归属一致；其余 provider
+//! （`openai-codex`）→ `codex`；其余 provider
 //! （Anthropic、OpenAI 等）由 pi 自带凭据直连计费，不经过既有客户端的额度，
 //! 留在 `pi` 名下。
 //!
@@ -31,7 +31,7 @@ pub fn credited_agent(pi_provider: Option<&str>) -> &'static str {
         // OpenCode Go：opencode.ai 网关计费的同一套餐，与跑在哪个 harness 无关；
         // 配额源（coding_quota 的 Go 配额）同挂 opencode 卡片。
         "opencode-go" => "opencode",
-        // Kimi Code 订阅与 ChatGPT 订阅：走各自套餐额度，与 Hermes 的归属一致。
+        // Kimi Code 订阅与 ChatGPT 订阅：走各自套餐额度。
         "kimi-coding" => "kimi",
         "openai-codex" => "codex",
         _ => "pi",
