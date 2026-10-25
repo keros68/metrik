@@ -8,6 +8,11 @@ change.
 
 - Official quota, locally parsed usage, and estimated cost are different facts.
   Keep them visibly separate and never present an estimate as official billing.
+- Cost estimation prices only models that can still appear in logs within the
+  182-day parse horizon. Generations superseded before that horizon are pruned
+  from the pricing table at generation time and reported as unpriced; a rescan
+  never re-prices them. The pricing table is a rate card for the scan window,
+  not a historical archive.
 - Never synthesize a comparison curve or replace a failed desktop read with demo
   numbers. Missing and stale data must be labeled explicitly.
 - Claude Code and Codex response-speed collection is off by default and requires
