@@ -1721,8 +1721,8 @@ fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -
             ),
             i18n::tr_in!(
                 lang,
-                "只读取 state.db 的用量统计表，不读消息内容；走其他家套餐的用量按路由记到对应计量卡片，其余留在 Hermes。",
-                "Reads only the usage table in state.db, never message content; usage on other providers' plans is routed to the matching usage card, and the rest stays in Hermes."
+                "只读取 state.db 的用量统计表，不读消息内容；全部消耗都计入 Hermes，官方套餐余量由对应来源独立展示。",
+                "Reads only the usage table in state.db, never message content; all usage stays under Hermes, while official plan quotas are shown independently by their own sources."
             ),
         ),
         local(

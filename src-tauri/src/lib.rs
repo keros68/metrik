@@ -9,7 +9,6 @@ mod coding_quota;
 mod detect;
 mod domain;
 mod engine;
-mod hermes_providers;
 mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;

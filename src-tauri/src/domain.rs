@@ -10,8 +10,8 @@ use std::path::PathBuf;
 /// qwen 只有本地用量：pi 的 qwen-token-plan key 用量归属到这张卡；百炼 Token
 /// Plan 没有可编程的官方额度接口，不拉官方配额。
 /// deepseek 是配额-only：没有本地日志来源，只拉官方账户余额（金额，非百分比）。
-/// hermes 只有本地用量：Hermes 是 harness，走别家 coding plan 的用量按路由
-/// 归属到对应卡片（见 hermes_providers），其余直连 API 留在这张卡。
+/// hermes 只有本地用量：Hermes 是 harness，全部执行消耗都留在这张卡；
+/// 上游官方套餐余量由对应 quota source 独立展示，不改写 Agent 用量归属。
 /// cursor 只有用量：取 cursor.com 仪表盘的账号级逐次事件，需在设置里开启。
 /// dsh 只有本地用量：DeepSeek Harness 是 harness，走 coding plan 的用量按
 /// provider 路由归属到对应卡片，DeepSeek 按量计费的留在这张卡。

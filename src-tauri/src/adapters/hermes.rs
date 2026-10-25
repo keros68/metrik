@@ -22,13 +22,11 @@
 //! 任务维度（`task`：vision / compression / title_generation …）是真实计费的
 //! 辅助调用，与主循环一并入账（同 pi 的 compaction 口径）。
 //!
-//! 归属：hermes 是 harness，走别家 coding plan 的用量按路由记到对应计量 Agent
-//! （见 `hermes_providers`）；直连 API 与无路由的记录留在 hermes。hermes 没有
-//! 自己的套餐，不显示配额。
+//! 归属：hermes 是 harness，全部执行消耗都留在 hermes；上游官方套餐余量由
+//! 对应 quota source 独立展示，不改写 Agent 用量归属。hermes 没有自己的套餐。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
 use crate::domain::{ParsedSource, TokenVector, UsageEvent};
-use crate::hermes_providers;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
@@ -167,7 +165,7 @@ impl AgentAdapter for HermesAdapter {
             );
             events.push(
                 UsageEvent::new(
-                    hermes_providers::credited_agent(base_url.as_deref()),
+                    self.id(),
                     event_key,
                     occurred_at_ms,
                     session_id,
@@ -293,17 +291,17 @@ mod tests {
             .unwrap();
     }
 
-    /// 各路由归属各自的计量卡片；分量原样入账（input 已剔除缓存），reasoning
-    /// 只作 output 子项不重复相加；cwd 做项目归属。
+    /// 所有路由都归属实际执行的 Hermes；分量原样入账（input 已剔除缓存），
+    /// reasoning 只作 output 子项不重复相加；cwd 做项目归属。
     #[test]
-    fn usage_rows_are_attributed_by_route_with_verbatim_components() {
+    fn usage_rows_stay_on_hermes_with_verbatim_components() {
         let test = TestDirectory::new("attribution");
         let db_path = test.path().join("state.db");
         let fixture = create_fixture_db(&db_path);
         fixture
             .execute_batch("INSERT INTO sessions (id, cwd) VALUES ('sess-a', '/tmp/work');")
             .unwrap();
-        // GLM Coding Plan 路由 → zcode 卡。
+        // GLM Coding Plan 路由仍归 Hermes。
         insert_usage(
             &fixture,
             "sess-a",
@@ -317,7 +315,7 @@ mod tests {
             10,
             1_788_000_000.5,
         );
-        // Kimi Code 订阅路由 → kimi 卡。
+        // Kimi Code 订阅路由仍归 Hermes。
         insert_usage(
             &fixture,
             "sess-a",
@@ -331,7 +329,7 @@ mod tests {
             0,
             1_788_000_100.0,
         );
-        // 直连 API → 留 hermes；辅助调用（task 非空）同样入账。
+        // 直连 API 与辅助调用（task 非空）同样入账。
         insert_usage(
             &fixture,
             "sess-a",
@@ -351,14 +349,19 @@ mod tests {
         let scan = adapter.parse(&adapter.discover(0).remove(0), 0).unwrap();
 
         assert_eq!(scan.source.events.len(), 3);
-        let by_card = |card: &str, key_part: &str| {
+        assert!(scan
+            .source
+            .events
+            .iter()
+            .all(|event| event.adapter_id == "hermes"));
+        let by_model = |key_part: &str| {
             scan.source
                 .events
                 .iter()
-                .find(|event| event.adapter_id == card && event.event_key.contains(key_part))
-                .unwrap_or_else(|| panic!("missing {card} event for {key_part}"))
+                .find(|event| event.event_key.contains(key_part))
+                .unwrap_or_else(|| panic!("missing Hermes event for {key_part}"))
         };
-        let glm = by_card("zcode", "glm-5.2");
+        let glm = by_model("glm-5.2");
         assert_eq!(glm.tokens.input_uncached, 100);
         assert_eq!(glm.tokens.cache_read, 300);
         assert_eq!(glm.tokens.output, 20);
@@ -369,12 +372,12 @@ mod tests {
         // last_seen 秒 → 毫秒。
         assert_eq!(glm.occurred_at_ms, 1_788_000_000_500);
 
-        let kimi = by_card("kimi", "k3");
+        let kimi = by_model("k3");
         assert_eq!(kimi.tokens.processed(), 60);
 
-        let hermes = by_card("hermes", "deepseek-v4-flash");
-        assert_eq!(hermes.tokens.input_uncached, 80);
-        assert!(hermes.event_key.contains("|compression"));
+        let direct = by_model("deepseek-v4-flash");
+        assert_eq!(direct.tokens.input_uncached, 80);
+        assert!(direct.event_key.contains("|compression"));
         assert!(!scan.diagnostics.is_partial());
     }
 
