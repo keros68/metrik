@@ -45,7 +45,9 @@ const PRICING_START_DATES = new Map([["gpt-rosalind-research", "2026-10-05"]]);
 
 // 模型存在不等于价格已公开。LiteLLM 偶尔会先填入一个推测值；官方价目可核验前
 // 保持 unpriced，不能把第三方数值当成第一方价格。
-const UNVERIFIED_PRICING = new Set(["gpt-5.5-cyber"]);
+// gpt-5.5-cyber 曾在此列：2026-10-25 官方定价页已公布（$12.5/$1.25/$75，与
+// LiteLLM 一致），解禁。新出现同类情况加回这里即可。
+const UNVERIFIED_PRICING = new Set();
 
 async function load(name, url, localPath) {
   if (localPath) return JSON.parse(readFileSync(localPath, "utf8"));

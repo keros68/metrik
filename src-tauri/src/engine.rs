@@ -2560,8 +2560,9 @@ mod tests {
             "claude",
             "sess-mixed",
             test_local_time(today, 9).timestamp_millis(),
-            // 订阅专属 ID 且官方未公布价目，保持未计价（见 pricing.rs）。
-            Some("kimi-for-coding-highspeed"),
+            // 订阅专属 ID 且官方未公布价目，保持未计价（见 pricing.rs：
+            // kimi-for-coding 2026-10-25 起官方映射 K2.8 Preview，无 API 价目）。
+            Some("kimi-for-coding"),
             10,
             0,
             0,
@@ -2588,8 +2589,9 @@ mod tests {
             "sess-none",
             test_local_time(today, 8).timestamp_millis(),
             // 订阅专属 ID 且官方未公布价目的模型必须保持未计价
-            // （kimi-for-coding 已按 K2.7 Code 计价，不能再当反例）。
-            Some("kimi-for-coding-highspeed"),
+            // （kimi-for-coding-highspeed 已按 K2.7 Code Highspeed 计价，
+            // 不能再当反例——与上一次互换正好相反）。
+            Some("kimi-for-coding"),
             10,
             0,
             0,
@@ -3562,14 +3564,15 @@ mod tests {
             1_000_000,
             1_000_000,
         );
-        // claude: kimi-for-coding-highspeed 是订阅专属 ID，官方价目单列且未
-        // 收录，必须保持未计价（kimi-for-coding 本体已按 K2.7 Code 计价）。
+        // claude: kimi-for-coding 是订阅专属 ID，官方 2026-10-25 起映射
+        // K2.8 Preview 且无 API 价目，必须保持未计价
+        // （kimi-for-coding-highspeed 已按 K2.7 Code Highspeed 计价）。
         insert_test_usage_full(
             &connection,
             "claude-glm",
             "claude",
             at,
-            Some("kimi-for-coding-highspeed"),
+            Some("kimi-for-coding"),
             100,
             0,
             0,

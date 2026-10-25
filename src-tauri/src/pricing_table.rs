@@ -11,13 +11,14 @@
 //! - MiniMax-M2（cache_read、cache_write）：LiteLLM 0.3 / 0.03 / 0.375 / 1.2；models.dev 0.3 / 0.3 / 0.0 / 1.2
 //! - glm-4.5（cache_read）：LiteLLM 0.6 / 0.6 / 0.0 / 2.2；models.dev 0.6 / 0.11 / 0.0 / 2.2
 //! - glm-4.5-air（cache_read）：LiteLLM 0.2 / 0.2 / 0.0 / 1.1；models.dev 0.2 / 0.03 / 0.0 / 1.1
+//! - glm-4.5v（cache_read）：LiteLLM 0.6 / 0.6 / 0.0 / 1.8；models.dev 0.6 / 0.11 / 0.0 / 1.8
 //! - gpt-3.5-turbo（cache_read）：LiteLLM 0.5 / 0.5 / 0.0 / 1.5；models.dev 0.5 / 0.0 / 0.0 / 1.5
 //! - kimi-k3（cache_write）：LiteLLM 3.0 / 0.3 / 0.0 / 15.0；models.dev 3.0 / 0.3 / 3.0 / 15.0
 
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-10-15";
+pub const PRICING_AS_OF: &str = "2026-10-25";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -32,6 +33,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("MiniMax-M2.7", Pricing { input: 0.3, cache_read: 0.06, cache_write: 0.375, output: 1.2 }), // models.dev
     ("MiniMax-M2.7-highspeed", Pricing { input: 0.6, cache_read: 0.06, cache_write: 0.375, output: 2.4 }), // models.dev
     ("MiniMax-M3", Pricing { input: 0.3, cache_read: 0.06, cache_write: 0.0, output: 1.2 }),
+    ("MiniMax-M3.1-Flash", Pricing { input: 0.15, cache_read: 0.015, cache_write: 0.0, output: 0.6 }), // models.dev
     ("chat-latest", Pricing { input: 5.0, cache_read: 0.5, cache_write: 0.0, output: 30.0 }),
     ("claude-fable-5", Pricing { input: 10.0, cache_read: 1.0, cache_write: 12.5, output: 50.0 }),
     ("claude-fable-5-1", Pricing { input: 10.0, cache_read: 0.25, cache_write: 12.5, output: 50.0 }),
@@ -107,7 +109,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("glm-4.5-x", Pricing { input: 2.2, cache_read: 2.2, cache_write: 0.0, output: 8.9 }),
     ("glm-4.5v", Pricing { input: 0.6, cache_read: 0.6, cache_write: 0.0, output: 1.8 }),
     ("glm-4.6", Pricing { input: 0.6, cache_read: 0.11, cache_write: 0.0, output: 2.2 }),
-    ("glm-4.6v", Pricing { input: 0.3, cache_read: 0.3, cache_write: 0.0, output: 0.9 }), // models.dev
+    ("glm-4.6v", Pricing { input: 0.3, cache_read: 0.05, cache_write: 0.0, output: 0.9 }), // models.dev
     ("glm-4.7", Pricing { input: 0.6, cache_read: 0.11, cache_write: 0.0, output: 2.2 }),
     ("glm-4.7-flashx", Pricing { input: 0.07, cache_read: 0.01, cache_write: 0.0, output: 0.4 }), // models.dev
     ("glm-5", Pricing { input: 1.0, cache_read: 0.2, cache_write: 0.0, output: 3.2 }),
@@ -185,6 +187,8 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-5.4-pro-2026-03-05", Pricing { input: 30.0, cache_read: 30.0, cache_write: 0.0, output: 180.0 }),
     ("gpt-5.5", Pricing { input: 5.0, cache_read: 0.5, cache_write: 0.0, output: 30.0 }),
     ("gpt-5.5-2026-04-23", Pricing { input: 5.0, cache_read: 0.5, cache_write: 0.0, output: 30.0 }),
+    ("gpt-5.5-cyber", Pricing { input: 12.5, cache_read: 1.25, cache_write: 0.0, output: 75.0 }),
+    ("gpt-5.5-cyber-preview", Pricing { input: 12.5, cache_read: 1.25, cache_write: 0.0, output: 75.0 }),
     ("gpt-5.5-pro", Pricing { input: 30.0, cache_read: 30.0, cache_write: 0.0, output: 180.0 }),
     ("gpt-5.5-pro-2026-04-23", Pricing { input: 30.0, cache_read: 30.0, cache_write: 0.0, output: 180.0 }),
     ("gpt-5.6", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
@@ -254,6 +258,8 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("kimi-k2.7-code", Pricing { input: 0.95, cache_read: 0.19, cache_write: 0.0, output: 4.0 }),
     ("kimi-k2.7-code-highspeed", Pricing { input: 1.9, cache_read: 0.38, cache_write: 0.0, output: 8.0 }), // models.dev
     ("kimi-k3", Pricing { input: 3.0, cache_read: 0.3, cache_write: 0.0, output: 15.0 }),
+    ("kimi-k3.1-pro", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.0, output: 10.0 }), // models.dev
+    ("kimi-k3.1-pro-highspeed", Pricing { input: 4.0, cache_read: 0.2, cache_write: 4.0, output: 20.0 }), // models.dev
     ("moonshot-v1-128k", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 5.0 }),
     ("moonshot-v1-128k-vision-preview", Pricing { input: 2.0, cache_read: 2.0, cache_write: 0.0, output: 5.0 }),
     ("moonshot-v1-32k", Pricing { input: 1.0, cache_read: 1.0, cache_write: 0.0, output: 3.0 }),
