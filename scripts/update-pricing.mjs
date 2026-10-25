@@ -95,6 +95,23 @@ const ACTIVE_FAMILIES = [
 ];
 const inActiveFamily = (model) => ACTIVE_FAMILIES.some((family) => family.test(model));
 
+// 白名单的失败模式是「新代际忘记加行 → 被静默裁掉 → 新旗舰 unpriced 且刷新
+// PR 的 diff 里看不见」。models.dev 带 release_date，用它在生成期把这种
+// 事故变成硬错误：发布不久却被代际裁剪命中的模型直接点名，逼着补白名单行。
+// 240 天 ≈ 解析视界 182 天 + 一段「刚发布还没进任何日志」的余量。
+const RECENCY_GUARD_DAYS = 240;
+const asOfMs = Date.parse(asOf);
+const recencyCutoffMs = asOfMs - RECENCY_GUARD_DAYS * 86_400_000;
+const newlyReleasedButPruned = [];
+const activeOrRecord = (model, releasedMs) => {
+  if (inActiveFamily(model)) return true;
+  prunedGenerations += 1;
+  if (releasedMs != null && releasedMs >= recencyCutoffMs) {
+    newlyReleasedButPruned.push(model);
+  }
+  return false;
+};
+
 async function load(name, url, localPath) {
   if (localPath) return JSON.parse(readFileSync(localPath, "utf8"));
   let response;
@@ -188,7 +205,9 @@ const modelsDevRows = MODELS_DEV_PROVIDERS.flatMap((provider) =>
     return Array.isArray(output) && output.length === 1 && output[0] === "text";
   })
   .filter(({ model, entry }) => admissible(model, entry.cost?.input, entry.cost?.output))
-  .filter(({ model }) => activeOnly(model))
+  .filter(({ model, entry }) =>
+    activeOrRecord(model, entry.release_date == null ? null : Date.parse(entry.release_date)),
+  )
   .map(({ model, entry: { cost } }) => ({
     model,
     input: round6(cost.input),
@@ -232,6 +251,17 @@ if (!litellmRows.length || !modelsDevRows.length) {
   throw new Error(
     `价格来源没有匹配到任何第一方 provider 模型（LiteLLM ${litellmRows.length}，` +
       `models.dev ${modelsDevRows.length}），拒绝生成`,
+  );
+}
+
+if (newlyReleasedButPruned.length) {
+  throw new Error(
+    `以下模型发布不到 ${RECENCY_GUARD_DAYS} 天，却被代际白名单裁剪了。` +
+      `新代际该在 ACTIVE_FAMILIES 加一行，不是默默裁掉（否则新旗舰会静默 unpriced）。\n` +
+      newlyReleasedButPruned
+        .sort()
+        .map((model) => `  - ${model}`)
+        .join("\n"),
   );
 }
 
