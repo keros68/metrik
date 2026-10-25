@@ -85,16 +85,13 @@ impl Pricing {
     }
 }
 
-/// 手动补充/覆盖的官方第一方价目。查找时先于生成表命中。两类：
+/// 手动补充的官方第一方价目（生成表之外）：模型太新、两个来源都未收录时
+/// 按官方定价页临时补齐，**收录后即删**——两处都留会让手工值一直压过生成值，
+/// 官方调价后刷新生成表也不生效。查找时先于生成表命中。
 ///
-/// 一、生成表没有的（模型太新、两个来源都未收录）：按官方定价页临时补齐，
-/// **收录后即删**——两处都留会让手工值一直压过生成值，官方调价后刷新生成表
-/// 也不生效。
-///
-/// 二、生成表收录了但数值错：LiteLLM 的 glm-4.5 家族缓存命中价停在 z.ai 改
-/// 用独立缓存计价之前，把命中价记成了未打折的输入价；models.dev 的数值与
-/// 官方页一致，但两源分歧时沿用 LiteLLM。这类条目在上游修正、与生成表数值
-/// 一致后即删。
+/// 生成表收录了但数值错的模型也在这里覆盖（如 LiteLLM 曾把 glm-4.5 家族的
+/// 缓存命中价记成未打折输入价；该家族现已滑出解析视界、整代裁剪，覆盖随之
+/// 删除）。上游修正、数值一致后即删。
 ///
 /// 已被生成表收录、数值与手工值一致的条目从这里删掉（如 glm-5.2、kimi-k3、
 /// glm-5-turbo）；下面的测试仍按各自官方定价页的数值断言，钉的是价格本身，
@@ -114,10 +111,6 @@ impl Pricing {
 ///   公布价；缓存两项官方尚未逐模型列出，按百炼计费文档的通用规则推算——
 ///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
 ///   规则推算不是逐模型报价，官方列出后应替换。
-/// - glm-4.5 / -air / -airx / -x / -v：z.ai 官方定价页
-///   docs.z.ai/guides/overview/pricing（2026-10-25 核对）。缓存命中列
-///   $0.11 / $0.03 / $0.22 / $0.45 / $0.11；输入输出与 LiteLLM 现值一致，
-///   只覆盖命中价。LiteLLM 修正后此处即删。
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
     (
         "deepseek-flash",
@@ -162,53 +155,6 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
             cache_read: 0.2,
             cache_write: 2.5,
             output: 6.0,
-        },
-    ),
-    // glm-4.5 家族：官方缓存命中价（见上）。输入/输出沿用 LiteLLM，只覆盖
-    // 命中价这一列——LiteLLM 的 0.6/0.2/1.1/2.2/0.6 是「无缓存折扣」的旧值。
-    (
-        "glm-4.5",
-        Pricing {
-            input: 0.6,
-            cache_read: 0.11,
-            cache_write: 0.0,
-            output: 2.2,
-        },
-    ),
-    (
-        "glm-4.5-air",
-        Pricing {
-            input: 0.2,
-            cache_read: 0.03,
-            cache_write: 0.0,
-            output: 1.1,
-        },
-    ),
-    (
-        "glm-4.5-airx",
-        Pricing {
-            input: 1.1,
-            cache_read: 0.22,
-            cache_write: 0.0,
-            output: 4.5,
-        },
-    ),
-    (
-        "glm-4.5-x",
-        Pricing {
-            input: 2.2,
-            cache_read: 0.45,
-            cache_write: 0.0,
-            output: 8.9,
-        },
-    ),
-    (
-        "glm-4.5v",
-        Pricing {
-            input: 0.6,
-            cache_read: 0.11,
-            cache_write: 0.0,
-            output: 1.8,
         },
     ),
 ];
@@ -970,24 +916,26 @@ mod tests {
     }
 
     #[test]
-    fn glm_4_5_family_cache_hits_use_official_zai_rates() {
-        // z.ai 官方定价页（2026-10-25 核对）：4.5 家族的缓存命中早已改为独立
-        // 低价，LiteLLM 全家停在「命中价 = 未打折输入价」的旧值（glm-4.5v 见
-        // 生成表头的两源分歧），models.dev 与官方一致但分歧时沿用 LiteLLM，
-        // 所以 MANUAL_PRICING 覆盖，输入/输出两列不动。
-        let base = price_for("glm-4.5", ANY_TIME_MS).expect("priced");
-        assert_eq!((base.input, base.cache_read, base.output), (0.6, 0.11, 2.2));
-        let air = price_for("glm-4.5-air", ANY_TIME_MS).expect("priced");
-        assert_eq!(air.cache_read, 0.03);
-        let airx = price_for("glm-4.5-airx", ANY_TIME_MS).expect("priced");
-        assert_eq!((airx.input, airx.cache_read, airx.output), (1.1, 0.22, 4.5));
-        let big = price_for("glm-4.5-x", ANY_TIME_MS).expect("priced");
-        assert_eq!(big.cache_read, 0.45);
-        let vision = price_for("glm-4.5v", ANY_TIME_MS).expect("priced");
-        assert_eq!(
-            (vision.input, vision.cache_read, vision.output),
-            (0.6, 0.11, 1.8)
-        );
+    fn generations_outside_the_parse_horizon_are_pruned() {
+        // 表只保 182 天解析视界内还会出现在受支持 agent 日志里的代际
+        // （docs/ARCHITECTURE.md；生成规则见 scripts/update-pricing.mjs 的
+        // ACTIVE_FAMILIES）：更老的整代在生成期裁掉，按 unpriced 报告，
+        // 不为 museum 保价。这里钉住各家的裁剪边界。
+        for model in [
+            "gpt-3.5-turbo",
+            "gpt-4o",
+            "o3",
+            "gpt-5.1-codex-max",
+            "glm-4.5",
+            "moonshot-v1-8k",
+            "MiniMax-M2",
+            "ft:gpt-4o-2024-08-06",
+        ] {
+            assert!(price_for(model, ANY_TIME_MS).is_none(), "{model} 应已裁剪");
+        }
+        // 裁剪边界上的幸存代际不得误伤：gpt-5 本代被 5.5 接替只早窗口
+        // 起点 3 天，Codex 的默认模型横跨窗口起点。
+        assert!(price_for("gpt-5", ANY_TIME_MS).is_some());
     }
 
     #[test]

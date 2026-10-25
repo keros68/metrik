@@ -15,6 +15,14 @@
 // 注意：两份表都未收录的新模型官方价手动补在 pricing.rs 的 MANUAL_PRICING
 // （如 deepseek-v4-pro），本脚本只生成 pricing_table.rs，不会覆盖它。
 //
+// 代际裁剪：解析视界固定 182 天（docs/ARCHITECTURE.md），更老的日志不会再
+// 进台账，为它们保价只在每次刷新时制造分歧核对与 diff 噪音。表只收
+// ACTIVE_FAMILIES 里「视界内还会出现在受支持 agent 日志里」的代际——
+// 大致是 2025 年末的一代（gpt-5.2、claude-4-5 系、kimi-k2.5、gemini-2.5、
+// MiniMax-M2.1+）及之后。新代际发布时在这里加一行；整代滑出视界、且
+// 不再有受支持 agent 在用之后删一行。裁掉的老代际按 unpriced 报告，
+// 重扫不会重算它们的历史成本。
+//
 // 用法：npm run pricing:update   （改完提交生成的 .rs 文件）
 // .github/workflows/pricing-refresh.yml 每半个月替你跑一次，有变化就开 PR 等人核对。
 // 也可离线：node scripts/update-pricing.mjs <LiteLLM json 路径> <models.dev json 路径>
@@ -41,13 +49,51 @@ const MODELS_DEV_PROVIDERS = ["openai", "anthropic", "moonshotai", "zai", "googl
 const asOf = new Date().toISOString().slice(0, 10);
 
 // 官方已公布、但尚未开始计费的价格只能在生效日后进入估算表。
-const PRICING_START_DATES = new Map([["gpt-rosalind-research", "2026-10-05"]]);
+const PRICING_START_DATES = new Map();
+
+// 滑出 182 天解析视界的整代模型：表里不收（见 ACTIVE_FAMILIES）。
+let prunedGenerations = 0;
+const activeOnly = (model) => {
+  if (inActiveFamily(model)) return true;
+  prunedGenerations += 1;
+  return false;
+};
 
 // 模型存在不等于价格已公开。LiteLLM 偶尔会先填入一个推测值；官方价目可核验前
 // 保持 unpriced，不能把第三方数值当成第一方价格。
 // gpt-5.5-cyber 曾在此列：2026-10-25 官方定价页已公布（$12.5/$1.25/$75，与
 // LiteLLM 一致），解禁。新出现同类情况加回这里即可。
 const UNVERIFIED_PRICING = new Set();
+
+// 视界内还可能出现在受支持 agent 日志里的代际（见文件头部说明）。
+// 按模型名（已剥 provider 前缀）匹配，两源同规则。
+const ACTIVE_FAMILIES = [
+  // OpenAI：gpt-5.2（2025-12）起整代保留。gpt-5 本代（2025-08）被 5.5
+  // （2026-04-23）接替只早窗口起点 3 天，且一直是 Codex 的默认模型——
+  // 窗口内的日志还在，保留；5.1 及更早整代裁掉。chat-latest 是 Codex 记的
+  // 对话别名；daybreak 是 Cyber 线（2026）。
+  /^gpt-5(-|$)/,
+  /^gpt-5\.[2-9]/,
+  /^gpt-6/,
+  /^chat-latest$/,
+  /^(gpt-)?daybreak-/,
+  // Anthropic：2025 年秋的 4-5 一代（sonnet-4-5 / opus-4-5 / haiku-4-5）
+  // 仍在服役，再往前整代裁掉。
+  /^claude-(opus-4-[5-9]|opus-5|sonnet-4-[5-9]|sonnet-5|haiku-4-[5-9]|haiku-5|fable-|mythos)/,
+  // Gemini：2.5 三兄弟仍在 Antigravity/OpenCode 的窗口内；3 起整代保留；
+  // -latest 别名跟着当前代走。audio/image/robotics/deep-research 不是
+  // coding agent 会记的模型，不收。
+  /^gemini-(2\.5-(pro|flash|flash-lite)$|3|4|flash-latest$|pro-latest$|flash-lite-latest$)/,
+  // GLM：4.6（2025-10）起；4.5 家族已整代滑出。
+  /^glm-(4\.[6-9]|5)/,
+  // Kimi：k2.5（2025-10）起；moonshot-v1-* 是上古 openai 兼容端点。
+  /^kimi-k[23]/,
+  // xAI：表里只有 4.20（2026-03）以后的代际，整族保留。
+  /^grok-/,
+  // MiniMax：M2.1（2025-11）起；M2 本体已被 M2.1 接管且滑出视界。
+  /^MiniMax-M2\.|^MiniMax-M[3-9]/,
+];
+const inActiveFamily = (model) => ACTIVE_FAMILIES.some((family) => family.test(model));
 
 async function load(name, url, localPath) {
   if (localPath) return JSON.parse(readFileSync(localPath, "utf8"));
@@ -115,6 +161,7 @@ const litellmRows = Object.entries(litellm)
   .filter(({ model, entry }) =>
     admissible(model, entry.input_cost_per_token, entry.output_cost_per_token),
   )
+  .filter(({ model }) => activeOnly(model))
   .map(({ model, entry }) => ({
     model,
     input: perMillion(entry.input_cost_per_token),
@@ -141,6 +188,7 @@ const modelsDevRows = MODELS_DEV_PROVIDERS.flatMap((provider) =>
     return Array.isArray(output) && output.length === 1 && output[0] === "text";
   })
   .filter(({ model, entry }) => admissible(model, entry.cost?.input, entry.cost?.output))
+  .filter(({ model }) => activeOnly(model))
   .map(({ model, entry: { cost } }) => ({
     model,
     input: round6(cost.input),
@@ -173,6 +221,9 @@ rows.sort(byName);
 
 if (rejectedNames) {
   console.log(`跳过 ${rejectedNames} 个含非法字符的模型名`);
+}
+if (prunedGenerations) {
+  console.log(`视界外整代裁剪 ${prunedGenerations} 个模型`);
 }
 
 if (!litellmRows.length || !modelsDevRows.length) {
