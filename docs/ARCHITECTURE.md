@@ -29,6 +29,7 @@ Codex app-server ─────────┐
 Claude statusLine hook ───┼─ official quota snapshot ──────────────┘
 Claude OAuth (opt-in) ────┤
 Grok CLI billing log ─────┤
+Grok Bot dashboard (opt-in) ┤
 GLM/Kimi/Qoder/WorkBuddy ─┤
 DeepSeek/OpenCode Go ─────┤
 GLM key from pi auth ─────┤
@@ -196,6 +197,19 @@ Quota rows are replaced wholesale, never merged, so a window a plan no longer ha
   `totalPercentUsed` (already a percentage), else `used / limit`, else the
   enterprise member cap `overall`; an account without a limit has no window.
   Disabling the source deletes its sources, events, and quota rows.
+- **Grok Bot**: quota-only (no local per-turn usage — Grok Bot's transcripts
+  carry no usage fields; inference is server-side). One account-level credit
+  pool shared with SuperGrok and the new Cursor plans, surfaced as a single
+  `seven_day` window from `GetSandUsageStatus` on api2.cursor.sh — the same
+  endpoint the desktop app itself uses, verified read-only on a real Windows
+  install (2026-10): the endpoint checks only the Bearer token. Off by default;
+  after opt-in, the access token Grok Bot stores under Electron `safeStorage`
+  is decrypted per request (`Local State` DPAPI key + `v10` AES-256-GCM
+  ciphertext) and used in memory for exactly one request — never refreshed,
+  persisted, logged, or synced. Grok Bot refreshes the token itself while
+  running; if it is rejected, the read fails loudly. Windows-only until the
+  macOS keychain and Linux keyring variants of safeStorage are implemented.
+  Disabling the source deletes its quota rows.
 - **Qwen**: removed. The Bailian personal Token Plan exposes its quota only
   behind the console's interactive login; its cookie stopped working within
   days on a real account, and the product has no programmable quota API

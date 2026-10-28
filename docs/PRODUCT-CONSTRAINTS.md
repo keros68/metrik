@@ -141,6 +141,15 @@ change.
   each request and kept in memory only. Dashboard usage is account-wide, so it
   is never exported through multi-device sync. It carries no working
   directory; do not infer a project from a conversation id.
+- Grok Bot is quota-only and shares one account-level credit pool with
+  SuperGrok and the new Cursor plans; the pool is read as one weekly window
+  and must never be summed with or cross-filled into the Grok CLI card's
+  snapshot. Its source is off by default. After opt-in it decrypts the
+  credentials Grok Bot itself stores (Windows safeStorage) per request and
+  uses them in memory for one read-only query — never refreshed, persisted,
+  logged, or synced. Per-turn Grok Bot usage does not exist locally and is
+  shown as unavailable, never estimated from the pool. Disabling the source
+  stops the queries and deletes its quota rows.
 - Do not expose credentials or raw provider responses through UI, logs, storage,
   sync, fixtures, or diagnostics.
 

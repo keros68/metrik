@@ -389,6 +389,20 @@ export default {
   "Cursor 未登录": "Not signed in to Cursor",
   "登录会话已过期，打开 Cursor 即可刷新": "Session expired. Open Cursor to refresh it",
   "登录会话可用": "Session available",
+
+  // Settings: Grok Bot shared-credit source (App.jsx)
+  "浏览器演示模式不能配置 Grok Bot 额度来源":
+    "The browser demo can't configure the Grok Bot quota source",
+  "Grok Bot 额度来源状态读取失败。": "Couldn't read the Grok Bot quota source status.",
+  "已开启。共享额度池的剩余与重置时间在下次刷新时显示。":
+    "On. The shared credit pool's remaining share and reset time appear at the next refresh.",
+  "已关闭。不再读取 Grok Bot 的凭据，已拉取的额度已从本机账本删除。":
+    "Off. Metrik no longer reads Grok Bot's credentials, and the quota already fetched is deleted from the local ledger.",
+  "Grok Bot 共享额度": "Grok Bot shared credits",
+  "Grok Bot 与 SuperGrok、新版 Cursor 共用同一个账号级额度池，本地没有逐轮 token 记录，只有这个池的剩余比例与每周重置时间。开启后用 Grok Bot 本机保存的登录凭据（仅 Windows）向官方接口查询；凭据每次现解密、只在内存中使用，不存储、不刷新、不同步。额度池是账号级的，包含所有客户端的消耗。":
+    "Grok Bot shares one account-level credit pool with SuperGrok and the new Cursor plans. There are no per-request token records locally, only the pool's remaining share and weekly reset. When on, Metrik uses the credentials Grok Bot has saved on this device (Windows only) to query the official endpoint; they are decrypted fresh each time, used in memory only, never stored, refreshed, or synced. The pool is account-wide and includes consumption from every client.",
+  "Grok Bot 已登录": "Signed in to Grok Bot",
+  "Grok Bot 未登录，先在 Grok Bot 里登录": "Not signed in to Grok Bot. Sign in inside Grok Bot first",
   "已更新。": "Updated.",
   "操作失败：{error}": "Failed: {error}",
   "Qoder 官方配额": "Qoder official quota",

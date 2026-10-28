@@ -4,6 +4,7 @@ mod codex;
 mod cursor;
 mod dsh;
 mod grok;
+mod grokbot;
 mod hermes;
 mod kimi;
 mod minimax;
@@ -35,6 +36,13 @@ pub use cursor::{
     fetch_plan_quota as fetch_cursor_plan_quota, reset_runtime_state as reset_cursor_runtime_state,
     usage_status as cursor_usage_status, CursorUsageStatus,
     USAGE_SETTING_KEY as CURSOR_USAGE_SETTING_KEY,
+};
+
+// Grok Bot 共享额度池默认关闭，设置开关与状态查询。
+pub use grokbot::{
+    fetch_quota as fetch_grokbot_quota, grokbot_data_dir, quota_status as grokbot_quota_status,
+    signed_in as grokbot_signed_in, GrokBotQuotaStatus,
+    QUOTA_SETTING_KEY as GROKBOT_QUOTA_SETTING_KEY,
 };
 
 use crate::domain::{stable_hash, ParsedSource};

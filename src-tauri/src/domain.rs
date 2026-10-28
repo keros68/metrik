@@ -15,7 +15,10 @@ use std::path::PathBuf;
 /// cursor 只有用量：取 cursor.com 仪表盘的账号级逐次事件，需在设置里开启。
 /// dsh 只有本地用量：DeepSeek Harness 是 harness，走 coding plan 的用量按
 /// provider 路由归属到对应卡片，DeepSeek 按量计费的留在这张卡。
-pub const AGENT_IDS: [&str; 16] = [
+/// grokbot 是配额-only：Grok Bot 不在本地写逐轮 usage（转录只有 UI 层
+/// 消息），卡片只承载 SuperGrok/Grok Bot/Cursor 共用的账号级统一额度池，
+/// 读法需在设置里开启。
+pub const AGENT_IDS: [&str; 17] = [
     "codex",
     "claude",
     "zcode",
@@ -27,6 +30,7 @@ pub const AGENT_IDS: [&str; 16] = [
     "deepseek",
     "dsh",
     "grok",
+    "grokbot",
     "pi",
     "qwen",
     "hermes",
@@ -48,6 +52,7 @@ pub fn agent_label(id: &str) -> &'static str {
         "deepseek" => "DeepSeek",
         "dsh" => "DeepSeek Harness",
         "grok" => "Grok",
+        "grokbot" => "Grok Bot",
         "pi" => "Pi",
         "qwen" => "Qwen",
         "hermes" => "Hermes",

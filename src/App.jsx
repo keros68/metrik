@@ -47,6 +47,7 @@ import minimaxAppIcon from "./assets/minimax-app-icon.png";
 import opencodeAppIcon from "./assets/opencode-app-icon.png";
 import qoderAppIcon from "./assets/qoder-app-icon.png";
 import grokAppIcon from "./assets/grok-app-icon.png";
+import grokbotAppIcon from "./assets/grokbot-app-icon.png";
 import piAppIcon from "./assets/pi-app-icon.png";
 import qwenAppIcon from "./assets/qwen-app-icon.png";
 import workbuddyAppIcon from "./assets/workbuddy-app-icon.png";
@@ -66,11 +67,13 @@ import {
   getClaudeHookStatus,
   getClaudeOauthStatus,
   getCursorUsageStatus,
+  getGrokbotQuotaStatus,
   getResponseSpeedStatus,
   getAntigravityHookStatus,
   getQoderCookieStatus,
   setClaudeOauth,
   setCursorUsage,
+  setGrokbotQuota,
   setResponseSpeedCollection,
   getSyncSettings,
   getUsageReport,
@@ -249,6 +252,15 @@ const AGENT_META = {
     accent: "#6e7681",
     iconSrc: grokAppIcon,
     iconClass: "agent-icon--grok",
+  },
+  grokbot: {
+    // 配额-only：Grok Bot 桌面应用的账号级统一额度池（SuperGrok / Grok Bot /
+    // 新版 Cursor 共用），需在设置的数据来源页开启。
+    label: "Grok Bot",
+    // 深一档的石墨：与 grok 同属 xAI 黑白系，明度差足以区分相邻两卡。
+    accent: "#43484f",
+    iconSrc: grokbotAppIcon,
+    iconClass: "agent-icon--grokbot",
   },
   pi: {
     // pi（badlogic/pi-mono）是 harness：本地会话用量按 provider 归属到
@@ -3316,6 +3328,97 @@ function CursorUsageCard({ onSnapshotRefresh }) {
   );
 }
 
+// Grok Bot 的账号级额度池与 SuperGrok、新版 Cursor 共用，本地没有逐轮
+// usage 可读；额度要走 Grok Bot 自己的 Cursor 账号凭据（本机 safeStorage
+// 加密存储），所以默认关闭，由用户在这里开启。
+function GrokBotQuotaCard({ onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getGrokbotQuotaStatus()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", text: "Grok Bot 额度来源状态读取失败。" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggle = async (enabled) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const next = await setGrokbotQuota(enabled);
+      setStatus(next);
+      setFeedback({
+        tone: "success",
+        text: enabled
+          ? "已开启。共享额度池的剩余与重置时间在下次刷新时显示。"
+          : "已关闭。不再读取 Grok Bot 的凭据，已拉取的额度已从本机账本删除。",
+      });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 没装 Grok Bot 时不占设置页的位置；已开启的仍然显示，便于关闭。
+  if (status && !status.demo && !status.installed && !status.enabled) return null;
+
+  return (
+    <div className="settings-card">
+      <h2>{t("Grok Bot 共享额度")}</h2>
+      <p className="settings-muted">
+        {t("Grok Bot 与 SuperGrok、新版 Cursor 共用同一个账号级额度池，本地没有逐轮 token 记录，只有这个池的剩余比例与每周重置时间。开启后用 Grok Bot 本机保存的登录凭据（仅 Windows）向官方接口查询；凭据每次现解密、只在内存中使用，不存储、不刷新、不同步。额度池是账号级的，包含所有客户端的消耗。")}
+      </p>
+      {status?.demo && <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>}
+      {status && !status.demo && (
+        <>
+          <div className="settings-directory-row">
+            <button
+              type="button"
+              className={`ledger-button ${status.enabled ? "ledger-button--secondary" : "ledger-button--primary"}`}
+              disabled={busy}
+              onClick={() => toggle(!status.enabled)}
+            >
+              {status.enabled ? t("关闭", { context: "toggle" }) : t("开启")}
+            </button>
+          </div>
+          <dl className="settings-status">
+            <div>
+              <dt>{t("状态")}</dt>
+              <dd>
+                {[
+                  status.enabled ? t("已开启") : t("未开启"),
+                  status.signedIn
+                    ? t("Grok Bot 已登录")
+                    : t("Grok Bot 未登录，先在 Grok Bot 里登录"),
+                ].join(" · ")}
+              </dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {feedback && (
+        <p
+          className={`settings-feedback settings-feedback--${feedback.tone}`}
+          role={feedback.tone === "error" ? "alert" : "status"}
+        >
+          {feedbackText(feedback)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const RESPONSE_SPEED_SOURCES = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
@@ -3776,6 +3879,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
             />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
             <CursorUsageCard onSnapshotRefresh={onSnapshotRefresh} />
+            <GrokBotQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
             <CodexCreditsCard />
           </>
         )}

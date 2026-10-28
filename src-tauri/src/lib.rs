@@ -889,6 +889,64 @@ async fn set_cursor_usage(
     .map_err(|error| format!("cursor usage setting task failed: {error}"))?
 }
 
+/// Grok Bot 共享额度池的只读状态。不向前端返回任何凭据内容。
+#[tauri::command]
+async fn grokbot_quota_status(
+    state: State<'_, AppState>,
+) -> Result<adapters::GrokBotQuotaStatus, String> {
+    let database_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection =
+            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
+        let enabled = storage::get_app_setting(&connection, adapters::GROKBOT_QUOTA_SETTING_KEY)
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some("1");
+        Ok(adapters::grokbot_quota_status(enabled))
+    })
+    .await
+    .map_err(|error| format!("grokbot quota status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_grokbot_quota(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<adapters::GrokBotQuotaStatus, String> {
+    let database_path = state.database_path.clone();
+    let scan_gate = Arc::clone(&state.scan_gate);
+    let quota_cache = Arc::clone(&state.quota_cache);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = scan_gate
+            .lock()
+            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+        let connection =
+            storage::open_database(&database_path).map_err(|error| error.to_string())?;
+        storage::set_app_setting(
+            &connection,
+            adapters::GROKBOT_QUOTA_SETTING_KEY,
+            if enabled { "1" } else { "0" },
+        )
+        .map_err(|error| error.to_string())?;
+        if !enabled {
+            // 关闭后删掉本来源写的展示行，不留一个没有来源的额度数字。
+            connection
+                .execute(
+                    "DELETE FROM quota_snapshot WHERE adapter_id = 'grokbot'",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        // 清缓存让下一次快照立即按新开关取数。
+        if let Ok(mut guard) = quota_cache.lock() {
+            guard.remove("grokbot");
+        }
+        Ok(adapters::grokbot_quota_status(enabled))
+    })
+    .await
+    .map_err(|error| format!("set grokbot quota task failed: {error}"))?
+}
+
 /// 只读状态：开关是否开启、本机是否有 Claude 登录凭据、scope 是否满足。
 /// 永不向前端返回 token 内容。
 #[tauri::command]
@@ -2132,6 +2190,8 @@ pub fn run() {
             set_claude_oauth,
             cursor_usage_status,
             set_cursor_usage,
+            grokbot_quota_status,
+            set_grokbot_quota,
             qoder_cookie_status,
             configure_qoder_cookie,
             set_taskbar_button,

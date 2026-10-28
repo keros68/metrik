@@ -216,6 +216,7 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
         Box::new(CodexQuota),
         Box::new(ClaudeQuota),
         Box::new(GrokQuota),
+        Box::new(GrokBotQuota),
         Box::new(CursorQuota),
     ];
     for (adapter_id, fetch) in [
@@ -282,6 +283,31 @@ impl QuotaProvider for GrokQuota {
     fn fetch(&self, _timeout: Duration) -> Result<Vec<QuotaSample>> {
         // 环境变量在这里解析一次；适配器本体接根目录参数，测试不碰全局状态。
         adapters::fetch_grok_quota_snapshot(&adapters::grok_home())
+    }
+}
+
+/// Grok Bot：账号级统一额度池（SuperGrok / Grok Bot / 新版 Cursor 共用）。
+/// Grok Bot 不在本地写逐轮 usage，桌面端用 Cursor 账号调官方仪表盘接口；
+/// 这里只读复刻：解密它自己存的 safeStorage 凭据、发一次只读请求。
+/// 与 Cursor 用量同款的默认关闭开关，凭据只在内存中用于当次请求。
+struct GrokBotQuota;
+
+impl QuotaProvider for GrokBotQuota {
+    fn adapter_id(&self) -> &'static str {
+        "grokbot"
+    }
+
+    fn policy(&self) -> QuotaPolicy {
+        // opt-in 网络来源，自动请求频率与 Cursor 套餐余量一致。
+        QuotaPolicy::new(300, 300, 6)
+    }
+
+    fn is_available(&self, env: &ProviderEnv) -> bool {
+        env.flag(adapters::GROKBOT_QUOTA_SETTING_KEY) && adapters::grokbot_signed_in()
+    }
+
+    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
+        adapters::fetch_grokbot_quota(timeout)
     }
 }
 
@@ -612,6 +638,7 @@ mod tests {
                 "cursor",
                 "deepseek",
                 "grok",
+                "grokbot",
                 "kimi",
                 "kimiwork",
                 "opencode",
