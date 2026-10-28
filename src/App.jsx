@@ -2472,6 +2472,56 @@ function feedbackText(feedback) {
   return feedback.text ? t(feedback.text, feedback.params) : feedback.message;
 }
 
+function FeedbackLine({ feedback }) {
+  if (!feedback) return null;
+  return (
+    <p
+      className={`settings-feedback settings-feedback--${feedback.tone}`}
+      role={feedback.tone === "error" ? "alert" : "status"}
+    >
+      {feedbackText(feedback)}
+    </p>
+  );
+}
+
+// 设置页里「读状态 + 一键开关」的数据来源共用这一套：首次读取状态，开关后
+// 用返回的新状态替换并刷新快照。文案是中文原文，渲染时经 feedbackText 翻译。
+function useSourceToggle({ load, save, loadError, enabledText, disabledText, onSnapshotRefresh }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    load()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFeedback({ tone: "error", text: loadError });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [load, loadError]);
+
+  const toggle = async (enabled) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      setStatus(await save(enabled));
+      setFeedback({ tone: "success", text: enabled ? enabledText : disabledText });
+      onSnapshotRefresh();
+    } catch (error) {
+      setFeedback({ tone: "error", message: `${error}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { status, busy, feedback, toggle };
+}
+
 function formatSyncTime(ms) {
   if (!Number.isFinite(ms)) return t("尚未同步");
   const value = new Date(ms);
@@ -2492,41 +2542,14 @@ function HookCard({
   onSnapshotRefresh,
   children,
 }) {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", text: "钩子状态读取失败。" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [getStatus]);
-
-  const toggle = async (enabled) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await setHook(enabled);
-      setStatus(next);
-      setFeedback({
-        tone: "success",
-        text: enabled ? installedMessage : "钩子已卸载，statusLine 设置已恢复。",
-      });
-      onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { status, busy, feedback, toggle } = useSourceToggle({
+    load: getStatus,
+    save: setHook,
+    loadError: "钩子状态读取失败。",
+    enabledText: installedMessage,
+    disabledText: "钩子已卸载，statusLine 设置已恢复。",
+    onSnapshotRefresh,
+  });
 
   return (
     <div className="settings-card">
@@ -2568,14 +2591,7 @@ function HookCard({
           </dl>
         </>
       )}
-      {feedback && (
-        <p
-          className={`settings-feedback settings-feedback--${feedback.tone}`}
-          role={feedback.tone === "error" ? "alert" : "status"}
-        >
-          {feedbackText(feedback)}
-        </p>
-      )}
+      <FeedbackLine feedback={feedback} />
       {children}
     </div>
   );
@@ -2584,43 +2600,14 @@ function HookCard({
 // OAuth 官方额度：读取 Claude Code 自己保存的登录凭据（显式 opt-in），
 // 直接查询账户级合并额度（含网页版消耗），不依赖终端状态栏。
 function ClaudeOauthBlock({ onSnapshotRefresh }) {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getClaudeOauthStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", text: "官方配额来源状态读取失败。" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const toggle = async (enabled) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await setClaudeOauth(enabled);
-      setStatus(next);
-      setFeedback({
-        tone: "success",
-        text: enabled
-          ? "已开启。下次刷新起直接查询官方配额（约每 5 分钟一次）；查询失败时自动回落到状态栏钩子。"
-          : "已关闭。恢复为仅由状态栏钩子提供额度。",
-      });
-      onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { status, busy, feedback, toggle } = useSourceToggle({
+    load: getClaudeOauthStatus,
+    save: setClaudeOauth,
+    loadError: "官方配额来源状态读取失败。",
+    enabledText: "已开启。下次刷新起直接查询官方配额（约每 5 分钟一次）；查询失败时自动回落到状态栏钩子。",
+    disabledText: "已关闭。恢复为仅由状态栏钩子提供额度。",
+    onSnapshotRefresh,
+  });
 
   if (status?.demo) return null;
 
@@ -2674,14 +2661,7 @@ function ClaudeOauthBlock({ onSnapshotRefresh }) {
           </dl>
         </>
       )}
-      {feedback && (
-        <p
-          className={`settings-feedback settings-feedback--${feedback.tone}`}
-          role={feedback.tone === "error" ? "alert" : "status"}
-        >
-          {feedbackText(feedback)}
-        </p>
-      )}
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
@@ -3238,54 +3218,49 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
 
 // Cursor 不把逐次 token 写进本机，用量和套餐余量只能从 cursor.com 仪表盘拉取，
 // 要用到 Cursor 本机保存的登录会话，所以默认关闭，由用户在这里开启。
-function CursorUsageCard({ onSnapshotRefresh }) {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
+// 账号级、默认关闭的数据来源：开启后用对应客户端本机保存的登录凭据读取。
+// Cursor 不在本机记录逐次 token；Grok Bot 的账号级额度池与 SuperGrok、新版
+// Cursor 共用，本地没有逐轮 usage 可读。
+const ACCOUNT_SOURCES = {
+  cursor: {
+    title: "Cursor 用量与套餐余量",
+    description: "Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量，以及当前账单周期的套餐余量。 会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读；套餐余量最多每 5 分钟读一次。 用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步。",
+    load: getCursorUsageStatus,
+    save: setCursorUsage,
+    loadError: "Cursor 用量来源状态读取失败。",
+    enabledText: "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。",
+    disabledText: "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量与套餐余量已从本机账本删除。",
+    sessionText: (status) => !status.signedIn
+      ? t("Cursor 未登录")
+      : status.expired
+        ? t("登录会话已过期，打开 Cursor 即可刷新")
+        : t("登录会话可用"),
+  },
+  grokbot: {
+    title: "Grok Bot 共享额度",
+    description: "Grok Bot 与 SuperGrok、新版 Cursor 共用同一个账号级额度池，本地没有逐轮 token 记录，只有这个池的剩余比例与每周重置时间。开启后用 Grok Bot 本机保存的登录凭据（仅 Windows）向官方接口查询；凭据每次现解密、只在内存中使用，不存储、不刷新、不同步。额度池是账号级的，包含所有客户端的消耗。",
+    load: getGrokbotQuotaStatus,
+    save: setGrokbotQuota,
+    loadError: "Grok Bot 额度来源状态读取失败。",
+    enabledText: "已开启。共享额度池的剩余与重置时间在下次刷新时显示。",
+    disabledText: "已关闭。不再读取 Grok Bot 的凭据，已拉取的额度已从本机账本删除。",
+    sessionText: (status) => status.signedIn
+      ? t("Grok Bot 已登录")
+      : t("Grok Bot 未登录，先在 Grok Bot 里登录"),
+  },
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    getCursorUsageStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", text: "Cursor 用量来源状态读取失败。" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+function AccountSourceCard({ source, onSnapshotRefresh }) {
+  const config = ACCOUNT_SOURCES[source];
+  const { status, busy, feedback, toggle } = useSourceToggle({ ...config, onSnapshotRefresh });
 
-  const toggle = async (enabled) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await setCursorUsage(enabled);
-      setStatus(next);
-      setFeedback({
-        tone: "success",
-        text: enabled
-          ? "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。"
-          : "已关闭。不再请求 cursor.com，已拉取的 Cursor 用量与套餐余量已从本机账本删除。",
-      });
-      onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // 没装 Cursor 时不占设置页的位置；已开启的仍然显示，便于关闭。
+  // 没装对应客户端时不占设置页的位置；已开启的仍然显示，便于关闭。
   if (status && !status.demo && !status.installed && !status.enabled) return null;
 
   return (
     <div className="settings-card">
-      <h2>{t("Cursor 用量与套餐余量")}</h2>
-      <p className="settings-muted">
-        {t("Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话向 cursor.com 读取仪表盘上的逐次用量，以及当前账单周期的套餐余量。 会话每次现读、只在内存中使用，不存储、不同步。已过去的日子只读一次，今天和昨天每 15 分钟重读；套餐余量最多每 5 分钟读一次。 用量是账号级的，包含这个账号在所有设备上的消耗，因此不参与多设备同步。")}
-      </p>
+      <h2>{t(config.title)}</h2>
+      <p className="settings-muted">{t(config.description)}</p>
       {status?.demo && <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>}
       {status && !status.demo && (
         <>
@@ -3303,118 +3278,13 @@ function CursorUsageCard({ onSnapshotRefresh }) {
             <div>
               <dt>{t("状态")}</dt>
               <dd>
-                {[
-                  status.enabled ? t("已开启") : t("未开启"),
-                  !status.signedIn
-                    ? t("Cursor 未登录")
-                    : status.expired
-                      ? t("登录会话已过期，打开 Cursor 即可刷新")
-                      : t("登录会话可用"),
-                ].join(" · ")}
+                {[status.enabled ? t("已开启") : t("未开启"), config.sessionText(status)].join(" · ")}
               </dd>
             </div>
           </dl>
         </>
       )}
-      {feedback && (
-        <p
-          className={`settings-feedback settings-feedback--${feedback.tone}`}
-          role={feedback.tone === "error" ? "alert" : "status"}
-        >
-          {feedbackText(feedback)}
-        </p>
-      )}
-    </div>
-  );
-}
-
-// Grok Bot 的账号级额度池与 SuperGrok、新版 Cursor 共用，本地没有逐轮
-// usage 可读；额度要走 Grok Bot 自己的 Cursor 账号凭据（本机 safeStorage
-// 加密存储），所以默认关闭，由用户在这里开启。
-function GrokBotQuotaCard({ onSnapshotRefresh }) {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getGrokbotQuotaStatus()
-      .then((value) => {
-        if (!cancelled) setStatus(value);
-      })
-      .catch(() => {
-        if (!cancelled) setFeedback({ tone: "error", text: "Grok Bot 额度来源状态读取失败。" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const toggle = async (enabled) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const next = await setGrokbotQuota(enabled);
-      setStatus(next);
-      setFeedback({
-        tone: "success",
-        text: enabled
-          ? "已开启。共享额度池的剩余与重置时间在下次刷新时显示。"
-          : "已关闭。不再读取 Grok Bot 的凭据，已拉取的额度已从本机账本删除。",
-      });
-      onSnapshotRefresh();
-    } catch (error) {
-      setFeedback({ tone: "error", message: `${error}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // 没装 Grok Bot 时不占设置页的位置；已开启的仍然显示，便于关闭。
-  if (status && !status.demo && !status.installed && !status.enabled) return null;
-
-  return (
-    <div className="settings-card">
-      <h2>{t("Grok Bot 共享额度")}</h2>
-      <p className="settings-muted">
-        {t("Grok Bot 与 SuperGrok、新版 Cursor 共用同一个账号级额度池，本地没有逐轮 token 记录，只有这个池的剩余比例与每周重置时间。开启后用 Grok Bot 本机保存的登录凭据（仅 Windows）向官方接口查询；凭据每次现解密、只在内存中使用，不存储、不刷新、不同步。额度池是账号级的，包含所有客户端的消耗。")}
-      </p>
-      {status?.demo && <p className="settings-muted">{t("浏览器演示模式：仅桌面应用可配置。")}</p>}
-      {status && !status.demo && (
-        <>
-          <div className="settings-directory-row">
-            <button
-              type="button"
-              className={`ledger-button ${status.enabled ? "ledger-button--secondary" : "ledger-button--primary"}`}
-              disabled={busy}
-              onClick={() => toggle(!status.enabled)}
-            >
-              {status.enabled ? t("关闭", { context: "toggle" }) : t("开启")}
-            </button>
-          </div>
-          <dl className="settings-status">
-            <div>
-              <dt>{t("状态")}</dt>
-              <dd>
-                {[
-                  status.enabled ? t("已开启") : t("未开启"),
-                  status.signedIn
-                    ? t("Grok Bot 已登录")
-                    : t("Grok Bot 未登录，先在 Grok Bot 里登录"),
-                ].join(" · ")}
-              </dd>
-            </div>
-          </dl>
-        </>
-      )}
-      {feedback && (
-        <p
-          className={`settings-feedback settings-feedback--${feedback.tone}`}
-          role={feedback.tone === "error" ? "alert" : "status"}
-        >
-          {feedbackText(feedback)}
-        </p>
-      )}
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
@@ -3570,11 +3440,7 @@ function ResponseSpeedCollectionCard({ onSnapshotRefresh }) {
       <button type="button" className="ledger-button response-speed-refresh" disabled={loading || busy !== null} onClick={readStatus}>
         {loading ? t("读取中…") : t("刷新采集状态")}
       </button>
-      {feedback && (
-        <p className={`settings-feedback settings-feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>
-          {feedbackText(feedback)}
-        </p>
-      )}
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
@@ -3665,14 +3531,7 @@ function QoderQuotaCard({ onSnapshotRefresh }) {
               {t("清除已保存的 Cookie")}
             </button>
           )}
-          {feedback && (
-            <p
-              className={`settings-feedback settings-feedback--${feedback.tone}`}
-              role={feedback.tone === "error" ? "alert" : "status"}
-            >
-              {feedbackText(feedback)}
-            </p>
-          )}
+          <FeedbackLine feedback={feedback} />
           <dl className="settings-status">
             <div>
               <dt>{t("状态")}</dt>
@@ -3878,8 +3737,8 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
               onSnapshotRefresh={onSnapshotRefresh}
             />
             <QoderQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
-            <CursorUsageCard onSnapshotRefresh={onSnapshotRefresh} />
-            <GrokBotQuotaCard onSnapshotRefresh={onSnapshotRefresh} />
+            <AccountSourceCard source="cursor" onSnapshotRefresh={onSnapshotRefresh} />
+            <AccountSourceCard source="grokbot" onSnapshotRefresh={onSnapshotRefresh} />
             <CodexCreditsCard />
           </>
         )}
@@ -3918,14 +3777,7 @@ function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent,
                 )}
               </div>
 
-              {feedback && (
-                <p
-                  className={`settings-feedback settings-feedback--${feedback.tone}`}
-                  role={feedback.tone === "error" ? "alert" : "status"}
-                >
-                  {feedbackText(feedback)}
-                </p>
-              )}
+              <FeedbackLine feedback={feedback} />
 
               {/* 读取未回来时这张卡片是空的，数据一到就整块长出来，看着像界面
                   抖了一下。先占住位置并说明在读什么。 */}
