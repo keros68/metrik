@@ -152,7 +152,15 @@ export function UsagePlot({ series, visibleAgents, selectedAgent, agentLabels = 
     });
     observer.observe(host);
 
+    // 坐标轴文字画在 canvas 上，不会随网页字体加载自动重绘；字体就绪后重画一次，
+    // 否则首屏可能一直停在回退字体上。
+    let disposed = false;
+    document.fonts?.ready.then(() => {
+      if (!disposed) plot.redraw(false, true);
+    });
+
     return () => {
+      disposed = true;
       observer.disconnect();
       plot.destroy();
       host.replaceChildren();
