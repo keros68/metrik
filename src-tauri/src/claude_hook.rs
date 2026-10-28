@@ -1,30 +1,23 @@
 use crate::domain::{sane_resets_at_ms, QuotaSample};
 use crate::i18n::tr;
-use anyhow::{bail, Context, Result};
+#[cfg(not(windows))]
+use crate::statusline::shell_single_quote;
+use crate::statusline::{self, read_json_file, Host, Installer, LegacyScript};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Claude Code 官方配额的零凭据来源：statusLine 钩子。
 ///
 /// Claude Code 每次刷新状态栏都会把当前会话 JSON（含
 /// `rate_limits.five_hour / seven_day` 的 used_percentage 与 resets_at）
-/// 通过 stdin 推给 statusLine 命令。安装的脚本只提取这两个窗口并原子
-/// 写入 `~/.claude/metrik-quota.json`，同时输出一行简洁的状态栏文本；
-/// 不读取、不保存对话内容或凭据。
-///
-/// 用户已有自定义 statusLine 时不覆盖而是串联：原命令备份到
-/// `metrik-statusline.backup.json`，钩子落完额度数据后把 stdin 原样转给
-/// 原命令渲染显示；单行输出在行尾追加 5h/7d 百分比，多行输出原样透传
-/// （多行 statusLine 自带排版）。卸载时原样恢复备份。
-/// 所有平台都由 `metrik --statusline` 直接用管道执行委托，10 秒超时后终止
-/// 委托进程组/进程树；不再依赖外部 Python 解释器。委托原文与额度落盘的绝对
-/// 路径存在 `metrik-statusline.json` 元数据里，运行时从元数据读取。
+/// 通过 stdin 推给 statusLine 命令。`metrik --statusline` 只提取这两个窗口并
+/// 原子写入 `~/.claude/metrik-quota.json`，同时输出一行简洁的状态栏文本；
+/// 不读取、不保存对话内容或凭据。安装、串联与委托见 `statusline` 模块。
 const QUOTA_FILE: &str = "metrik-quota.json";
 const BACKUP_FILE: &str = "metrik-statusline.backup.json";
-const METADATA_FILE: &str = "metrik-statusline.json";
 pub(crate) const SOURCE_LABEL: &str = "statusLine 钩子";
-pub(crate) const MAX_SNAPSHOT_AGE_MS: i64 = 15 * 60 * 1000;
 
 /// 旧版本生成的委托脚本文件名，只在升级迁移时用于识别并删除；不再生成。
 #[cfg(windows)]
@@ -32,19 +25,23 @@ const SCRIPT_FILE: &str = "metrik-statusline.ps1";
 #[cfg(not(windows))]
 const SCRIPT_FILE: &str = "metrik-statusline.py";
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaudeHookStatus {
-    pub installed: bool,
-    /// 已有无法串联的 statusLine（缺 command 字段），安装被拒绝。
-    pub conflict: bool,
-    /// 已安装且串联了用户原有的 statusLine 命令。
-    pub chained: bool,
-    /// Metrik 留有安装元数据，但当前 statusLine 已被其他命令替换。
-    pub replaced: bool,
-    pub last_data_at_ms: Option<i64>,
-    pub stale: bool,
-}
+static HOST: Host = Host {
+    name: "Claude Code",
+    settings_label: "~/.claude/settings.json",
+    quota_file: QUOTA_FILE,
+    backup_file: BACKUP_FILE,
+    metadata_file: "metrik-statusline.json",
+    flag: "--statusline",
+    hook_command,
+    status_line: |command| json!({ "type": "command", "command": command, "padding": 0 }),
+    empty_command_is_unconfigured: false,
+    legacy_script: Some(LegacyScript {
+        file: SCRIPT_FILE,
+        delegate: legacy_script_delegate,
+    }),
+};
+
+pub type ClaudeHookStatus = statusline::HookStatus;
 
 #[derive(Deserialize)]
 struct QuotaFile {
@@ -60,13 +57,6 @@ struct QuotaWindow {
     used_percentage: f64,
     #[serde(rename = "resetsAt")]
     resets_at: Option<f64>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StatusLineMetadata {
-    delegate: String,
-    quota_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -95,10 +85,6 @@ fn numeric_value(value: &Value) -> Option<f64> {
 fn percentage_value(value: &Value) -> Option<f64> {
     let value = numeric_value(value)?;
     (0.0..=100.0).contains(&value).then_some(value)
-}
-
-pub(crate) fn snapshot_is_current(collected_at_ms: i64, now_ms: i64) -> bool {
-    now_ms.saturating_sub(collected_at_ms) <= MAX_SNAPSHOT_AGE_MS
 }
 
 fn payload_from_input(input: &Value) -> StatusLinePayload {
@@ -141,236 +127,6 @@ fn quota_parts(payload: &StatusLinePayload) -> Vec<String> {
         .collect()
 }
 
-/// 读取钩子自己的 JSON 文件（额度快照、元数据、备份）；缺失或损坏返回 None。
-pub(crate) fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()
-}
-
-/// 先写同目录的 `<文件名>.tmp-<pid>` 再改名，读者永远看不到半个文件。
-/// 被终止的调用留下的暂存文件由 `sweep_stale_files` 按这个前缀清理。
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(format!(".tmp-{}", std::process::id()));
-    let staged = PathBuf::from(staged);
-    std::fs::write(&staged, bytes)?;
-    let installed = std::fs::rename(&staged, path);
-    if installed.is_err() {
-        let _ = std::fs::remove_file(&staged);
-    }
-    installed
-}
-
-/// 应用被移动/重装后绝对路径会变：命令仍以钩子旗标结尾且第一个 token 的
-/// 文件名是 metrik 可执行文件时，认作我们的，交给自愈改写。
-pub(crate) fn is_moved_metrik_command(command: &str, flag: &str) -> bool {
-    command.trim_end().ends_with(flag)
-        && first_command_token(command).is_some_and(|executable| {
-            Path::new(executable)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| {
-                    name.eq_ignore_ascii_case("metrik") || name.eq_ignore_ascii_case("metrik.exe")
-                })
-        })
-}
-
-pub(crate) fn sweep_stale_files(
-    directory: &Path,
-    prefix: &str,
-    stale_before: std::time::SystemTime,
-) {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(prefix) {
-            continue;
-        }
-        let is_stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|modified| modified < stale_before);
-        if is_stale {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-}
-
-/// statusLine 命令的第一个 token（可执行文件路径），支持 `"..."`（Windows）和
-/// `'...'`（Unix）两种引用，以及裸路径。用于识别命令是否指向 metrik 本体。
-pub(crate) fn first_command_token(command: &str) -> Option<&str> {
-    let command = command.trim();
-    if let Some(rest) = command.strip_prefix('"') {
-        return rest.split('"').next();
-    }
-    if let Some(rest) = command.strip_prefix('\'') {
-        return rest.split('\'').next();
-    }
-    let end = command.find(char::is_whitespace).unwrap_or(command.len());
-    Some(&command[..end])
-}
-
-/// 用单引号包住路径供 `/bin/sh -c` 安全解析：内部单引号按 `'\''` 转义。
-#[cfg(not(windows))]
-pub(crate) fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-#[cfg(windows)]
-pub(crate) fn command_has_shell_syntax(command: &str) -> bool {
-    let mut quoted = false;
-    command.chars().any(|character| match character {
-        '"' => {
-            quoted = !quoted;
-            false
-        }
-        '|' | '&' | ';' | '<' | '>' | '(' | ')' if !quoted => true,
-        _ => false,
-    })
-}
-
-#[cfg(windows)]
-pub(crate) fn split_delegate_command(command: &str) -> Option<(&str, &str)> {
-    let command = command.trim();
-    if let Some(quoted) = command.strip_prefix('"') {
-        let end = quoted.find('"')?;
-        return Some((&quoted[..end], quoted[end + 1..].trim_start()));
-    }
-    let end = command.find(char::is_whitespace).unwrap_or(command.len());
-    Some((&command[..end], command[end..].trim_start()))
-}
-
-#[cfg(windows)]
-pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-
-    let direct = split_delegate_command(delegate);
-    // 直接启动只认 .exe：`npx`、`ccstatusline` 这类 npm 包装是 .cmd，
-    // 只有 cmd.exe 会按 PATHEXT 解析，所以除显式 .exe/.com 外都交给 cmd。
-    let needs_shell = command_has_shell_syntax(delegate)
-        || direct.is_none_or(|(executable, _)| {
-            !matches!(
-                Path::new(executable)
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .map(str::to_ascii_lowercase)
-                    .as_deref(),
-                Some("exe" | "com")
-            )
-        });
-    let mut command = if needs_shell {
-        let comspec = std::env::var_os("COMSPEC")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let system_root =
-                    std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-                PathBuf::from(system_root).join("System32").join("cmd.exe")
-            });
-        let mut command = std::process::Command::new(comspec);
-        command.args(["/D", "/S", "/C"]).raw_arg(delegate);
-        command
-    } else if let Some((executable, arguments)) = direct {
-        let mut command = std::process::Command::new(executable);
-        if !arguments.is_empty() {
-            command.raw_arg(arguments);
-        }
-        command
-    } else {
-        std::process::Command::new(delegate)
-    };
-    command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    command
-}
-
-/// 委托原文交给 `/bin/sh -c` 执行——与旧 Python 钩子的 `shell=True` 语义一致，
-/// 管道 `|`、`&&`、引号等都由 shell 解释。子进程放进自己的进程组，超时后按组
-/// 终止（`killpg`），对齐 Windows 的进程树终止：委托再拉起后代也不会残留。
-#[cfg(unix)]
-pub(crate) fn delegate_process(delegate: &str) -> std::process::Command {
-    use std::os::unix::process::CommandExt;
-
-    let mut command = std::process::Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg(delegate)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        // 独立进程组（pgid == 子进程 pid），超时后能连带后代一起收掉。
-        .process_group(0);
-    command
-}
-
-#[cfg(unix)]
-fn terminate_process_group(pgid: i32) {
-    // 负 pid 语义由 killpg 表达：终止整组，包括委托拉起的后代。
-    unsafe {
-        libc::killpg(pgid, libc::SIGKILL);
-    }
-}
-
-pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Duration) -> String {
-    use std::io::{Read, Write};
-
-    let Ok(mut child) = crate::child_process::spawn(
-        crate::child_process::Site::ClaudeStatuslineDelegate,
-        &mut delegate_process(delegate),
-    ) else {
-        return String::new();
-    };
-    // process_group(0) 让 pgid 等于子进程 pid。
-    #[cfg(unix)]
-    let pgid = child.id() as i32;
-    let output = child.stdout.take();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut output) = output {
-            let _ = output.read_to_end(&mut bytes);
-        }
-        let _ = sender.send(bytes);
-    });
-    // 写入放到线程里：不读 stdin 的委托写满管道缓冲时，超时判断不能被卡住。
-    if let Some(mut stdin) = child.stdin.take() {
-        let input = input.to_vec();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&input);
-        });
-    }
-
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            _ => {
-                #[cfg(windows)]
-                crate::child_process::terminate_process_tree(&mut child);
-                #[cfg(unix)]
-                {
-                    terminate_process_group(pgid);
-                    let _ = child.wait();
-                }
-                break;
-            }
-        }
-    }
-    // 委托退出后若有后代仍占着 stdout，读线程会一直等 EOF；到期就放弃输出。
-    let grace = deadline
-        .saturating_duration_since(std::time::Instant::now())
-        .max(std::time::Duration::from_millis(200));
-    let bytes = receiver.recv_timeout(grace).unwrap_or_default();
-    String::from_utf8_lossy(&bytes)
-        .trim_end_matches(['\r', '\n'])
-        .to_owned()
-}
-
 fn render_statusline(
     hook: &ClaudeHook,
     input: &[u8],
@@ -379,432 +135,113 @@ fn render_statusline(
     let metadata = hook.read_metadata();
     let data = serde_json::from_slice::<Value>(input).ok();
     let payload = data.as_ref().map(payload_from_input);
-
-    if let (Some(metadata), Some(payload)) = (metadata.as_ref(), payload.as_ref()) {
-        if let Ok(bytes) = serde_json::to_vec(payload) {
-            let _ = write_atomically(&metadata.quota_path, &bytes);
-        }
-    }
-
-    let stale_before = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(5 * 60))
-        .unwrap_or(std::time::UNIX_EPOCH);
-    if let Some(quota_dir) = metadata
+    let quota_text = payload
         .as_ref()
-        .and_then(|metadata| metadata.quota_path.parent())
-    {
-        sweep_stale_files(quota_dir, "metrik-quota.json.tmp-", stale_before);
-    }
-
-    let quota_parts = payload.as_ref().map(quota_parts).unwrap_or_default();
-    if let Some(delegate) = metadata
-        .as_ref()
-        .map(|metadata| metadata.delegate.trim())
-        .filter(|delegate| !delegate.is_empty())
-    {
-        let delegated = run_delegate(delegate, input, delegate_timeout);
-        if !delegated.is_empty() {
-            if !delegated.contains('\r') && !delegated.contains('\n') && !quota_parts.is_empty() {
-                return format!("{delegated} | {}", quota_parts.join(" "));
-            }
-            return delegated;
-        }
-        return quota_parts.join(" ");
-    }
-
-    let model = data
-        .as_ref()
-        .and_then(|value| value.get("model"))
-        .and_then(|value| value.get("display_name"))
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty())
-        .unwrap_or("Claude");
-    if quota_parts.is_empty() {
-        model.to_owned()
-    } else {
-        format!("{model} | {}", quota_parts.join(" "))
-    }
+        .map(quota_parts)
+        .unwrap_or_default()
+        .join(" ");
+    statusline::render(
+        metadata.as_ref(),
+        input,
+        payload.and_then(|payload| serde_json::to_vec(&payload).ok()),
+        &quota_text,
+        statusline::model_name(data.as_ref(), "Claude"),
+        delegate_timeout,
+    )
 }
 
 pub fn run_statusline() {
-    use std::io::{Read, Write};
+    statusline::run(|input| {
+        render_statusline(
+            &ClaudeHook::detected(),
+            input,
+            std::time::Duration::from_secs(10),
+        )
+    });
+}
 
-    let mut input = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut input);
-    let output = render_statusline(
-        &ClaudeHook::detected(),
-        &input,
-        std::time::Duration::from_secs(10),
-    );
-    if !output.is_empty() {
-        let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(output.as_bytes());
-        let _ = stdout.write_all(b"\n");
+/// 旧委托脚本里的原命令：Windows `.ps1` 的 `$delegate = '...'`（`'` 转义成
+/// `''`），其他平台 `.py` 的 `DELEGATE = "..."`（JSON 字符串）。
+fn legacy_script_delegate(script: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let line = script
+            .lines()
+            .find_map(|l| l.strip_prefix("$delegate = '"))?;
+        Some(line.strip_suffix('\'')?.replace("''", "'"))
+    }
+    #[cfg(not(windows))]
+    {
+        let line = script.lines().find_map(|l| l.strip_prefix("DELEGATE = "))?;
+        serde_json::from_str::<String>(line).ok()
     }
 }
 
-/// 现有非 Metrik statusLine 的 command 原文（可串联时返回）。
-fn foreign_command(settings: &Value) -> Option<String> {
-    settings
-        .get("statusLine")?
-        .get("command")?
-        .as_str()
-        .filter(|command| !command.trim().is_empty())
-        .map(str::to_owned)
+/// statusLine 命令必须是「带引号的可执行文件绝对路径 + --statusline」。
+/// Windows 上两个条件缺一不可：绝对路径——Path 写成 REG_SZ 的机器上
+/// `%SystemRoot%` 不展开、System32 不在 PATH 里，裸 `powershell` 解析不到；
+/// 引号——Claude Code 经 Git Bash 执行 statusLine，裸路径的反斜杠会被 bash
+/// 当转义符吃掉（`C:\Windows\...` → `C:Windows...`）。两种失败都是「exit 127
+/// 加零输出」，状态栏只表现为空白。Unix 上 Claude Code 经 `/bin/sh -c` 执行，
+/// 用单引号包住路径避免空格与 shell 展开。
+fn hook_command() -> Result<String> {
+    let executable = std::env::current_exe().with_context(|| {
+        tr!(
+            "无法确定 metrik 可执行文件的绝对路径",
+            "Couldn't determine the absolute path of the metrik executable"
+        )
+    })?;
+    #[cfg(windows)]
+    {
+        Ok(format!("\"{}\" --statusline", executable.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!(
+            "{} --statusline",
+            shell_single_quote(&executable.to_string_lossy())
+        ))
+    }
 }
 
-pub struct ClaudeHook {
-    claude_dir: PathBuf,
+pub struct ClaudeHook(Installer);
+
+impl std::ops::Deref for ClaudeHook {
+    type Target = Installer;
+
+    fn deref(&self) -> &Installer {
+        &self.0
+    }
 }
 
 impl ClaudeHook {
     /// Claude 配置目录：优先 `$CLAUDE_CONFIG_DIR`，否则 `~/.claude`。
     ///
-    /// 与 `claude_oauth::config_dir` 保持一致。这里原来写死 `~/.claude`：设了
-    /// `CLAUDE_CONFIG_DIR` 的用户，钩子会被装进 Claude Code 根本不读的那个
-    /// settings.json——界面显示「已安装」，实际永不执行、零数据，还在错误的
-    /// 目录里留下脚本和备份。
+    /// 与 `claude_oauth::config_dir` 保持一致：设了 `CLAUDE_CONFIG_DIR` 的用户，
+    /// 钩子必须装进 Claude Code 实际读取的那个 settings.json，否则界面显示
+    /// 「已安装」，实际永不执行、零数据。
     pub fn detected() -> Self {
-        Self {
-            claude_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+        Self::with_dir(
+            std::env::var_os("CLAUDE_CONFIG_DIR")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude")),
-        }
+        )
+    }
+
+    pub fn with_dir(claude_dir: PathBuf) -> Self {
+        Self(Installer::new(claude_dir, &HOST))
     }
 
     #[cfg(test)]
-    pub fn with_dir(claude_dir: PathBuf) -> Self {
-        Self { claude_dir }
-    }
-
-    fn settings_path(&self) -> PathBuf {
-        self.claude_dir.join("settings.json")
-    }
-
     fn script_path(&self) -> PathBuf {
-        self.claude_dir.join(SCRIPT_FILE)
-    }
-
-    fn quota_path(&self) -> PathBuf {
-        self.claude_dir.join(QUOTA_FILE)
-    }
-
-    fn backup_path(&self) -> PathBuf {
-        self.claude_dir.join(BACKUP_FILE)
-    }
-
-    fn metadata_path(&self) -> PathBuf {
-        self.claude_dir.join(METADATA_FILE)
-    }
-
-    fn read_backup(&self) -> Option<Value> {
-        read_json_file(&self.backup_path())
-    }
-
-    fn read_metadata(&self) -> Option<StatusLineMetadata> {
-        read_json_file(&self.metadata_path())
-    }
-
-    fn expected_metadata(&self, delegate: String) -> Result<StatusLineMetadata> {
-        let quota_path = self.quota_path();
-        let quota_path = if quota_path.is_absolute() {
-            quota_path
-        } else {
-            std::env::current_dir()
-                .with_context(|| {
-                    tr!(
-                        "无法确定 Claude quota 文件的绝对路径",
-                        "Couldn't determine the absolute path of the Claude quota file"
-                    )
-                })?
-                .join(quota_path)
-        };
-        Ok(StatusLineMetadata {
-            delegate,
-            quota_path,
-        })
-    }
-
-    fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?).with_context(
-            || {
-                tr!(
-                    "无法写入 statusLine 元数据",
-                    "Couldn't write the statusLine metadata"
-                )
-            },
-        )
-    }
-
-    /// 备份文件是用户可见的普通文件，会被清理 `.claude`、同步工具或杀软
-    /// 删掉。备份没了而 statusLine 仍是我们的时，重装若把 delegate 当成空，
-    /// 用户原有的 statusLine 就永久消失（备份已不在，卸载也还原不回来）。
-    /// 原生安装从元数据读取；升级迁移时再退回旧脚本（Windows `.ps1`、其他
-    /// 平台 `.py`）。
-    fn installed_delegate(&self) -> Option<String> {
-        if let Some(metadata) = self.read_metadata() {
-            return Some(metadata.delegate);
-        }
-        let script = std::fs::read_to_string(self.script_path()).ok()?;
-        #[cfg(windows)]
-        {
-            // 生成时 `'` 转义成 `''`，这里反向还原。
-            let line = script
-                .lines()
-                .find_map(|l| l.strip_prefix("$delegate = '"))?;
-            Some(line.strip_suffix('\'')?.replace("''", "'"))
-        }
-        #[cfg(not(windows))]
-        {
-            let line = script.lines().find_map(|l| l.strip_prefix("DELEGATE = "))?;
-            serde_json::from_str::<String>(line).ok()
-        }
-    }
-
-    /// statusLine 命令必须是「带引号的可执行文件绝对路径 + --statusline」。
-    /// Windows 上两个条件缺一不可：绝对路径——Path 写成 REG_SZ 的机器上
-    /// `%SystemRoot%` 不展开、System32 不在 PATH 里，裸 `powershell` 解析不到；
-    /// 引号——Claude Code 经 Git Bash 执行 statusLine，裸路径的反斜杠会被 bash
-    /// 当转义符吃掉（`C:\Windows\...` → `C:Windows...`）。两种失败都是「exit 127
-    /// 加零输出」，状态栏只表现为空白。Unix 上 Claude Code 经 `/bin/sh -c` 执行，
-    /// 用单引号包住路径避免空格与 shell 展开。
-    fn hook_command(&self) -> Result<String> {
-        let executable = std::env::current_exe().with_context(|| {
-            tr!(
-                "无法确定 metrik 可执行文件的绝对路径",
-                "Couldn't determine the absolute path of the metrik executable"
-            )
-        })?;
-        #[cfg(windows)]
-        {
-            Ok(format!("\"{}\" --statusline", executable.display()))
-        }
-        #[cfg(not(windows))]
-        {
-            Ok(format!(
-                "{} --statusline",
-                shell_single_quote(&executable.to_string_lossy())
-            ))
-        }
-    }
-
-    fn read_settings(&self) -> Result<Value> {
-        match std::fs::read_to_string(self.settings_path()) {
-            Ok(raw) => {
-                let trimmed = raw.trim_start_matches('\u{feff}');
-                serde_json::from_str(trimmed).with_context(|| {
-                    tr!(
-                        "~/.claude/settings.json 不是有效 JSON",
-                        "~/.claude/settings.json is not valid JSON"
-                    )
-                })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-            Err(error) => Err(error).with_context(|| {
-                tr!(
-                    "无法读取 ~/.claude/settings.json",
-                    "Couldn't read ~/.claude/settings.json"
-                )
-            }),
-        }
-    }
-
-    fn write_settings(&self, settings: &Value) -> Result<()> {
-        std::fs::create_dir_all(&self.claude_dir)?;
-        // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
-        let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes()).with_context(
-            || {
-                tr!(
-                    "无法更新 ~/.claude/settings.json",
-                    "Couldn't update ~/.claude/settings.json"
-                )
-            },
-        )
-    }
-
-    fn status_line_is_ours(&self, settings: &Value) -> bool {
-        let Some(command) = settings
-            .get("statusLine")
-            .and_then(|value| value.get("command"))
-            .and_then(Value::as_str)
-        else {
-            return false;
-        };
-        // 旧版本生成的委托脚本命令（Windows `.ps1`、其他平台 `.py`），升级迁移用。
-        if command.contains(SCRIPT_FILE) {
-            return true;
-        }
-        if self
-            .hook_command()
-            .is_ok_and(|expected| command == expected)
-        {
-            return true;
-        }
-        is_moved_metrik_command(command, "--statusline")
-    }
-
-    pub fn status(&self) -> Result<ClaudeHookStatus> {
-        let settings = self.read_settings()?;
-        let installed = self.status_line_is_ours(&settings);
-        // 只有存在且无法串联（缺 command 字段）的 statusLine 才算冲突。
-        let conflict = !installed
-            && settings
-                .get("statusLine")
-                .is_some_and(|value| !value.is_null())
-            && foreign_command(&settings).is_none();
-        let chained = installed
-            && (self.read_backup().is_some()
-                || self
-                    .installed_delegate()
-                    .is_some_and(|value| !value.is_empty()));
-        let last_data_at_ms = self.read_quota_file().map(|file| file.received_at_ms);
-        let replaced = !installed && self.read_metadata().is_some();
-        let stale = last_data_at_ms.is_some_and(|collected_at_ms| {
-            !snapshot_is_current(collected_at_ms, chrono::Utc::now().timestamp_millis())
-        });
-        Ok(ClaudeHookStatus {
-            installed,
-            conflict,
-            chained,
-            replaced,
-            last_data_at_ms,
-            stale,
-        })
-    }
-
-    pub fn install(&self) -> Result<ClaudeHookStatus> {
-        let mut settings = self.read_settings()?;
-        std::fs::create_dir_all(&self.claude_dir)?;
-
-        // 已有他人 statusLine：备份原设置并串联其 command；重装时沿用已备份的命令。
-        let mut delegate = String::new();
-        if self.status_line_is_ours(&settings) {
-            delegate = self
-                .read_backup()
-                .as_ref()
-                .and_then(|backup| backup.get("command"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                // 备份被删而脚本还在：从脚本回读。否则这里会把 delegate 当成
-                // 空的重装成「无委托」，用户原有的 statusLine 就永久没了。
-                .or_else(|| self.installed_delegate())
-                .unwrap_or_default();
-        } else if let Some(existing) = settings
-            .get("statusLine")
-            .filter(|value| !value.is_null())
-            .cloned()
-        {
-            let Some(command) = foreign_command(&settings) else {
-                bail!(tr!(
-                    "Claude Code 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。",
-                    "Claude Code already has a statusLine that can't be chained (no command field). Not installed, to avoid overwriting it."
-                ));
-            };
-            std::fs::write(self.backup_path(), serde_json::to_string_pretty(&existing)?)
-                .with_context(|| {
-                    tr!(
-                        "无法备份原有 statusLine 设置",
-                        "Couldn't back up the existing statusLine setting"
-                    )
-                })?;
-            delegate = command;
-        }
-
-        self.write_metadata(&self.expected_metadata(delegate.clone())?)?;
-
-        let root = settings.as_object_mut().with_context(|| {
-            tr!(
-                "settings.json 顶层不是对象",
-                "The top level of settings.json is not an object"
-            )
-        })?;
-        root.insert(
-            "statusLine".into(),
-            json!({ "type": "command", "command": self.hook_command()?, "padding": 0 }),
-        );
-        self.write_settings(&settings)?;
-        // 原生入口不再需要委托脚本：删掉升级前留下的旧 `.ps1`/`.py`。
-        let _ = std::fs::remove_file(self.script_path());
-        self.status()
-    }
-
-    /// 启动时自愈：statusLine 已经属于 Metrik，但命令过时或脚本不在了，重装一次。
-    ///
-    /// `install()` 只有界面上那个开关会调，升级和开机都不会。所以旧版本写坏的
-    /// statusLine 升级之后依然是坏的：用户看到空白状态栏，而 Metrik 界面显示
-    /// 「已安装」，没有任何线索提示他去关一次开关再打开。修一版生成器救不了
-    /// 已经写坏的那批人，得在启动时回头补一次。
-    ///
-    /// 两条边界：statusLine 不属于 Metrik 时一律不碰，这是别人的配置；命令已经
-    /// 正确且脚本在位时不写盘，否则每次启动都动 settings.json。
-    pub fn repair(&self) -> Result<bool> {
-        let settings = self.read_settings()?;
-        if !self.status_line_is_ours(&settings) {
-            return Ok(false);
-        }
-        let installed_command = settings
-            .get("statusLine")
-            .and_then(|value| value.get("command"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        // 命令已指向原生入口、元数据落位、且没有旧脚本残留时才算健康；否则
-        // （旧 `.ps1`/`.py` 迁移、元数据丢失、路径变化）重装一次修好。委托原文
-        // 从当前安装状态回读，迁移不丢串联。
-        let delegate = self.installed_delegate().unwrap_or_default();
-        let expected_metadata = self.expected_metadata(delegate)?;
-        if installed_command == self.hook_command()?
-            && self.read_metadata().as_ref() == Some(&expected_metadata)
-            && !self.script_path().exists()
-        {
-            return Ok(false);
-        }
-        self.install()?;
-        Ok(true)
-    }
-
-    pub fn uninstall(&self) -> Result<ClaudeHookStatus> {
-        let mut settings = self.read_settings()?;
-        if self.status_line_is_ours(&settings) {
-            let root = settings.as_object_mut().with_context(|| {
-                tr!(
-                    "settings.json 顶层不是对象",
-                    "The top level of settings.json is not an object"
-                )
-            })?;
-            // 串联安装的：把用户原有的 statusLine 原样恢复。
-            // 备份被删时退而求其次，用脚本里的原命令重建——宁可丢 padding
-            // 之类的次要字段，也不能把用户的 statusLine 整个删掉。
-            let restored = self.read_backup().or_else(|| {
-                let delegate = self.installed_delegate().filter(|d| !d.is_empty())?;
-                Some(json!({ "type": "command", "command": delegate, "padding": 0 }))
-            });
-            match restored {
-                Some(backup) => {
-                    root.insert("statusLine".into(), backup);
-                }
-                None => {
-                    root.remove("statusLine");
-                }
-            }
-            self.write_settings(&settings)?;
-        }
-        let _ = std::fs::remove_file(self.script_path());
-        let _ = std::fs::remove_file(self.metadata_path());
-        let _ = std::fs::remove_file(self.quota_path());
-        let _ = std::fs::remove_file(self.backup_path());
-        self.status()
-    }
-
-    fn read_quota_file(&self) -> Option<QuotaFile> {
-        read_json_file(&self.quota_path())
+        self.quota_path().with_file_name(SCRIPT_FILE)
     }
 
     /// 把钩子落地的全部官方窗口转换成 QuotaSample（原始窗口名作 key）；
     /// 文件缺失或格式异常返回空，不猜测、不沿用陈旧文件之外的任何来源。
     pub fn quota_samples(&self) -> Vec<QuotaSample> {
-        let Some(file) = self.read_quota_file() else {
+        let Some(file) = read_json_file::<QuotaFile>(&self.quota_path()) else {
             return Vec::new();
         };
         file.windows
@@ -1577,7 +1014,8 @@ Wait-Process -Id $child.Id
     #[test]
     fn hook_status_marks_old_data_stale() {
         let test = TestDirectory::new("stale-status");
-        let received_at_ms = chrono::Utc::now().timestamp_millis() - MAX_SNAPSHOT_AGE_MS - 1;
+        let received_at_ms =
+            chrono::Utc::now().timestamp_millis() - statusline::MAX_SNAPSHOT_AGE_MS - 1;
         fs::write(
             test.path().join(QUOTA_FILE),
             format!(r#"{{"receivedAtMs":{received_at_ms},"windows":{{}}}}"#),

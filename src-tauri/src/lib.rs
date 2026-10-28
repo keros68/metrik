@@ -24,6 +24,7 @@ mod schema;
 mod speed_config;
 mod speed_store;
 mod speed_telemetry;
+mod statusline;
 mod storage;
 mod sync;
 #[cfg(target_os = "macos")]
@@ -58,6 +59,24 @@ struct AppState {
     response_speed: Arc<response_speed::Collector>,
     #[cfg(target_os = "linux")]
     pinned_hover_monitor: Arc<pinned_hover::Monitor>,
+}
+
+/// 命令体放到阻塞线程池执行，错误转成界面直接展示的文字。
+async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("background task failed: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+/// 改设置或账本的命令持有扫描锁，避免与进行中的日志扫描交错写入。
+fn lock_scan(gate: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>> {
+    gate.lock()
+        .map_err(|_| anyhow::anyhow!("usage scan lock poisoned"))
 }
 
 /// Linux 首窗必须在 WebView 初始化前决定位置，否则 GTK 会先映射默认居中的
@@ -421,17 +440,14 @@ async fn usage_snapshot(
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
         let snapshot = engine::build_snapshot(
             &database_path,
             &period,
             &quota_cache,
             force.unwrap_or(false),
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
 
         if let Err(error) = storage::open_database(&database_path).and_then(|connection| {
             quota_alerts::check(
@@ -503,7 +519,6 @@ async fn usage_snapshot(
         Ok(snapshot)
     })
     .await
-    .map_err(|error| format!("usage scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -515,27 +530,17 @@ async fn quota_snapshot(
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
         engine::refresh_quota_snapshot(&database_path, &period, &quota_cache)
-            .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 async fn quota_alert_settings(state: State<'_, AppState>) -> Result<bool, String> {
     let path = state.database_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        storage::open_database(&path)
-            .and_then(|db| quota_alerts::enabled(&db))
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    run_blocking(move || quota_alerts::enabled(&storage::open_database(&path)?)).await
 }
 
 #[tauri::command]
@@ -543,40 +548,32 @@ async fn codex_reset_credits(
     state: State<'_, AppState>,
 ) -> Result<app_server::ResetCreditsView, String> {
     let gate = Arc::clone(&state.scan_gate);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _guard = gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&gate)?;
         app_server::read_reset_credits(std::time::Duration::from_secs(15)).map_err(|_| {
-            i18n::tr!(
+            anyhow::anyhow!(i18n::tr!(
                 "Codex 重置券查询失败，请确认 Codex 已登录后重试。",
                 "Couldn't check Codex reset credits. Make sure Codex is signed in, then try again."
-            )
+            ))
         })
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 async fn set_quota_alerts(enabled: bool, state: State<'_, AppState>) -> Result<bool, String> {
     let path = state.database_path.clone();
     let gate = Arc::clone(&state.scan_gate);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _guard = gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let db = storage::open_database(&path).map_err(|error| error.to_string())?;
-        storage::set_app_setting(
-            &db,
+    run_blocking(move || {
+        let _gate = lock_scan(&gate)?;
+        storage::set_flag(
+            &storage::open_database(&path)?,
             quota_alerts::ENABLED_KEY,
-            if enabled { "1" } else { "0" },
-        )
-        .map_err(|error| error.to_string())?;
+            enabled,
+        )?;
         Ok(enabled)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 /// 设置窗口显式提交 macOS Agent 选择。它是唯一允许覆盖已保存选择的通道；
@@ -597,34 +594,26 @@ async fn set_macos_agent_selection(
         }
         let database_path = state.database_path.clone();
         let scan_gate = Arc::clone(&state.scan_gate);
-        tauri::async_runtime::spawn_blocking(move || {
-            let _gate = scan_gate
-                .lock()
-                .map_err(|_| "usage scan lock poisoned".to_owned())?;
-            let connection =
-                storage::open_database(&database_path).map_err(|error| error.to_string())?;
-            let encoded = serde_json::to_string(&agents).map_err(|error| error.to_string())?;
+        run_blocking(move || {
+            let _gate = lock_scan(&scan_gate)?;
+            let connection = storage::open_database(&database_path)?;
             storage::set_app_setting(
                 &connection,
                 widget_snapshot::AGENT_FILTER_SETTING_KEY,
-                &encoded,
-            )
-            .map_err(|error| error.to_string())?;
+                &serde_json::to_string(&agents)?,
+            )?;
             drop(connection);
 
             // 选择本身不需要重新扫描 Agent 日志；用缓存快照即可立刻更新
             // WidgetKit 内容与时间线，额度/用量数值保持现有来源语义。
-            let snapshot = engine::build_cached_snapshot(&database_path, "today")
-                .map_err(|error| error.to_string())?;
-            widget_snapshot::persist(&snapshot, Some(&agents))
-                .map_err(|error| error.to_string())?;
+            let snapshot = engine::build_cached_snapshot(&database_path, "today")?;
+            widget_snapshot::persist(&snapshot, Some(&agents))?;
             // 用户显式操作，即时 reload 一次让小组件马上换选择；频率受操作次数
             // 限制，不会耗尽 WidgetKit 的应用级刷新配额（轮询路径不 reload）。
             widget_snapshot::reload_timelines();
             Ok(())
         })
         .await
-        .map_err(|error| format!("macOS Agent selection task failed: {error}"))?
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -644,12 +633,10 @@ async fn get_macos_agent_selection(state: State<'_, AppState>) -> Result<Vec<Str
     #[cfg(target_os = "macos")]
     {
         let database_path = state.database_path.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let connection =
-                storage::open_database(&database_path).map_err(|error| error.to_string())?;
+        run_blocking(move || {
+            let connection = storage::open_database(&database_path)?;
             let saved =
-                storage::get_app_setting(&connection, widget_snapshot::AGENT_FILTER_SETTING_KEY)
-                    .map_err(|error| error.to_string())?;
+                storage::get_app_setting(&connection, widget_snapshot::AGENT_FILTER_SETTING_KEY)?;
             Ok(
                 widget_snapshot::resolve_agent_filter(saved.as_deref(), None)
                     .0
@@ -657,7 +644,6 @@ async fn get_macos_agent_selection(state: State<'_, AppState>) -> Result<Vec<Str
             )
         })
         .await
-        .map_err(|error| format!("macOS Agent selection task failed: {error}"))?
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -674,12 +660,7 @@ async fn get_macos_agent_selection(state: State<'_, AppState>) -> Result<Vec<Str
 #[tauri::command]
 async fn usage_report(state: State<'_, AppState>) -> Result<UsageReport, String> {
     let database_path = state.database_path.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        engine::build_report(&database_path).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("usage report task failed: {error}"))?
+    run_blocking(move || engine::build_report(&database_path)).await
 }
 
 /// 只读会话明细：只查询本地账本已有数据，绝不触发日志扫描，不占用扫描锁。
@@ -689,12 +670,7 @@ async fn usage_sessions(
     state: State<'_, AppState>,
 ) -> Result<UsageSessions, String> {
     let database_path = state.database_path.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        engine::build_sessions(&database_path, &period).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("usage sessions task failed: {error}"))?
+    run_blocking(move || engine::build_sessions(&database_path, &period)).await
 }
 
 /// 只读项目明细：与会话明细同源，按分组规则归并后聚合。
@@ -704,26 +680,15 @@ async fn usage_projects(
     state: State<'_, AppState>,
 ) -> Result<UsageProjects, String> {
     let database_path = state.database_path.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        engine::build_projects(&database_path, &period).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("usage projects task failed: {error}"))?
+    run_blocking(move || engine::build_projects(&database_path, &period)).await
 }
 
 /// 读取项目分组规则（手动项目根与隐藏目录）。
 #[tauri::command]
 async fn project_rules(state: State<'_, AppState>) -> Result<projects::ProjectRules, String> {
     let database_path = state.database_path.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
-        projects::load_rules(&connection).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("project rules task failed: {error}"))?
+    run_blocking(move || projects::load_rules(&storage::open_database_read_only(&database_path)?))
+        .await
 }
 
 /// 保存项目分组规则，返回归一化去重后的结果。只写 `app_setting` 一行，
@@ -734,14 +699,8 @@ async fn set_project_rules(
     state: State<'_, AppState>,
 ) -> Result<projects::ProjectRules, String> {
     let database_path = state.database_path.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        projects::save_rules(&connection, rules).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("set project rules task failed: {error}"))?
+    run_blocking(move || projects::save_rules(&storage::open_database(&database_path)?, rules))
+        .await
 }
 
 /// 把前端拼好的 CSV 文本写入「下载」目录并返回完整路径。WebView 里的
@@ -749,7 +708,7 @@ async fn set_project_rules(
 /// 内容由前端生成，只含账本统计字段，不含对话正文。
 #[tauri::command]
 async fn export_csv(file_name: String, content: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         let safe_name: String = file_name
             .chars()
             .map(|c| match c {
@@ -761,7 +720,12 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
         let safe_name = format!("{}.csv", safe_name.trim_end_matches(".csv"));
         let directory = dirs::download_dir()
             .or_else(dirs::home_dir)
-            .ok_or_else(|| i18n::tr!("无法定位下载目录", "Couldn't find the Downloads folder"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(i18n::tr!(
+                    "无法定位下载目录",
+                    "Couldn't find the Downloads folder"
+                ))
+            })?;
         let mut target = directory.join(&safe_name);
         let mut counter = 1;
         while target.exists() {
@@ -770,15 +734,14 @@ async fn export_csv(file_name: String, content: String) -> Result<String, String
             counter += 1;
         }
         std::fs::write(&target, content.as_bytes()).map_err(|error| {
-            i18n::tr!(
+            anyhow::anyhow!(i18n::tr!(
                 "写入 CSV 失败：{error}",
                 "Couldn't write the CSV file: {error}"
-            )
+            ))
         })?;
         Ok(target.to_string_lossy().into_owned())
     })
     .await
-    .map_err(|error| format!("csv export task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -790,16 +753,12 @@ async fn rebuild_local_ledger(
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        storage::reset_derived_ledger(&database_path).map_err(|error| error.to_string())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        storage::reset_derived_ledger(&database_path)?;
         engine::build_snapshot(&database_path, &period, &quota_cache, false)
-            .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("local ledger rebuild task failed: {error}"))?
 }
 
 /// 只读状态：开关是否开启、本机是否装了 Cursor、会话是否可用。不返回会话内容。
@@ -808,17 +767,12 @@ async fn cursor_usage_status(
     state: State<'_, AppState>,
 ) -> Result<adapters::CursorUsageStatus, String> {
     let database_path = state.database_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
-        let enabled = storage::get_app_setting(&connection, adapters::CURSOR_USAGE_SETTING_KEY)
-            .map_err(|error| error.to_string())?
-            .as_deref()
-            == Some("1");
+    run_blocking(move || {
+        let connection = storage::open_database_read_only(&database_path)?;
+        let enabled = storage::get_flag(&connection, adapters::CURSOR_USAGE_SETTING_KEY)?;
         Ok(adapters::cursor_usage_status(enabled))
     })
     .await
-    .map_err(|error| format!("cursor usage status task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -826,17 +780,15 @@ async fn response_speed_status(
     state: State<'_, AppState>,
 ) -> Result<response_speed::CollectionStatus, String> {
     let collector = Arc::clone(&state.response_speed);
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         collector.status().map_err(|_| {
-            i18n::tr!(
+            anyhow::anyhow!(i18n::tr!(
                 "响应速度采集状态读取失败。",
                 "Could not read response-speed collection status."
-            )
-            .to_owned()
+            ))
         })
     })
     .await
-    .map_err(|_| "response-speed status task failed".to_owned())?
 }
 
 #[tauri::command]
@@ -847,16 +799,11 @@ async fn set_response_speed_collection(
 ) -> Result<response_speed::CollectionStatus, String> {
     let collector = Arc::clone(&state.response_speed);
     let scan_gate = Arc::clone(&state.scan_gate);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "response-speed setting unavailable".to_owned())?;
-        collector
-            .set_enabled(&agent_id, enabled)
-            .map_err(|error| error.to_string())
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        collector.set_enabled(&agent_id, enabled)
     })
     .await
-    .map_err(|_| "response-speed setting task failed".to_owned())?
 }
 
 #[tauri::command]
@@ -866,27 +813,17 @@ async fn set_cursor_usage(
 ) -> Result<adapters::CursorUsageStatus, String> {
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let mut connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        storage::set_app_setting(
-            &connection,
-            adapters::CURSOR_USAGE_SETTING_KEY,
-            if enabled { "1" } else { "0" },
-        )
-        .map_err(|error| error.to_string())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        let mut connection = storage::open_database(&database_path)?;
+        storage::set_flag(&connection, adapters::CURSOR_USAGE_SETTING_KEY, enabled)?;
         adapters::reset_cursor_runtime_state();
         if !enabled {
-            storage::remove_adapter_ledger(&mut connection, "cursor")
-                .map_err(|error| error.to_string())?;
+            storage::remove_adapter_ledger(&mut connection, "cursor")?;
         }
         Ok(adapters::cursor_usage_status(enabled))
     })
     .await
-    .map_err(|error| format!("cursor usage setting task failed: {error}"))?
 }
 
 /// Grok Bot 共享额度池的只读状态。不向前端返回任何凭据内容。
@@ -895,17 +832,12 @@ async fn grokbot_quota_status(
     state: State<'_, AppState>,
 ) -> Result<adapters::GrokBotQuotaStatus, String> {
     let database_path = state.database_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
-        let enabled = storage::get_app_setting(&connection, adapters::GROKBOT_QUOTA_SETTING_KEY)
-            .map_err(|error| error.to_string())?
-            .as_deref()
-            == Some("1");
+    run_blocking(move || {
+        let connection = storage::open_database_read_only(&database_path)?;
+        let enabled = storage::get_flag(&connection, adapters::GROKBOT_QUOTA_SETTING_KEY)?;
         Ok(adapters::grokbot_quota_status(enabled))
     })
     .await
-    .map_err(|error| format!("grokbot quota status task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -916,26 +848,16 @@ async fn set_grokbot_quota(
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        storage::set_app_setting(
-            &connection,
-            adapters::GROKBOT_QUOTA_SETTING_KEY,
-            if enabled { "1" } else { "0" },
-        )
-        .map_err(|error| error.to_string())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        let connection = storage::open_database(&database_path)?;
+        storage::set_flag(&connection, adapters::GROKBOT_QUOTA_SETTING_KEY, enabled)?;
         if !enabled {
             // 关闭后删掉本来源写的展示行，不留一个没有来源的额度数字。
-            connection
-                .execute(
-                    "DELETE FROM quota_snapshot WHERE adapter_id = 'grokbot'",
-                    [],
-                )
-                .map_err(|error| error.to_string())?;
+            connection.execute(
+                "DELETE FROM quota_snapshot WHERE adapter_id = 'grokbot'",
+                [],
+            )?;
         }
         // 清缓存让下一次快照立即按新开关取数。
         if let Ok(mut guard) = quota_cache.lock() {
@@ -944,7 +866,6 @@ async fn set_grokbot_quota(
         Ok(adapters::grokbot_quota_status(enabled))
     })
     .await
-    .map_err(|error| format!("set grokbot quota task failed: {error}"))?
 }
 
 /// 只读状态：开关是否开启、本机是否有 Claude 登录凭据、scope 是否满足。
@@ -954,20 +875,15 @@ async fn claude_oauth_status(
     state: State<'_, AppState>,
 ) -> Result<claude_oauth::ClaudeOauthStatus, String> {
     let database_path = state.database_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database_read_only(&database_path).map_err(|error| error.to_string())?;
-        let enabled = storage::get_app_setting(&connection, claude_oauth::SETTING_KEY)
-            .map_err(|error| error.to_string())?
-            .as_deref()
-            == Some("1");
-        let failure = claude_oauth::last_failure(&connection).map_err(|error| error.to_string())?;
+    run_blocking(move || {
+        let connection = storage::open_database_read_only(&database_path)?;
+        let enabled = storage::get_flag(&connection, claude_oauth::SETTING_KEY)?;
+        let failure = claude_oauth::last_failure(&connection)?;
         Ok(claude_oauth::ClaudeOauth::detected()
             .status(enabled)
             .with_failure(failure))
     })
     .await
-    .map_err(|error| format!("claude oauth status task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -978,29 +894,19 @@ async fn set_claude_oauth(
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        storage::set_app_setting(
-            &connection,
-            claude_oauth::SETTING_KEY,
-            if enabled { "1" } else { "0" },
-        )
-        .map_err(|error| error.to_string())?;
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        let connection = storage::open_database(&database_path)?;
+        storage::set_flag(&connection, claude_oauth::SETTING_KEY, enabled)?;
         if !enabled {
             // 关闭后清掉 OAuth 来源的展示行，下次扫描由钩子文件重新填充。
-            connection
-                .execute(
-                    "DELETE FROM quota_snapshot WHERE adapter_id = 'claude' AND source_label = ?1",
-                    [claude_oauth::SOURCE_LABEL],
-                )
-                .map_err(|error| error.to_string())?;
+            connection.execute(
+                "DELETE FROM quota_snapshot WHERE adapter_id = 'claude' AND source_label = ?1",
+                [claude_oauth::SOURCE_LABEL],
+            )?;
         }
         // 上一轮的失败原因对新开关无效，留着会指向已经不存在的问题。
-        claude_oauth::clear_failure(&connection).map_err(|error| error.to_string())?;
+        claude_oauth::clear_failure(&connection)?;
         // 清缓存让下一次快照立即按新开关取数。
         if let Ok(mut guard) = quota_cache.lock() {
             guard.remove("claude");
@@ -1008,7 +914,6 @@ async fn set_claude_oauth(
         Ok(claude_oauth::ClaudeOauth::detected().status(enabled))
     })
     .await
-    .map_err(|error| format!("set claude oauth task failed: {error}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -1038,21 +943,20 @@ async fn qoder_cookie_status() -> Result<QoderCookieView, String> {
 /// 官方 Credits 验证，把结果原样反馈——用户不用猜有没有配对。
 #[tauri::command]
 async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         // 宽容解析：整段请求标头 / cURL / 带 Cookie: 前缀 / 裸值都接受。
         let normalized = match cookie.as_deref() {
             Some(raw) => Some(coding_quota::normalize_qoder_cookie_input(raw).ok_or_else(
                 || {
-                    i18n::tr!(
+                    anyhow::anyhow!(i18n::tr!(
                         "粘贴内容中未找到 Cookie 行",
                         "No Cookie line found in the pasted text"
-                    )
+                    ))
                 },
             )?),
             None => None,
         };
-        let saved = coding_quota::write_qoder_cookie_file(normalized.as_deref())
-            .map_err(|error| error.to_string())?;
+        let saved = coding_quota::write_qoder_cookie_file(normalized.as_deref())?;
         let source = coding_quota::qoder_cookie_source();
         if !saved {
             return Ok(QoderCookieView {
@@ -1091,7 +995,6 @@ async fn configure_qoder_cookie(cookie: Option<String>) -> Result<QoderCookieVie
         })
     })
     .await
-    .map_err(|error| format!("qoder cookie task failed: {error}"))?
 }
 
 fn qoder_verified_message(lang: i18n::Lang, sample: &domain::QuotaSample, now_ms: i64) -> String {
@@ -1127,13 +1030,7 @@ async fn sync_settings(state: State<'_, AppState>) -> Result<domain::SyncView, S
     // 与会话/项目/分组规则同一惯例：设置页的读取不占扫描锁。占了的话，打开
     // 设置正好赶上一次扫描，整张同步卡片要等扫描结束才出现——界面看着是
     // 空的，然后突然长出一截。写连接仍然要保留：首次调用会补写设备身份。
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        sync::sync_view(&connection).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("sync settings task failed: {error}"))?
+    run_blocking(move || sync::sync_view(&storage::open_database(&database_path)?)).await
 }
 
 #[tauri::command]
@@ -1143,17 +1040,11 @@ async fn configure_sync(
 ) -> Result<domain::SyncView, String> {
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let mut connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        sync::configure(&mut connection, directory).map_err(|error| error.to_string())
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        sync::configure(&mut storage::open_database(&database_path)?, directory)
     })
     .await
-    .map_err(|error| format!("sync configuration task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1163,17 +1054,11 @@ async fn remove_sync_device(
 ) -> Result<domain::SyncView, String> {
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let _gate = scan_gate
-            .lock()
-            .map_err(|_| "usage scan lock poisoned".to_owned())?;
-        let mut connection =
-            storage::open_database(&database_path).map_err(|error| error.to_string())?;
-        sync::remove_device(&mut connection, &device_id).map_err(|error| error.to_string())
+    run_blocking(move || {
+        let _gate = lock_scan(&scan_gate)?;
+        sync::remove_device(&mut storage::open_database(&database_path)?, &device_id)
     })
     .await
-    .map_err(|error| format!("sync device removal task failed: {error}"))?
 }
 
 /// 无边框窗口（decorations: false）在 Windows 上默认不进任务栏：任务栏按钮
@@ -1522,56 +1407,40 @@ fn persist_linux_startup_position(
 
 #[tauri::command]
 async fn claude_hook_status() -> Result<claude_hook::ClaudeHookStatus, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        claude_hook::ClaudeHook::detected()
-            .status()
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("claude hook status task failed: {error}"))?
+    run_blocking(|| claude_hook::ClaudeHook::detected().status()).await
 }
 
 #[tauri::command]
 async fn set_claude_hook(enabled: bool) -> Result<claude_hook::ClaudeHookStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         let hook = claude_hook::ClaudeHook::detected();
         if enabled {
             hook.install()
         } else {
             hook.uninstall()
         }
-        .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("claude hook task failed: {error}"))?
 }
 
 #[tauri::command]
 async fn antigravity_hook_status() -> Result<antigravity_hook::AntigravityHookStatus, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        antigravity_hook::AntigravityHook::detected()
-            .status()
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("antigravity hook status task failed: {error}"))?
+    run_blocking(|| antigravity_hook::AntigravityHook::detected().status()).await
 }
 
 #[tauri::command]
 async fn set_antigravity_hook(
     enabled: bool,
 ) -> Result<antigravity_hook::AntigravityHookStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking(move || {
         let hook = antigravity_hook::AntigravityHook::detected();
         if enabled {
             hook.install()
         } else {
             hook.uninstall()
         }
-        .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("antigravity hook task failed: {error}"))?
 }
 
 /// 完整视图在 macOS 是带原生标题栏的独立窗口：用户手动选择明暗、且与系统相反时，
@@ -1852,13 +1721,14 @@ async fn set_ui_language(
         _ => return Err(format!("unsupported language setting: {setting}")),
     };
     let path = state.database_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let db = storage::open_database(&path).map_err(|error| error.to_string())?;
-        storage::set_app_setting(&db, i18n::SETTING_KEY, setting.as_str())
-            .map_err(|error| error.to_string())
+    run_blocking(move || {
+        storage::set_app_setting(
+            &storage::open_database(&path)?,
+            i18n::SETTING_KEY,
+            setting.as_str(),
+        )
     })
-    .await
-    .map_err(|error| error.to_string())??;
+    .await?;
 
     let next = language_state(setting);
     i18n::set_current(next.language);

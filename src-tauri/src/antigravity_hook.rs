@@ -1,11 +1,9 @@
-#[cfg(not(windows))]
-use crate::claude_hook::shell_single_quote;
-use crate::claude_hook::{
-    is_moved_metrik_command, read_json_file, run_delegate, sweep_stale_files, write_atomically,
-};
 use crate::domain::{sane_resets_at_ms, QuotaSample};
 use crate::i18n::tr;
-use anyhow::{bail, Context, Result};
+#[cfg(not(windows))]
+use crate::statusline::shell_single_quote;
+use crate::statusline::{self, read_json_file, Host, Installer};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -18,30 +16,27 @@ use std::path::PathBuf;
 /// 会话 JSON（含 `quota` 对象的 `remaining_fraction` 与 `reset_time`）通过
 /// stdin 推给用户配置的命令。安装的钩子只提取额度窗口并原子写入
 /// `~/.gemini/antigravity-cli/metrik-antigravity-quota.json`，同时输出一行
-/// 简洁的状态栏文本；不读取、不保存对话内容或凭据。
-///
-/// 与 Claude 钩子一致：用户已有自定义 statusLine 时备份并串联，钩子落完额度
-/// 后把 stdin 原样转给原命令渲染；卸载时原样恢复。
-const QUOTA_FILE: &str = "metrik-antigravity-quota.json";
-const BACKUP_FILE: &str = "metrik-antigravity-statusline.backup.json";
-const METADATA_FILE: &str = "metrik-antigravity-statusline.json";
+/// 简洁的状态栏文本；不读取、不保存对话内容或凭据。安装、串联与委托见
+/// `statusline` 模块。
 pub(crate) const SOURCE_LABEL: &str = "Antigravity CLI statusLine 钩子";
-const MAX_SNAPSHOT_AGE_MS: i64 = 15 * 60 * 1000;
 const HOOK_FLAG: &str = "--antigravity-hook";
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AntigravityHookStatus {
-    pub installed: bool,
-    /// 已有无法串联的 statusLine（缺 command 字段），安装被拒绝。
-    pub conflict: bool,
-    /// 已安装且串联了用户原有的 statusLine 命令。
-    pub chained: bool,
-    /// Metrik 留有安装元数据，但当前 statusLine 已被其他命令替换。
-    pub replaced: bool,
-    pub last_data_at_ms: Option<i64>,
-    pub stale: bool,
-}
+static HOST: Host = Host {
+    name: "Antigravity CLI",
+    settings_label: "~/.gemini/antigravity-cli/settings.json",
+    quota_file: "metrik-antigravity-quota.json",
+    backup_file: "metrik-antigravity-statusline.backup.json",
+    metadata_file: "metrik-antigravity-statusline.json",
+    flag: HOOK_FLAG,
+    hook_command,
+    status_line: |command| json!({ "type": "command", "command": command, "enabled": true }),
+    // agy 全新安装就带着 `{"type":"","command":"","enabled":true}` 的空骨架。
+    // 这不是用户配置：没有可串联的命令，直接覆盖是安全的，也不算冲突。
+    empty_command_is_unconfigured: true,
+    legacy_script: None,
+};
+
+pub type AntigravityHookStatus = statusline::HookStatus;
 
 /// 落盘的额度快照。窗口键沿用官方桶名（`gemini-weekly` 归一成 `gemini_weekly`）。
 #[derive(Serialize, Deserialize)]
@@ -58,13 +53,6 @@ struct QuotaWindowSnapshot {
     remaining_percent: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resets_at_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StatusLineMetadata {
-    delegate: String,
-    quota_path: PathBuf,
 }
 
 /// 官方 statusLine 载荷里的额度对象：
@@ -153,341 +141,74 @@ fn capitalize(model: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 现有非 Metrik statusLine 的 command 原文（可串联时返回）。
-fn foreign_command(settings: &Value) -> Option<String> {
-    settings
-        .get("statusLine")?
-        .get("command")?
-        .as_str()
-        .filter(|command| !command.trim().is_empty())
-        .map(str::to_owned)
+/// statusLine 命令引用 metrik 可执行文件。agy 在 Windows 上经 cmd.exe
+/// 执行命令，且双引号会原样进入程序名（实测 `"C:\...metrik.exe"` 直接报
+/// 「不是内部或外部命令」，`^` 转义也会静默失效）：命令必须是不带引号的
+/// 裸路径。无空格路径直接用；有空格退到 8.3 短名（`C:\PROGRA~1\...`），
+/// 系统未生成短名时明确拒绝，绝不装一个永不执行的钩子。Unix 上 agy 经
+/// shell 执行，单引号包路径，与 Claude 钩子一致。
+fn hook_command() -> Result<String> {
+    let executable = std::env::current_exe().with_context(|| {
+        tr!(
+            "无法确定 metrik 可执行文件的绝对路径",
+            "Couldn't determine the absolute path of the metrik executable"
+        )
+    })?;
+    #[cfg(windows)]
+    {
+        let path = executable.to_string_lossy();
+        if !path.contains(' ') {
+            return Ok(format!("{path} {HOOK_FLAG}"));
+        }
+        let short = windows_short_path(&executable)
+            .filter(|path| !path.contains(' '))
+            .with_context(|| {
+                tr!(
+                    "metrik 安装路径含空格且系统未生成 8.3 短名，无法为 Antigravity CLI 安装钩子",
+                    "The metrik install path contains spaces and the system has no 8.3 short name for it, so the hook can't be installed for Antigravity CLI"
+                )
+            })?;
+        Ok(format!("{short} {HOOK_FLAG}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!(
+            "{} {HOOK_FLAG}",
+            shell_single_quote(&executable.to_string_lossy())
+        ))
+    }
 }
 
-/// agy 全新安装就带着 `{"type":"","command":"","enabled":true}` 的空骨架。
-/// 这不是用户配置：没有可串联的命令，直接覆盖是安全的，也不算冲突。
-/// Claude 的 settings.json 没有这种默认骨架，因此这条判定只在 agy 这边需要。
-fn status_line_is_unconfigured(status_line: &Value) -> bool {
-    status_line
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|command| command.trim().is_empty())
-}
+pub struct AntigravityHook(Installer);
 
-pub struct AntigravityHook {
-    cli_dir: PathBuf,
+impl std::ops::Deref for AntigravityHook {
+    type Target = Installer;
+
+    fn deref(&self) -> &Installer {
+        &self.0
+    }
 }
 
 impl AntigravityHook {
     /// Antigravity CLI 的配置目录（`agy` 固定读写 `~/.gemini/antigravity-cli`，
     /// 没有 IDE 那样的环境变量覆盖）。
     pub fn detected() -> Self {
-        Self {
-            cli_dir: dirs::home_dir()
+        Self::with_dir(
+            dirs::home_dir()
                 .unwrap_or_default()
                 .join(".gemini")
                 .join("antigravity-cli"),
-        }
+        )
     }
 
-    #[cfg(test)]
     pub fn with_dir(cli_dir: PathBuf) -> Self {
-        Self { cli_dir }
-    }
-
-    fn settings_path(&self) -> PathBuf {
-        self.cli_dir.join("settings.json")
-    }
-
-    fn quota_path(&self) -> PathBuf {
-        self.cli_dir.join(QUOTA_FILE)
-    }
-
-    fn backup_path(&self) -> PathBuf {
-        self.cli_dir.join(BACKUP_FILE)
-    }
-
-    fn metadata_path(&self) -> PathBuf {
-        self.cli_dir.join(METADATA_FILE)
-    }
-
-    fn read_backup(&self) -> Option<Value> {
-        read_json_file(&self.backup_path())
-    }
-
-    fn read_metadata(&self) -> Option<StatusLineMetadata> {
-        read_json_file(&self.metadata_path())
-    }
-
-    fn expected_metadata(&self, delegate: String) -> Result<StatusLineMetadata> {
-        let quota_path = self.quota_path();
-        let quota_path = if quota_path.is_absolute() {
-            quota_path
-        } else {
-            std::env::current_dir()
-                .with_context(|| {
-                    tr!(
-                        "无法确定 Antigravity quota 文件的绝对路径",
-                        "Couldn't determine the absolute path of the Antigravity quota file"
-                    )
-                })?
-                .join(quota_path)
-        };
-        Ok(StatusLineMetadata {
-            delegate,
-            quota_path,
-        })
-    }
-
-    fn write_metadata(&self, metadata: &StatusLineMetadata) -> Result<()> {
-        write_atomically(&self.metadata_path(), &serde_json::to_vec_pretty(metadata)?).with_context(
-            || {
-                tr!(
-                    "无法写入 statusLine 元数据",
-                    "Couldn't write the statusLine metadata"
-                )
-            },
-        )
-    }
-
-    /// 备份文件可能被清理工具删掉；元数据还在时从元数据回读 delegate，
-    /// 与 Claude 钩子同一道防线。
-    fn installed_delegate(&self) -> Option<String> {
-        self.read_metadata().map(|metadata| metadata.delegate)
-    }
-
-    /// statusLine 命令引用 metrik 可执行文件。agy 在 Windows 上经 cmd.exe
-    /// 执行命令，且双引号会原样进入程序名（实测 `"C:\...metrik.exe"` 直接报
-    /// 「不是内部或外部命令」，`^` 转义也会静默失效）：命令必须是不带引号的
-    /// 裸路径。无空格路径直接用；有空格退到 8.3 短名（`C:\PROGRA~1\...`），
-    /// 系统未生成短名时明确拒绝，绝不装一个永不执行的钩子。Unix 上 agy 经
-    /// shell 执行，单引号包路径，与 Claude 钩子一致。
-    fn hook_command(&self) -> Result<String> {
-        let executable = std::env::current_exe().with_context(|| {
-            tr!(
-                "无法确定 metrik 可执行文件的绝对路径",
-                "Couldn't determine the absolute path of the metrik executable"
-            )
-        })?;
-        #[cfg(windows)]
-        {
-            let path = executable.to_string_lossy();
-            if !path.contains(' ') {
-                return Ok(format!("{path} {HOOK_FLAG}"));
-            }
-            let short = windows_short_path(&executable)
-                .filter(|path| !path.contains(' '))
-                .with_context(|| {
-                    tr!(
-                        "metrik 安装路径含空格且系统未生成 8.3 短名，无法为 Antigravity CLI 安装钩子",
-                        "The metrik install path contains spaces and the system has no 8.3 short name for it, so the hook can't be installed for Antigravity CLI"
-                    )
-                })?;
-            Ok(format!("{short} {HOOK_FLAG}"))
-        }
-        #[cfg(not(windows))]
-        {
-            Ok(format!(
-                "{} {HOOK_FLAG}",
-                shell_single_quote(&executable.to_string_lossy())
-            ))
-        }
-    }
-
-    fn read_settings(&self) -> Result<Value> {
-        match std::fs::read_to_string(self.settings_path()) {
-            Ok(raw) => {
-                let trimmed = raw.trim_start_matches('\u{feff}');
-                serde_json::from_str(trimmed).with_context(|| {
-                    tr!(
-                        "settings.json 不是有效 JSON",
-                        "settings.json is not valid JSON"
-                    )
-                })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-            Err(error) => Err(error).with_context(|| {
-                tr!(
-                    "无法读取 ~/.gemini/antigravity-cli/settings.json",
-                    "Couldn't read ~/.gemini/antigravity-cli/settings.json"
-                )
-            }),
-        }
-    }
-
-    fn write_settings(&self, settings: &Value) -> Result<()> {
-        std::fs::create_dir_all(&self.cli_dir)?;
-        // 写到符号链接的目标上：dotfiles 仓库管理的 settings.json 不能被换成普通文件。
-        let path = std::fs::canonicalize(self.settings_path()).unwrap_or(self.settings_path());
-        write_atomically(&path, serde_json::to_string_pretty(settings)?.as_bytes()).with_context(
-            || {
-                tr!(
-                    "无法更新 ~/.gemini/antigravity-cli/settings.json",
-                    "Couldn't update ~/.gemini/antigravity-cli/settings.json"
-                )
-            },
-        )
-    }
-
-    fn status_line_is_ours(&self, settings: &Value) -> bool {
-        let Some(command) = settings
-            .get("statusLine")
-            .and_then(|value| value.get("command"))
-            .and_then(Value::as_str)
-        else {
-            return false;
-        };
-        if self
-            .hook_command()
-            .is_ok_and(|expected| command == expected)
-        {
-            return true;
-        }
-        is_moved_metrik_command(command, HOOK_FLAG)
-    }
-
-    pub fn status(&self) -> Result<AntigravityHookStatus> {
-        let settings = self.read_settings()?;
-        let installed = self.status_line_is_ours(&settings);
-        let conflict = !installed
-            && settings
-                .get("statusLine")
-                .is_some_and(|value| !value.is_null())
-            && foreign_command(&settings).is_none()
-            && !settings
-                .get("statusLine")
-                .is_some_and(status_line_is_unconfigured);
-        let chained = installed
-            && (self.read_backup().is_some()
-                || self
-                    .installed_delegate()
-                    .is_some_and(|value| !value.is_empty()));
-        let last_data_at_ms = self.read_quota_file().map(|file| file.received_at_ms);
-        let stale = last_data_at_ms.is_some_and(|received_at_ms| {
-            now_ms().saturating_sub(received_at_ms) > MAX_SNAPSHOT_AGE_MS
-        });
-        Ok(AntigravityHookStatus {
-            installed,
-            conflict,
-            chained,
-            replaced: !installed && self.read_metadata().is_some(),
-            last_data_at_ms,
-            stale,
-        })
-    }
-
-    pub fn install(&self) -> Result<AntigravityHookStatus> {
-        let mut settings = self.read_settings()?;
-        std::fs::create_dir_all(&self.cli_dir)?;
-
-        let mut delegate = String::new();
-        if self.status_line_is_ours(&settings) {
-            delegate = self
-                .read_backup()
-                .as_ref()
-                .and_then(|backup| backup.get("command"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| self.installed_delegate())
-                .unwrap_or_default();
-        } else if let Some(existing) = settings
-            .get("statusLine")
-            .filter(|value| !value.is_null())
-            // agy 默认的空骨架（command 为空）不是用户配置，直接覆盖不算侵权。
-            .filter(|value| !status_line_is_unconfigured(value))
-            .cloned()
-        {
-            let Some(command) = foreign_command(&settings) else {
-                bail!(tr!(
-                    "Antigravity CLI 已配置无法串联的 statusLine（缺少 command 字段），为避免覆盖，未安装。",
-                    "Antigravity CLI already has a statusLine that can't be chained (no command field). Not installed, to avoid overwriting it."
-                ));
-            };
-            std::fs::write(self.backup_path(), serde_json::to_string_pretty(&existing)?)
-                .with_context(|| {
-                    tr!(
-                        "无法备份原有 statusLine 设置",
-                        "Couldn't back up the existing statusLine setting"
-                    )
-                })?;
-            delegate = command;
-        }
-
-        self.write_metadata(&self.expected_metadata(delegate.clone())?)?;
-
-        let root = settings.as_object_mut().with_context(|| {
-            tr!(
-                "settings.json 顶层不是对象",
-                "The top level of settings.json is not an object"
-            )
-        })?;
-        root.insert(
-            "statusLine".into(),
-            json!({ "type": "command", "command": self.hook_command()?, "enabled": true }),
-        );
-        self.write_settings(&settings)?;
-        self.status()
-    }
-
-    /// 启动时自愈：statusLine 属于 Metrik 但命令过时（应用移动/重装）时重装一次。
-    /// 不属于 Metrik 的 statusLine 一律不碰；命令与元数据都健康时不写盘。
-    pub fn repair(&self) -> Result<bool> {
-        let settings = self.read_settings()?;
-        if !self.status_line_is_ours(&settings) {
-            return Ok(false);
-        }
-        let installed_command = settings
-            .get("statusLine")
-            .and_then(|value| value.get("command"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let delegate = self.installed_delegate().unwrap_or_default();
-        let expected_metadata = self.expected_metadata(delegate)?;
-        if installed_command == self.hook_command()?
-            && self.read_metadata().as_ref() == Some(&expected_metadata)
-        {
-            return Ok(false);
-        }
-        self.install()?;
-        Ok(true)
-    }
-
-    pub fn uninstall(&self) -> Result<AntigravityHookStatus> {
-        let mut settings = self.read_settings()?;
-        if self.status_line_is_ours(&settings) {
-            let root = settings.as_object_mut().with_context(|| {
-                tr!(
-                    "settings.json 顶层不是对象",
-                    "The top level of settings.json is not an object"
-                )
-            })?;
-            let restored = self.read_backup().or_else(|| {
-                let delegate = self.installed_delegate().filter(|d| !d.is_empty())?;
-                Some(json!({ "type": "command", "command": delegate, "enabled": true }))
-            });
-            match restored {
-                Some(backup) => {
-                    root.insert("statusLine".into(), backup);
-                }
-                None => {
-                    root.remove("statusLine");
-                }
-            }
-            self.write_settings(&settings)?;
-        }
-        let _ = std::fs::remove_file(self.metadata_path());
-        let _ = std::fs::remove_file(self.quota_path());
-        let _ = std::fs::remove_file(self.backup_path());
-        self.status()
-    }
-
-    fn read_quota_file(&self) -> Option<QuotaFile> {
-        read_json_file(&self.quota_path())
+        Self(Installer::new(cli_dir, &HOST))
     }
 
     /// 把钩子落地的全部官方窗口转换成 QuotaSample；文件缺失或格式异常返回空，
     /// 不猜测、不沿用陈旧文件之外的任何来源。
     pub fn quota_samples(&self) -> Vec<QuotaSample> {
-        let Some(file) = self.read_quota_file() else {
+        let Some(file) = read_json_file::<QuotaFile>(&self.quota_path()) else {
             return Vec::new();
         };
         file.windows
@@ -509,10 +230,6 @@ impl AntigravityHook {
             })
             .collect()
     }
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 /// GetShortPathNameW：把含空格的安装路径转成 `C:\PROGRA~1\...` 形式的 8.3
@@ -548,20 +265,13 @@ fn windows_short_path(executable: &std::path::Path) -> Option<String> {
 /// `metrik --antigravity-hook`：agy 把会话 JSON 从 stdin 推进来，这里提取额度
 /// 落盘，并把状态栏文本写到 stdout。
 pub fn run_hook() {
-    use std::io::{Read, Write};
-
-    let mut input = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut input);
-    let output = render_hook_statusline(
-        &AntigravityHook::detected(),
-        &input,
-        std::time::Duration::from_secs(10),
-    );
-    if !output.is_empty() {
-        let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(output.as_bytes());
-        let _ = stdout.write_all(b"\n");
-    }
+    statusline::run(|input| {
+        render_hook_statusline(
+            &AntigravityHook::detected(),
+            input,
+            std::time::Duration::from_secs(10),
+        )
+    });
 }
 
 fn render_hook_statusline(
@@ -573,56 +283,20 @@ fn render_hook_statusline(
     let data = serde_json::from_slice::<Value>(input).ok();
     let payload = data
         .as_ref()
-        .map(|value| payload_from_input(value, now_ms()));
-
-    if let (Some(metadata), Some(payload)) = (metadata.as_ref(), payload.as_ref()) {
-        if let Ok(bytes) = serde_json::to_vec(payload) {
-            let _ = write_atomically(&metadata.quota_path, &bytes);
-        }
-    }
-
-    let stale_before = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(5 * 60))
-        .unwrap_or(std::time::UNIX_EPOCH);
-    if let Some(quota_dir) = metadata
+        .map(|value| payload_from_input(value, chrono::Utc::now().timestamp_millis()));
+    let quota_text = payload
         .as_ref()
-        .and_then(|metadata| metadata.quota_path.parent())
-    {
-        sweep_stale_files(
-            quota_dir,
-            "metrik-antigravity-quota.json.tmp-",
-            stale_before,
-        );
-    }
-
-    let parts = payload.as_ref().map(quota_parts).unwrap_or_default();
-    if let Some(delegate) = metadata
-        .as_ref()
-        .map(|metadata| metadata.delegate.trim())
-        .filter(|delegate| !delegate.is_empty())
-    {
-        let delegated = run_delegate(delegate, input, delegate_timeout);
-        if !delegated.is_empty() {
-            if !delegated.contains('\r') && !delegated.contains('\n') && !parts.is_empty() {
-                return format!("{delegated} | {}", parts.join(" · "));
-            }
-            return delegated;
-        }
-        return parts.join(" · ");
-    }
-
-    let model = data
-        .as_ref()
-        .and_then(|value| value.get("model"))
-        .and_then(|value| value.get("display_name"))
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty())
-        .unwrap_or("Antigravity");
-    if parts.is_empty() {
-        model.to_owned()
-    } else {
-        format!("{model} | {}", parts.join(" · "))
-    }
+        .map(quota_parts)
+        .unwrap_or_default()
+        .join(" · ");
+    statusline::render(
+        metadata.as_ref(),
+        input,
+        payload.and_then(|payload| serde_json::to_vec(&payload).ok()),
+        &quota_text,
+        statusline::model_name(data.as_ref(), "Antigravity"),
+        delegate_timeout,
+    )
 }
 
 #[cfg(test)]

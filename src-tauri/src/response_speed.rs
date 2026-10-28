@@ -270,7 +270,7 @@ impl Drop for Collector {
 }
 
 fn is_enabled(connection: &rusqlite::Connection, agent: &str) -> Result<bool> {
-    Ok(storage::get_app_setting(connection, &setting(agent))?.as_deref() == Some("1"))
+    storage::get_flag(connection, &setting(agent))
 }
 
 struct ExportRequest {
