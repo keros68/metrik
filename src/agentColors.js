@@ -9,6 +9,8 @@ const AGENT_LINE_COLORS = {
   antigravity: { stroke: "#d1a34e", fill: "rgba(209, 163, 78, 0.09)" },
   workbuddy: { stroke: "#5fa671", fill: "rgba(95, 166, 113, 0.09)" },
   grok: { stroke: "#8a919a", fill: "rgba(138, 145, 154, 0.09)" },
+  // Grok Bot 深一档的石墨：与 grok 同属 xAI 中性系，靠明度差区分。
+  grokbot: { stroke: "#5f646c", fill: "rgba(95, 100, 108, 0.09)" },
   qoder: { stroke: "#4a7fa5", fill: "rgba(74, 127, 165, 0.09)" },
   deepseek: { stroke: "#7a8df8", fill: "rgba(122, 141, 248, 0.09)" },
   dsh: { stroke: "#5c669c", fill: "rgba(92, 102, 156, 0.09)" },

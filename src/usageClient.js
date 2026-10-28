@@ -739,6 +739,20 @@ async function setCursorUsage(enabled) {
   return invoke("set_cursor_usage", { enabled });
 }
 
+async function getGrokbotQuotaStatus() {
+  if (!isDesktop()) {
+    return { demo: true, enabled: false, installed: false, signedIn: false };
+  }
+  return invoke("grokbot_quota_status");
+}
+
+async function setGrokbotQuota(enabled) {
+  if (!isDesktop()) {
+    throw new Error(t("浏览器演示模式不能配置 Grok Bot 额度来源"));
+  }
+  return invoke("set_grokbot_quota", { enabled });
+}
+
 async function getResponseSpeedStatus() {
   if (!isDesktop()) {
     return {
@@ -786,6 +800,8 @@ export {
   setClaudeOauth,
   getCursorUsageStatus,
   setCursorUsage,
+  getGrokbotQuotaStatus,
+  setGrokbotQuota,
   getResponseSpeedStatus,
   setResponseSpeedCollection,
   getQoderCookieStatus,

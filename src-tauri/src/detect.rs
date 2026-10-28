@@ -118,6 +118,12 @@ pub fn table() -> Vec<AgentProbe> {
             probe: Probe::Paths(vec![crate::adapters::grok_home()]),
         },
         AgentProbe {
+            // 与 grokbot.rs 的 grokbot_data_dir() 同源：Grok Bot 桌面应用
+            // 的 Electron userData 目录（装了就有，登录与否不影响检测）。
+            id: "grokbot",
+            probe: Probe::Paths(vec![crate::adapters::grokbot_data_dir()]),
+        },
+        AgentProbe {
             // pi 与其同格式分支 Oh My Pi 各有一个数据根；与 PiAdapter::detected()
             // 的扫描根同源（取其父目录）。
             id: "pi",
@@ -246,6 +252,10 @@ mod tests {
             vec![crate::adapters::minimax_data_dir()]
         );
         assert_eq!(paths(by_id("dsh")), vec![crate::adapters::dsh_home()]);
+        assert_eq!(
+            paths(by_id("grokbot")),
+            vec![crate::adapters::grokbot_data_dir()]
+        );
     }
 
     #[test]
