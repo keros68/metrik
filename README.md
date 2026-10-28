@@ -18,11 +18,11 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 
 ## 功能
 
-- **配额卡片**：显示各 Agent 剩余额度、重置倒计时与消耗节奏预估，主数值取余量最低的窗口。
+- **配额卡片**：显示各 Agent 剩余额度、重置倒计时与消耗节奏预估，主数值取余量最低的窗口；余额低于 15% 时可发系统通知提醒。
 - **桌面形态**：Windows 提供桌面小组件，Ubuntu 提供紧凑卡片，两者均可收缩为横向 / 纵向配额胶囊条；macOS 提供菜单栏面板和原生 WidgetKit 桌面小组件。
-- **统计与报表**：26 周热力图、周趋势、Agent 占比与按项目归集的会话明细，可导出 CSV。
+- **统计与报表**：26 周热力图、周趋势、Agent 占比、按项目归集的会话明细、按公开 API 价折算的成本估算与响应均速，可导出 CSV；另有 `--quota-json` 命令行出口供脚本与外部小组件消费。
 - **多设备同步**：指定坚果云、OneDrive 或 Syncthing 等共享文件夹后，各设备近 30 天统计事件自动合并。
-- **隐私**：数据库不写入提示词、回复正文、工具输出与凭据。网络请求只发往各 Agent 的官方配额接口、开启后的 Cursor 仪表盘和更新检查，更新检查可在设置中关闭。
+- **隐私**：数据库不写入提示词、回复正文、工具输出与凭据。网络请求只发往各 Agent 的官方配额接口、开启后的 Cursor 仪表盘、开启后的 Grok Bot 额度接口和更新检查，更新检查可在设置中关闭。
 
 ## 快速开始
 
@@ -39,12 +39,14 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 | ChatGPT / Codex | `~/.codex/sessions` | ✅ 每周 |
 | Claude | `~/.claude/projects` | ✅ 5 小时、每周（状态栏钩子 / OAuth） |
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5 小时、每周 |
-| Kimi | `~/.kimi-code`、`~/.kimi` | ✅ 5 小时、每周、月度 |
+| Kimi（含桌面版 Kimi Work） | `~/.kimi-code`、`~/.kimi`、kimi-desktop 数据目录 | ✅ 5 小时、每周、月度 |
 | OpenCode | `~/.local/share/opencode/storage` | ✅ Go 订阅（OpenCode / pi 的 auth.json） |
 | Antigravity | `~/.gemini/antigravity/conversations`（2.x 本地会话库；旧版 IDE 回退到语言服务 RPC） | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | ✅ 官方 Credits |
 | Qoder | — | ✅ 官方 Credits |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 周 Credits（CLI 日志快照） |
+| Grok Bot | — | ✅ 共享额度池·周窗口（设置中开启，仅 Windows） |
+| DeepSeek | — | ✅ API 账户余额（金额） |
 | Pi | `~/.pi/agent/sessions`、`~/.omp/agent/sessions` | ❌ |
 | Qwen | pi 会话按百炼 Token Plan 路由归属 | ❌ |
 | Hermes | `~/.hermes/state.db` | ❌ |
@@ -52,7 +54,7 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 | DeepSeek Harness | `~/.dsh/sessions`（走 coding plan 的用量记到对应卡片） | ❌ |
 | Cursor | cursor.com 仪表盘逐次用量（设置中开启） | ✅ 账单周期（设置中开启） |
 
-暂不支持 Gemini CLI。Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话读取仪表盘用量和套餐余量；用量是账号级的，不参与多设备同步。Claude 配额的两种读取方式及 OAuth 条款风险见[使用说明](docs/guide.md#claude-配额的两种读取方式)。
+暂不支持 Gemini CLI。Cursor 不在本机记录逐次 token，开启后用 Cursor 已保存的登录会话读取仪表盘用量和套餐余量；用量是账号级的，不参与多设备同步。Grok Bot 不在本机记录逐轮用量，开启后解密其保存在本机的登录凭据（仅 Windows），查询与 SuperGrok、新版 Cursor 共用的账号级额度池；凭据只在内存中使用，不刷新、不落库。Claude 配额的两种读取方式及 OAuth 条款风险见[使用说明](docs/guide.md#claude-配额的两种读取方式)。
 
 ## 从源码构建
 

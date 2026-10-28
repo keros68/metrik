@@ -18,11 +18,11 @@ Metrik is a Tauri 2 desktop app for Windows, macOS, and Ubuntu 24.04 x86_64. Usa
 
 ## Features
 
-- **Quota cards**: Remaining quota, reset countdown, and burn-rate estimate for each agent. The headline value uses the window with the least quota left.
+- **Quota cards**: Remaining quota, reset countdown, and burn-rate estimate for each agent. The headline value uses the window with the least quota left. Optional system notifications when a window drops below 15%.
 - **Desktop forms**: A desktop widget on Windows and a compact card on Ubuntu, both collapsible into a horizontal or vertical quota strip. On macOS, a menu bar panel and a native WidgetKit desktop widget.
-- **Statistics and reports**: 26-week heatmap, weekly trends, agent share, and per-project session details, with CSV export.
+- **Statistics and reports**: 26-week heatmap, weekly trends, agent share, per-project session details, API-priced cost estimates, and response-speed averages, with CSV export. A `--quota-json` CLI output serves scripts and external widgets.
 - **Multi-device sync**: After you choose a shared folder (Jianguoyun, OneDrive, Syncthing, and similar), statistics events from the last 30 days on each device are merged automatically.
-- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. Network requests go only to each agent's official quota endpoint, the Cursor dashboard once enabled, and the update check, which can be turned off in settings.
+- **Privacy**: Prompts, responses, tool output, and credentials are never written to the database. Network requests go only to each agent's official quota endpoint, the Cursor dashboard and Grok Bot credit endpoint once enabled, and the update check, which can be turned off in settings.
 
 ## Get started
 
@@ -39,12 +39,14 @@ The interface is available in English and Simplified Chinese. It follows the sys
 | ChatGPT / Codex | `~/.codex/sessions` | ✅ Weekly |
 | Claude | `~/.claude/projects` | ✅ 5-hour, weekly (status line hook / OAuth) |
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5-hour, weekly |
-| Kimi | `~/.kimi-code`, `~/.kimi` | ✅ 5-hour, weekly, monthly |
+| Kimi (incl. Kimi Work desktop) | `~/.kimi-code`, `~/.kimi`, kimi-desktop data directory | ✅ 5-hour, weekly, monthly |
 | OpenCode | `~/.local/share/opencode/storage` | ✅ Go plan (OpenCode / pi auth.json) |
 | Antigravity | `~/.gemini/antigravity/conversations` (2.x local conversation databases; older IDE builds fall back to the language server RPC) | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`, `~/.workbuddy/projects` | ✅ Official credits |
 | Qoder | — | ✅ Official credits |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ Weekly credits (CLI log snapshot) |
+| Grok Bot | — | ✅ Shared credit pool, weekly window (enable in settings, Windows only) |
+| DeepSeek | — | ✅ API account balance (an amount) |
 | Pi | `~/.pi/agent/sessions`, `~/.omp/agent/sessions` | ❌ |
 | Qwen | pi sessions attributed by Bailian Token Plan route | ❌ |
 | Hermes | `~/.hermes/state.db` | ❌ |
@@ -52,7 +54,7 @@ The interface is available in English and Simplified Chinese. It follows the sys
 | DeepSeek Harness | `~/.dsh/sessions` (coding-plan usage goes to that plan's card) | ❌ |
 | Cursor | cursor.com dashboard per-request usage (enable in settings) | ✅ Billing cycle (enable in settings) |
 
-Gemini CLI is not supported yet. Cursor does not record per-request tokens locally; once enabled, Metrik reads the dashboard usage and remaining plan allowance with the session Cursor has already saved. The usage is account-wide and is excluded from multi-device sync. See the [user guide](docs/guide.md#claude-配额的两种读取方式) for the two ways Claude quota is read and the terms-of-service risk of the OAuth option.
+Gemini CLI is not supported yet. Cursor does not record per-request tokens locally; once enabled, Metrik reads the dashboard usage and remaining plan allowance with the session Cursor has already saved. The usage is account-wide and is excluded from multi-device sync. Grok Bot records no per-request usage locally; once enabled, Metrik decrypts the credentials Grok Bot has saved on this device (Windows only) and queries the account-level credit pool shared with SuperGrok and the new Cursor plans — the credentials are used in memory only, never refreshed or stored. See the [user guide](docs/guide.md#claude-配额的两种读取方式) for the two ways Claude quota is read and the terms-of-service risk of the OAuth option.
 
 ## Build from source
 
