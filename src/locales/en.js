@@ -32,7 +32,7 @@ export default {
   "浏览器演示模式：仅桌面应用可查询。": "Browser demo: available in the desktop app only.",
   "查询失败，请确认 Codex 已登录后重试。": "Check failed. Make sure Codex is signed in, then try again.",
 
-  // Shared quota wording (App.jsx, quotaWindows.js)
+  // Shared quota wording (quotaView.jsx, quotaWindows.js)
   "暂不可用": "Unavailable",
   "{days} 天 {hours} 小时": "{days}d {hours}h",
   "{hours} 小时 {minutes} 分": "{hours}h {minutes}m",
@@ -73,7 +73,7 @@ export default {
   "节奏略偏快 {delta}% · 接近临界节奏": "Slightly fast, {delta}% over · close to the limit",
   "节奏偏快 {delta}% · 按当前用量重置前可能耗尽": "Fast, {delta}% over · may run out before reset at this rate",
 
-  // Data sources status (App.jsx)
+  // Data sources status (viewParts.jsx)
   "数据读取失败，仍显示上次成功的数据": "Couldn't read data. Showing the last successful read",
   "正在更新数据…": "Updating data…",
   "数据正常": "Data OK",
@@ -115,7 +115,7 @@ export default {
   "当前为演示数据": "Showing demo data",
   "本地统计 + 官方配额 · {time}": "Local statistics + official quota · {time}",
 
-  // Expanded view navigation, periods, chart and breakdown (App.jsx)
+  // Expanded view navigation, periods, chart and breakdown (App.jsx, viewParts.jsx)
   "主导航": "Main navigation",
   "概览": "Overview",
   "用量": "Usage",
@@ -155,7 +155,7 @@ export default {
   "各 Agent 官方配额": "Official quota by agent",
   "按 Agent 筛选": "Filter by agent",
 
-  // Window actions and theme (App.jsx)
+  // Window actions and theme (widgets.jsx)
   "自动（跟随系统）": "Auto (follow system)",
   "暗色": "Dark",
   "亮色": "Light",
@@ -173,7 +173,7 @@ export default {
   "最大化 / 还原": "Maximize / restore",
   "隐藏到托盘": "Hide to tray",
 
-  // Quota strip (App.jsx)
+  // Quota strip (widgets.jsx)
   "Metrik 官方配额胶囊条": "Metrik official quota strip",
   "{agent}：官方配额不可用": "{agent}: official quota unavailable",
   "{agent}：余额 {amount} · 官方余额": "{agent}: balance {amount} · official balance",
@@ -190,7 +190,7 @@ export default {
   "打开完整视图": "Open expanded view",
   "完整视图": "Expanded view",
 
-  // Compact card (App.jsx)
+  // Compact card (widgets.jsx)
   "Metrik Agent 用量桌面小组件": "Metrik agent usage desktop widget",
   "用量摘要": "Usage summary",
   "总用量": "Total",
@@ -232,7 +232,7 @@ export default {
   "可重新扫描本机日志；如果仍不完整，更新 Metrik 后再试。": "Rescan local logs. If data is still incomplete, update Metrik and try again.",
   "只保存用量和来源信息，不读取或上传对话正文与凭据。": "Only usage and source information is stored. Conversation content and credentials are never read or uploaded.",
 
-  // Settings: status line hooks and Claude OAuth (App.jsx)
+  // Settings: status line hooks and Claude OAuth (SettingsSection.jsx)
   "尚未同步": "Not synced yet",
   "钩子状态读取失败。": "Couldn't read the hook status.",
   "钩子已卸载，statusLine 设置已恢复。": "Hook removed. Your statusLine setting is restored.",
@@ -266,14 +266,14 @@ export default {
   "未开启 · 凭据可用": "Off · credentials available",
   "最近失败": "Last failure",
 
-  // Settings: startup (App.jsx)
+  // Settings: startup (SettingsSection.jsx)
   "开机启动状态读取失败。": "Couldn't read the launch-at-login status.",
   "启动与位置": "Startup and position",
   "位置会被记住，下次启动时恢复；超出屏幕范围时自动居中。": "The position is remembered and restored at the next launch. If it is off screen, the window is centered.",
   "关闭开机启动": "Turn off launch at login",
   "开机时自动启动": "Launch at login",
 
-  // Settings: updates and about (App.jsx)
+  // Settings: updates and about (SettingsSection.jsx)
   "更新": "Updates",
   "当前版本 {version}。自动检查开启后，启动时检查一次，持续运行时每天检查一次； 下载与安装需手动确认，更新包经签名校验。":
     "Current version {version}. With automatic checks on, Metrik checks at launch and once a day while running. Downloading and installing need your confirmation, and update packages are signature-verified.",
@@ -290,7 +290,7 @@ export default {
   "项目仓库：": "Repository: ",
   "许可证：AGPL-3.0-or-later": "License: AGPL-3.0-or-later",
 
-  // Settings: appearance and scale (App.jsx)
+  // Settings: appearance and scale (SettingsSection.jsx)
   "自动": "Auto",
   "深色": "Dark",
   "浅色": "Light",
@@ -333,7 +333,7 @@ export default {
     "Right-click an empty area of the desktop, choose Edit Widgets, search for Metrik and add it. macOS manages its material, corners and placement.",
   "系统原生": "Native",
 
-  // Settings: displayed agents and tray icon (App.jsx)
+  // Settings: displayed agents and tray icon (SettingsSection.jsx)
   "将 {agent} 上移": "Move {agent} up",
   "上移": "Move up",
   "本机未检测到（{count}）": "Not detected on this device ({count})",
@@ -349,7 +349,7 @@ export default {
     "When on, the Metrik tray icon shows the percentage left for the top agent in the list, or -- without reliable quota. The number keeps updating every 5 minutes while the window is hidden.",
   "图标改为显示余量数字": "Show the percentage left on the icon",
 
-  // Settings: optional local response speed collection (App.jsx)
+  // Settings: optional local response speed collection (SettingsSection.jsx)
   "Claude / Codex 响应速度": "Claude / Codex response speed",
   "默认关闭。分别开启后，重启对应客户端或会话，才开始采集新请求；不会补算历史速度。": "Off by default. Enable each source separately, then restart its client or session to collect new requests. Historical speed is not backfilled.",
   "只在本机保存模型名、输出 token 数与计时数字，不保存对话或凭据。统计的是含等待与思考的响应均速，不是纯生成或实时速度。": "Stores only model names, output token counts and timing numbers on this device, never conversations or credentials. Measures average response speed including waiting and thinking, not pure generation or live speed.",
@@ -374,7 +374,7 @@ export default {
   "配置官方配额读取方式与可选的响应速度采集。官方配额、本地解析用量与估算成本始终分开呈现。": "Configure official quota sources and optional response speed collection. Official quota, locally parsed usage and estimated cost remain separate.",
   "浏览器演示模式不能配置响应速度采集": "Response speed collection can't be configured in the browser demo",
 
-  // Settings: Cursor and Qoder sources (App.jsx)
+  // Settings: Cursor and Qoder sources (SettingsSection.jsx)
   "Cursor 用量来源状态读取失败。": "Couldn't read the Cursor usage source status.",
   "已开启。套餐余量在下次刷新时显示，近 65 天的用量会在接下来几次刷新里补齐。":
     "On. The plan allowance appears at the next refresh, and the last 65 days of usage fill in over the next few refreshes.",
@@ -390,7 +390,7 @@ export default {
   "登录会话已过期，打开 Cursor 即可刷新": "Session expired. Open Cursor to refresh it",
   "登录会话可用": "Session available",
 
-  // Settings: Grok Bot shared-credit source (App.jsx)
+  // Settings: Grok Bot shared-credit source (SettingsSection.jsx)
   "浏览器演示模式不能配置 Grok Bot 额度来源":
     "The browser demo can't configure the Grok Bot quota source",
   "Grok Bot 额度来源状态读取失败。": "Couldn't read the Grok Bot quota source status.",
@@ -421,7 +421,7 @@ export default {
   "已配置（本机保存）": "Configured (saved on this device)",
   "未配置 · 配额卡将显示不可用": "Not configured · the quota card shows unavailable",
 
-  // Settings: tabs and sync (App.jsx)
+  // Settings: tabs and sync (SettingsSection.jsx)
   "Agent 与提醒": "Agents and alerts",
   "Agent 展示与额度提醒": "Displayed agents and quota alerts",
   "选择展示的 Agent、调整顺序及配置低额度提醒。": "Choose which agents to show, set their order and configure low-quota alerts.",
@@ -472,7 +472,7 @@ export default {
   "正在删除…": "Removing…",
   "确认删除": "Remove",
 
-  // Projects: rules (App.jsx)
+  // Projects: rules (UsageSection.jsx)
   "昨日": "Yesterday",
   "添加项目": "Add project",
   "收起添加项目": "Close Add project",
@@ -489,7 +489,7 @@ export default {
   "暂无手动归类规则。可在项目行上点击图钉或眼睛图标，或在上方登记目录。":
     "No manual grouping rules yet. Click the pin or eye icon on a project row, or register a folder above.",
 
-  // Usage view: projects and sessions (App.jsx)
+  // Usage view: projects and sessions (UsageSection.jsx)
   "、": ", ",
   "其他": "Other",
   "项目用量占比环形图": "Project usage share donut chart",
@@ -541,7 +541,7 @@ export default {
   "收起": "Show less",
   "显示全部 {count} 个项目": "Show all {count} projects",
 
-  // Reports view (App.jsx)
+  // Reports view (ReportsSection.jsx)
   "所选时间段内暂无已索引的用量。": "No indexed usage in the selected range.",
   "近 {count} 周每周 token 用量趋势，按 Agent 分色": "Weekly token usage trend for the last {count} weeks, colored by agent",
   "近 {count} 周内各 Agent 用量占比环形图": "Agent usage share donut chart for the last {count} weeks",

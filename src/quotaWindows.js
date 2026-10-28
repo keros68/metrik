@@ -17,7 +17,7 @@ import { t } from "./i18n.js";
 /// 过去"时为真，也就是这条读数所属的周期已经结束、额度应当已经回满，那个数字
 /// 描述的是上一个周期。拿它当现状会凭空报一个早就不成立的余量。
 
-/// "告急"的界线，与 App.jsx 里 quotaSeverity 的 warn 档同一个数：已用 85%。
+/// "告急"的界线，与 quotaView.jsx 里 quotaSeverity 的 warn 档同一个数：已用 85%。
 export const QUOTA_LOW_REMAINING = 15;
 
 /// 余额型窗口（key 形如 balance_cny / balance_usd）：view.remainingPercent 里

@@ -327,7 +327,7 @@ button:focus-visible {
   display: grid;
   min-height: 0;
   flex: 1;
-  /* 列表行吃掉窗口的额外高度。最小值必须等于一行（52px，= App.jsx 的
+  /* 列表行吃掉窗口的额外高度。最小值必须等于一行（52px，= widgets.jsx 的
      COMPACT_LIST_MIN_HEIGHT）：这里写 104px（两行）时，只有一个 Agent 的窗口
      高度测量按 52px 收敛，CSS 却按 104px 排版，差出来的一行把底栏挤到可视区
      外，且列表下方留一块空白。两边的下限必须是同一个数。 */
