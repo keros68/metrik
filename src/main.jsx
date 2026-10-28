@@ -1,8 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import "@fontsource-variable/geist";
-import "@fontsource/instrument-serif/400.css";
-import "@fontsource/newsreader/400.css";
+import "./fonts.css";
 import "uplot/dist/uPlot.min.css";
 import { App } from "./App.jsx";
 import { initLanguage, useLanguageState } from "./i18n.js";
