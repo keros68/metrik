@@ -20,7 +20,7 @@ struct AlertState {
 }
 
 pub fn enabled(connection: &Connection) -> Result<bool> {
-    Ok(storage::get_app_setting(connection, ENABLED_KEY)?.as_deref() == Some("1"))
+    storage::get_flag(connection, ENABLED_KEY)
 }
 
 pub fn check(

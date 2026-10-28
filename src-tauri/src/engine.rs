@@ -784,8 +784,7 @@ fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i
 /// 按固定的保留期视界摄取日志。需要解析的源按 mtime 倒序排队，在时间预算内尽量
 /// 解析；没轮到的记进 `report.backfill_pending`，由界面显式标注为「补齐中」。
 fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanReport> {
-    let cursor_enabled =
-        storage::get_app_setting(connection, CURSOR_USAGE_SETTING_KEY)?.as_deref() == Some("1");
+    let cursor_enabled = storage::get_flag(connection, CURSOR_USAGE_SETTING_KEY)?;
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![
         Box::new(CodexAdapter::detected()),
         Box::new(ClaudeAdapter::detected()),
@@ -3758,7 +3757,7 @@ mod tests {
                  ) VALUES ('claude', 'five_hour', 72, ?1, ?2, 'official_snapshot', ?3)",
                 params![
                     now + Duration::hours(2).num_milliseconds(),
-                    now - claude_hook::MAX_SNAPSHOT_AGE_MS - 1,
+                    now - crate::statusline::MAX_SNAPSHOT_AGE_MS - 1,
                     claude_hook::SOURCE_LABEL
                 ],
             )

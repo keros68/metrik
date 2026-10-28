@@ -183,6 +183,15 @@ pub fn set_app_setting(connection: &Connection, key: &str, value: &str) -> Resul
     Ok(())
 }
 
+/// 开关类设置以 "1"/"0" 保存；缺省视为关闭。
+pub fn get_flag(connection: &Connection, key: &str) -> Result<bool> {
+    Ok(get_app_setting(connection, key)?.as_deref() == Some("1"))
+}
+
+pub fn set_flag(connection: &Connection, key: &str, enabled: bool) -> Result<()> {
+    set_app_setting(connection, key, if enabled { "1" } else { "0" })
+}
+
 pub fn source_is_current(
     connection: &Connection,
     source_id: &str,

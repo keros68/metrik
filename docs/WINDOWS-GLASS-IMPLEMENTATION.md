@@ -330,7 +330,7 @@ CSS px 会被卡片和胶囊各自的 WebView 原生 zoom 放大，所以同样�
 | 卡片（缩放 0.95） | 0.95 | 1.1875 | 9.5 物理像素 |
 | 竖胶囊（缩放 1.75） | 1.75 | 2.1875 | **17.5 物理像素**——即被否掉的"大圆头" |
 
-`App.jsx` 按 `devicePixelRatio` 把 `GLASS_RADIUS_PX`（8 物理像素）折算成
+`App.jsx` 按 `devicePixelRatio` 把 `GLASS_RADIUS_PX`（8 物理像素，定义在 `appearanceOptions.js`）折算成
 `--glass-radius`，`resize` 时重算。两种形态、任何缩放档都是同一个视觉半径。
 
 静态外框只在浏览器补（`html[data-runtime="browser"]`）；桌面端不画，避免与
@@ -505,7 +505,9 @@ strip 的普通 `1px border` 会改变测量尺寸，造成 ResizeObserver 与�
 | `src/glassAppearance.js` | 模式解析、class 组合、Windows 不可变合成决策 |
 | `src/glassAppearance.test.js` | 状态转换与 class 防回归测试 |
 | `src/windowClient.js` | 平台分流；Windows 不执行运行期合成变更 |
-| `src/App.jsx` | 用户状态、持久化、三态循环、旧 off 迁移、浓度映射、圆角物理像素折算、指针变量 |
+| `src/App.jsx` | 用户状态、持久化、三态循环、旧 off 迁移、浓度映射、圆角物理像素折算 |
+| `src/widgets.jsx` | 玻璃指针变量 |
+| `src/appearanceOptions.js` | 主题、玻璃浓度与字色选项及其归一化 |
 | `src/styles.css` | 模糊、tint、圆角、层次、流光和辅助功能回落 |
 | `docs/WINDOWS-GLASS-NOTES.md` | 调查记录、参考项目和失败对照 |
 
