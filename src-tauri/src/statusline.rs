@@ -211,12 +211,19 @@ impl Installer {
     /// 已存在、且不是可直接覆盖的空骨架的 statusLine。
     fn configured_status_line<'a>(&self, settings: &'a Value) -> Option<&'a Value> {
         settings.get("statusLine").filter(|value| {
-            !value.is_null()
-                && !(self.host.empty_command_is_unconfigured
-                    && value
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| command.trim().is_empty()))
+            if value.is_null() {
+                return false;
+            }
+            let empty_command = value
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.trim().is_empty());
+            // 空骨架只在宿主声明时才算「未配置」。
+            if self.host.empty_command_is_unconfigured {
+                !empty_command
+            } else {
+                true
+            }
         })
     }
 
