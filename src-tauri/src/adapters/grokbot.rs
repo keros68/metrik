@@ -32,6 +32,8 @@ use std::time::Duration;
 pub const QUOTA_SETTING_KEY: &str = "grokbot_quota_enabled";
 
 const SECRETS_FILE: &str = "sand-secrets.json";
+// 仅 Windows 的 DPAPI 取 key 路径引用；函数本体跨平台保留给单测。
+#[cfg_attr(not(windows), allow(dead_code))]
 const LOCAL_STATE_FILE: &str = "Local State";
 const USAGE_URL: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus";
 const SOURCE_LABEL: &str = "Grok Bot 官方配额";
@@ -156,7 +158,9 @@ fn parse_sand_secrets(text: &str) -> Option<SandSecrets> {
 }
 
 /// `Local State` → `os_crypt.encrypted_key`（base64，前缀 `DPAPI`）→
-/// 返回仍被 DPAPI 包着的密钥体。
+/// 返回仍被 DPAPI 包着的密钥体。纯函数跨平台保留（单测在三个平台跑），
+/// 调用点仅在 Windows。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn parse_local_state_key(text: &str) -> Option<Vec<u8>> {
     #[derive(Deserialize)]
     struct LocalState {
