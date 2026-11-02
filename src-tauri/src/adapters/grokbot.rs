@@ -377,8 +377,14 @@ mod tests {
 
     #[test]
     fn usage_response_converts_used_percent_to_remaining() {
-        let text = r#"{"currentPeriodStart":"2026-10-25T02:36:03.516Z","nextResetTimestampUtc":"2026-11-01T02:36:03.516Z","usagePercent":31.352852,"hasAvailableUsage":true}"#;
-        let sample = parse_usage_response(text).unwrap();
+        // 重置时刻必须相对当前时间生成：sane_resets_at_ms 会丢弃已过期的
+        // 时间戳，写死的日期一过期测试就红（2026-11-01 的 fixture 炸过）。
+        let resets_at = chrono::Utc::now() + chrono::Duration::days(3);
+        let text = format!(
+            r#"{{"currentPeriodStart":"2026-10-25T02:36:03.516Z","nextResetTimestampUtc":"{}","usagePercent":31.352852,"hasAvailableUsage":true}}"#,
+            resets_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        );
+        let sample = parse_usage_response(&text).unwrap();
         assert_eq!(sample.adapter_id, "grokbot");
         assert_eq!(sample.window_key, "seven_day");
         assert!((sample.remaining_percent - 68.647148).abs() < 1e-4);
