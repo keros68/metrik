@@ -5,15 +5,11 @@
 //! 重新生成：npm run pricing:update
 //!
 //! 单位：美元 / 百万 token。表按模型名有序，供 price_for 二分查找。
-//!
-//! 两源分歧（表内采用 LiteLLM 值；字段顺序 input / cache_read / cache_write / output）。
-//! 涉及实际计价的条目应回官方定价页核对，确认后在 MANUAL_PRICING 覆盖或无需处理：
-//! - kimi-k3（cache_write）：LiteLLM 3.0 / 0.3 / 0.0 / 15.0；models.dev 3.0 / 0.3 / 3.0 / 15.0
 
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-10-25";
+pub const PRICING_AS_OF: &str = "2026-11-01";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -82,7 +78,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("glm-5.3", Pricing { input: 1.4, cache_read: 0.26, cache_write: 0.0, output: 4.4 }),
     ("glm-5.3-flash", Pricing { input: 0.15, cache_read: 0.03, cache_write: 0.0, output: 0.5 }),
     ("glm-5.3-flashx", Pricing { input: 0.37, cache_read: 0.075, cache_write: 0.0, output: 1.25 }), // models.dev
-    ("glm-5v-turbo", Pricing { input: 1.2, cache_read: 0.24, cache_write: 0.0, output: 4.0 }), // models.dev
+    ("glm-5v-turbo", Pricing { input: 1.2, cache_read: 0.24, cache_write: 0.0, output: 4.0 }),
     ("gpt-5", Pricing { input: 1.25, cache_read: 0.125, cache_write: 0.0, output: 10.0 }),
     ("gpt-5-2025-08-07", Pricing { input: 1.25, cache_read: 0.125, cache_write: 0.0, output: 10.0 }),
     ("gpt-5-chat", Pricing { input: 1.25, cache_read: 0.125, cache_write: 0.0, output: 10.0 }),
@@ -125,9 +121,12 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-5.6-sol", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
     ("gpt-5.6-terra", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 12.0 }),
     ("gpt-6-astra", Pricing { input: 10.0, cache_read: 1.0, cache_write: 12.5, output: 50.0 }),
+    ("gpt-6-astra-law", Pricing { input: 10.0, cache_read: 1.0, cache_write: 0.0, output: 50.0 }),
     ("gpt-6-luna", Pricing { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 }),
+    ("gpt-6-rosalind", Pricing { input: 15.0, cache_read: 1.5, cache_write: 18.75, output: 75.0 }),
     ("gpt-6-sol", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 10.0 }),
     ("gpt-6.1-sol", Pricing { input: 2.0, cache_read: 0.1, cache_write: 2.5, output: 10.0 }),
+    ("gpt-6.1-terra", Pricing { input: 1.0, cache_read: 0.05, cache_write: 1.25, output: 5.0 }),
     ("gpt-daybreak-blue-latest", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
     ("gpt-daybreak-red-latest", Pricing { input: 12.5, cache_read: 1.25, cache_write: 15.625, output: 75.0 }),
     ("grok-4.20", Pricing { input: 1.25, cache_read: 0.2, cache_write: 0.0, output: 2.5 }),
@@ -177,7 +176,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("kimi-k2.6", Pricing { input: 0.95, cache_read: 0.16, cache_write: 0.0, output: 4.0 }),
     ("kimi-k2.7-code", Pricing { input: 0.95, cache_read: 0.19, cache_write: 0.0, output: 4.0 }),
     ("kimi-k2.7-code-highspeed", Pricing { input: 1.9, cache_read: 0.38, cache_write: 0.0, output: 8.0 }), // models.dev
-    ("kimi-k3", Pricing { input: 3.0, cache_read: 0.3, cache_write: 0.0, output: 15.0 }),
-    ("kimi-k3.1-pro", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.0, output: 10.0 }), // models.dev
+    ("kimi-k3", Pricing { input: 3.0, cache_read: 0.3, cache_write: 3.0, output: 15.0 }),
+    ("kimi-k3.1-pro", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.0, output: 10.0 }),
     ("kimi-k3.1-pro-highspeed", Pricing { input: 4.0, cache_read: 0.2, cache_write: 4.0, output: 20.0 }), // models.dev
 ];
