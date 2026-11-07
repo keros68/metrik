@@ -1079,25 +1079,85 @@ fn glm_keys_from_zcode_config(raw: &str) -> Vec<(String, GlmRegion)> {
     .collect()
 }
 
-/// Kimi key 解析：原生 `~/.kimi[-code]/config.toml|json` 的 `api_key` → 原生
+/// Kimi key 解析：原生 `~/.kimi[-code]/config.toml|json` 的 Kimi provider → 原生
 /// OAuth 凭据文件 → OpenCode `auth.json` 的 `kimi-for-coding`。
 /// 环境变量名未确认，不猜。
 fn resolve_kimi_credential() -> Option<String> {
-    for path in kimi_config_paths() {
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Some(key) = extract_scalar(&raw, "api_key") {
+    resolve_kimi_credential_from_paths(&kimi_config_paths(), &kimi_oauth_paths())
+        .or_else(|| nonempty(read_opencode_auth().get("kimi-for-coding")))
+}
+
+fn resolve_kimi_credential_from_paths(
+    config_paths: &[PathBuf],
+    oauth_paths: &[PathBuf],
+) -> Option<String> {
+    for path in config_paths {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Some(key) = kimi_config_key(&raw) {
                 return Some(key);
             }
         }
     }
-    for path in kimi_oauth_paths() {
-        if let Ok(raw) = std::fs::read_to_string(&path) {
+    for path in oauth_paths {
+        if let Ok(raw) = std::fs::read_to_string(path) {
             if let Some(token) = extract_scalar(&raw, "access_token") {
                 return Some(token);
             }
         }
     }
-    nonempty(read_opencode_auth().get("kimi-for-coding"))
+    None
+}
+
+fn kimi_config_key(raw: &str) -> Option<String> {
+    if let Ok(json) = serde_json::from_str::<Value>(raw) {
+        return json
+            .get("providers")?
+            .as_object()?
+            .iter()
+            .find_map(|(name, provider)| {
+                kimi_provider_key(
+                    name,
+                    provider.get("base_url").and_then(Value::as_str),
+                    provider.get("api_key").and_then(Value::as_str),
+                )
+            });
+    }
+    let document = raw.parse::<toml_edit::Document>().ok()?;
+    let key = document
+        .get("providers")?
+        .as_table_like()?
+        .iter()
+        .find_map(|(name, provider)| {
+            let provider = provider.as_table_like()?;
+            kimi_provider_key(
+                name,
+                provider.get("base_url").and_then(toml_edit::Item::as_str),
+                provider.get("api_key").and_then(toml_edit::Item::as_str),
+            )
+        });
+    key
+}
+
+fn kimi_provider_key(name: &str, base_url: Option<&str>, key: Option<&str>) -> Option<String> {
+    // An explicit endpoint determines the provider; names alone are only a
+    // fallback for older configs without base_url. Never use another route's key.
+    let is_kimi = match base_url {
+        Some(base_url) => tauri::Url::parse(base_url).ok().is_some_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("api.kimi.com")
+                && url.path().trim_end_matches('/') == "/coding/v1"
+        }),
+        None => matches!(
+            name,
+            "kimi" | "kimi-code" | "kimi-for-coding" | "managed:kimi-code"
+        ),
+    };
+    if !is_kimi {
+        return None;
+    }
+    key.map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
 }
 
 /// Kimi Code 用 OAuth 登录：`config.toml` 的 `api_key` 恒为空串，真凭据是这里的
@@ -2017,6 +2077,60 @@ mod tests {
             "key-with-bom"
         );
         assert_eq!(first_key_line("   \n\n"), None);
+    }
+
+    #[test]
+    fn kimi_mixed_provider_config_falls_back_to_its_oauth_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let oauth = dir.path().join("kimi-code.json");
+        std::fs::write(
+            &config,
+            r#"
+            [providers."managed:kimi-code"]
+            base_url = "https://api.kimi.com/coding/v1"
+            api_key = ""
+            [providers.opencode-go]
+            base_url = "https://opencode.ai/inference/go/openai/v1"
+            api_key = "opencode-test-key"
+        "#,
+        )
+        .unwrap();
+        std::fs::write(&oauth, r#"{"access_token":"kimi-test-token"}"#).unwrap();
+        assert_eq!(
+            resolve_kimi_credential_from_paths(&[config], &[oauth]).as_deref(),
+            Some("kimi-test-token")
+        );
+    }
+
+    #[test]
+    fn kimi_config_keys_are_scoped_to_the_official_provider() {
+        for raw in [
+            r#"
+                [providers.opencode-go]
+                api_key = "other-test-key"
+                [providers.kimi-for-coding]
+                type = "kimi"
+                api_key = "kimi-test-key"
+            "#,
+            r#"{"providers":{
+                "opencode-go":{"api_key":"other-test-key"},
+                "managed:kimi-code":{"base_url":"https://api.kimi.com/coding/v1","api_key":"kimi-test-key"}
+            }}"#,
+        ] {
+            assert_eq!(kimi_config_key(raw).as_deref(), Some("kimi-test-key"));
+        }
+        for raw in [
+            r#"[providers.opencode-go]
+                api_key = "other-test-key""#,
+            r#"[providers.kimi-for-coding]
+                base_url = "https://example.com/v1"
+                api_key = "other-test-key""#,
+            r#"{"providers":{"other":{"api_key":"other-test-key"}}}"#,
+            r#"api_key = "unscoped-test-key""#,
+        ] {
+            assert_eq!(kimi_config_key(raw), None);
+        }
     }
 
     #[test]
