@@ -67,6 +67,11 @@ struct PiMessage {
     #[serde(rename = "responseId")]
     response_id: Option<String>,
     usage: Option<PiUsage>,
+    #[serde(rename = "stopReason")]
+    stop_reason: Option<String>,
+    /// 这一次 API 调用的耗时（毫秒），由 pi 写在 assistant 消息上。
+    #[serde(rename = "durationMs")]
+    duration_ms: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -111,6 +116,7 @@ struct PendingEvent {
     tokens: TokenVector,
     /// 事件归属的计量 Agent（pi 是 harness，见 `pi_providers`）。
     credited_agent: &'static str,
+    duration_ms: Option<i64>,
 }
 
 impl PiAdapter {
@@ -216,6 +222,7 @@ impl AgentAdapter for PiAdapter {
             };
             let session = session_id.clone().unwrap_or_default();
             let timestamp = timestamp_str_ms(entry.timestamp.as_deref());
+            let mut duration_ms: Option<i64> = None;
             let (usage, model, provider, identity) = match entry.entry_type.as_str() {
                 "message" => {
                     let Some(message) = entry.message else {
@@ -246,6 +253,10 @@ impl AgentAdapter for PiAdapter {
                                 Some(response_id) => format!("response:{response_id}"),
                                 None => fallback_identity(&entry.id, timestamp),
                             };
+                            // 只取正常结束的调用；出错与中断的调用不计速度。
+                            if matches!(message.stop_reason.as_deref(), Some("stop" | "toolUse")) {
+                                duration_ms = message.duration_ms;
+                            }
                             let model = message.model;
                             (usage, model, provider, identity)
                         }
@@ -318,6 +329,7 @@ impl AgentAdapter for PiAdapter {
                 model: model.clone(),
                 tokens: tokens.clone(),
                 credited_agent: crate::pi_providers::credited_agent(provider.as_deref()),
+                duration_ms,
             };
             match events.get_mut(&identity) {
                 Some(stored) => {
@@ -379,6 +391,7 @@ impl AgentAdapter for PiAdapter {
                     "exact",
                 )
                 .with_project(project.clone())
+                .with_response_duration(event.duration_ms)
             })
             .collect();
         events.sort_by_key(|event| event.occurred_at_ms);
@@ -580,6 +593,37 @@ mod tests {
         // 无 provider 的 aborted 消息留在 pi 名下。
         assert_eq!(parsed.source.events[0].adapter_id, "pi");
         assert_eq!(parsed.source.events[0].tokens.processed(), 120);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn completed_calls_carry_their_recorded_duration() {
+        let path = session_file(
+            "duration",
+            concat!(
+                r#"{"type":"session","version":3,"id":"ses-1","cwd":"/tmp"}"#,
+                "\n",
+                r#"{"type":"message","id":"m1","timestamp":"2026-08-20T00:32:00.000Z","message":{"role":"assistant","model":"glm-5.3","responseId":"r1","usage":{"input":10,"output":5,"totalTokens":15},"stopReason":"toolUse","durationMs":1200}}"#,
+                "\n",
+                r#"{"type":"message","id":"m2","timestamp":"2026-08-20T00:33:00.000Z","message":{"role":"assistant","model":"glm-5.3","responseId":"r2","usage":{"input":10,"output":5,"totalTokens":15},"stopReason":"stop","durationMs":0}}"#,
+                "\n",
+                r#"{"type":"message","id":"m3","timestamp":"2026-08-20T00:34:00.000Z","message":{"role":"assistant","model":"glm-5.3","responseId":"r3","usage":{"input":10,"output":5,"totalTokens":15},"stopReason":"aborted","durationMs":900}}"#,
+                "\n",
+            ),
+        );
+
+        let parsed = PiAdapter::with_roots(vec![])
+            .parse(&candidate_for(&path), i64::MIN)
+            .unwrap();
+
+        // 零耗时与中断的调用照常计用量，但不带耗时。
+        let durations: Vec<_> = parsed
+            .source
+            .events
+            .iter()
+            .map(|event| event.response_duration_ms)
+            .collect();
+        assert_eq!(durations, [Some(1200), None, None]);
         std::fs::remove_file(path).ok();
     }
 

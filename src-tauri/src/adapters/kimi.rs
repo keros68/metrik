@@ -36,12 +36,24 @@ struct KimiRecord {
     #[serde(rename = "usageScope")]
     usage_scope: Option<String>,
     time: Option<i64>,
+    /// `context.append_loop_event` 的载荷；只读 `step.end` 的用量与耗时。
+    event: Option<LoopEvent>,
     // 旧版
     timestamp: Option<f64>,
     message: Option<LegacyMessage>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LoopEvent {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    usage: Option<NewUsage>,
+    llm_first_token_latency_ms: Option<i64>,
+    llm_stream_duration_ms: Option<i64>,
+}
+
+#[derive(Deserialize, Default, PartialEq)]
 struct NewUsage {
     #[serde(rename = "inputOther", default)]
     input_other: i64,
@@ -226,8 +238,34 @@ impl AgentAdapter for KimiAdapter {
         let mut legacy: BTreeMap<String, (i64, TokenVector)> = BTreeMap::new();
         let mut diagnostics = ScanDiagnostics::default();
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
+        // 刚入账、还在等同一次请求 `step.end` 的单轮用量：(事件下标, 原始用量)。
+        let mut awaiting_step_end: Option<(usize, NewUsage)> = None;
 
         for (_, record) in records.by_ref() {
+            // `step.end` 紧跟在它那次请求的用量记录之后，带同一份用量和这次请求的
+            // 耗时：首 token 延迟（含请求构建）加流式输出时长。用量对不上就不配对。
+            if record.record_type.as_deref() == Some("context.append_loop_event") {
+                let Some(event) = record.event else {
+                    continue;
+                };
+                if event.event_type.as_deref() != Some("step.end") {
+                    continue;
+                }
+                if let (Some((index, usage)), Some(step_usage)) =
+                    (awaiting_step_end.take(), event.usage)
+                {
+                    if usage == step_usage {
+                        let duration = event
+                            .llm_first_token_latency_ms
+                            .zip(event.llm_stream_duration_ms)
+                            .filter(|(first, stream)| *first >= 0 && *stream >= 0)
+                            .map(|(first, stream)| first + stream);
+                        let timed = events[index].clone().with_response_duration(duration);
+                        events[index] = timed;
+                    }
+                }
+                continue;
+            }
             // 新版：只认单轮增量记录。
             if record.record_type.as_deref() == Some("usage.record") {
                 // scope 缺失时不猜（可能是未来新增的累计口径），跳过并标记部分覆盖。
@@ -248,8 +286,10 @@ impl AgentAdapter for KimiAdapter {
                     reasoning_output: 0,
                 };
                 if tokens.processed() == 0 || timestamp < cutoff_ms {
+                    awaiting_step_end = None;
                     continue;
                 }
+                awaiting_step_end = Some((events.len(), usage));
                 let fingerprint = format!(
                     "{timestamp}:{}:{}:{}:{}",
                     tokens.input_uncached, tokens.cache_read, tokens.cache_write, tokens.output
@@ -405,6 +445,45 @@ mod tests {
         // 会话 ID 取自路径（含子 agent 粒度）。
         assert_eq!(parsed.source.events[0].session_id, "session-a/main");
         assert_eq!(parsed.source.events[0].tokens.cache_read, 14_848);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn step_end_times_the_request_it_reports_usage_for() {
+        let path = wire_file(
+            "step-timing",
+            &["sessions", "ws-1", "session-t", "agents", "main"],
+            concat!(
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":100,"output":20,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1782113184943}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"step.end","usage":{"inputOther":100,"output":20,"inputCacheRead":0,"inputCacheCreation":0},"llmFirstTokenLatencyMs":900,"llmStreamDurationMs":2100},"time":1782113184950}"#,
+                "\n",
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":50,"output":10,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1782113190000}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"tool.call"},"time":1782113190001}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"step.end","usage":{"inputOther":51,"output":10,"inputCacheRead":0,"inputCacheCreation":0},"llmFirstTokenLatencyMs":900,"llmStreamDurationMs":2100},"time":1782113190002}"#,
+                "\n",
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":7,"output":3,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1782113200000}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"step.end","finishReason":"error"},"time":1782113200001}"#,
+                "\n",
+            ),
+        );
+
+        let parsed = KimiAdapter::with_roots(vec![])
+            .parse(&candidate_for(&path), i64::MIN)
+            .unwrap();
+
+        // 用量对不上的 step.end 和没有耗时的 step.end 都不配对；用量照常入账。
+        let durations: Vec<_> = parsed
+            .source
+            .events
+            .iter()
+            .map(|event| event.response_duration_ms)
+            .collect();
+        assert_eq!(durations, [Some(3000), None, None]);
+        assert_eq!(parsed.source.events.len(), 3);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

@@ -202,6 +202,12 @@ impl UsageEvent {
         });
         self
     }
+
+    /// A duration the source itself recorded for this one model request.
+    pub fn with_response_duration(mut self, duration_ms: Option<i64>) -> Self {
+        self.response_duration_ms = duration_ms.filter(|duration| *duration > 0);
+        self
+    }
 }
 
 /// 项目路径的存储形态：反斜杠转正斜杠、去掉尾部分隔符、Windows 盘符统一大写。

@@ -23,6 +23,7 @@ Hermes SQLite ───┤
 MiniMax SQLite ──┤
 Antigravity .db ─┤
 DSH JSONL (zstd) ┤
+aicross usage ───┤
 Cursor dashboard ┘
 
 Codex app-server ─────────┐
@@ -60,6 +61,7 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - Antigravity: the provider `responseId` (`response:` event key). Antigravity 2.x writes each cascade to `~/.gemini/antigravity/conversations/<cascadeId>.db`; `gen_metadata.data` is the protobuf `GeneratorMetadata` that the language server RPC `GetCascadeTrajectoryGeneratorMetadata` returns as JSON, so the adapter decodes it into that JSON shape and runs the RPC normalizer — both sources produce the same event for the same generation. Generations carry no timestamp; the time is the `createdAt` of the step the generation produced. The project is the first local `file:///` URI in `workspace_uris` of `conversation_summaries.db` beside the conversations directory (single-root on every local conversation; remote and host-qualified URIs are not guessed); a conversation whose summary row is missing stays unattributed until a rescan backfills it. RPC usage carries no workspace and stays unattributed. The RPC is only polled for cascades without a local database (older IDE builds store `.pb` files instead). On 2.23 the RPC alone reads no usage: `GetAllCascadeTrajectories` returns an empty object and `chatStartMetadata` no longer carries `createdAt`, so every RPC event would fall before the cutoff. Calling `GetCascadeTrajectoryGeneratorMetadata` for each of the 20 local cascades returned the same 1,383 event ids, token components, and models as the local decoder. Field semantics were checked on those 1,383 generations (Antigravity 2.23, 2026-10): `inputTokens` excludes cache reads, `outputTokens == thinkingOutputTokens + responseOutputTokens` in every row (re-checked on every scan as the accounting self-check), and every `responseId` is present and unique. Cache writes never appeared and are recorded as 0. Quota bucket ids arrive hyphenated (`gemini-weekly`, `3p-5h`, where `3p` is the "Claude and GPT models" group) and are normalized to the statusLine hook's underscore keys.
 - DeepSeek Harness: the per-call `message.id` for replies and `compactionId` for compaction summaries — both UUIDs that a fork copies verbatim, so a copy merges component-wise like Pi; failed or retried attempts (`assistant/attempt`) carry no id and use session id plus `seq`. A fork's inherited prefix (events before the last `session/end-seed {inherited:true}`, or before `seedLength` in v0/v1 headers) belongs to the parent and is skipped, which is what keeps id-less attempts from being counted twice. A later settlement for the same (turn, step) replaces the earlier one unless `llm/retry-started` closed that slot. Format migration writes a new `session.vN` generation beside the old files, so each session directory is read from its highest generation only. The format follows DSH's own source and has not yet been checked against a real install.
 - Cursor: one dashboard usage event. The payload has no request id, so identity is timestamp, conversation id, model, and the token components; an identical fingerprint repeated within one day gets an occurrence suffix, so parallel calls in the same millisecond are both counted. Events are deltas and are never merged component-wise.
+- aicross: the record `id` aicross generates for each dispatch (`aicross:` event key). aicross runs Claude Code, Codex, and pi with session saving disabled, so those calls never reach the agents' own logs; it appends one line per model per dispatch to `<AICROSS_HOME>/usage/<year-month>.jsonl` (schema `aicross-usage/1`) holding four non-overlapping token components, the executing agent, the pi provider, the model, and the project directory, with no task or answer text. Usage is credited to the executing agent, and pi dispatches follow the same provider attribution as pi session logs. Kimi and Antigravity dispatches keep their own sessions and are not written to this file, so nothing is counted twice. Records with another schema version, an unknown agent, or a negative component are counted as unreadable rather than interpreted. Checked on one real dispatch each for Claude Code and Codex (2026-11): the four components sum to the CLI's reported input plus output; the pi path follows the components pi reports in its session logs and has not been checked on a real dispatch.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
 
 Antigravity reads step timestamps and generation metadata in one read-only SQLite
@@ -126,6 +128,19 @@ produce no timing. Real local rows confirmed millisecond timestamps and
 positive per-request intervals; end timestamps alone also occur on unsuccessful
 requests, so they do not establish completion. Zcode parser revision 8 rescans
 retained sources to enrich old events without changing counts or identities.
+Kimi reads the duration of the `step.end` record that follows a turn's usage
+record and carries identical usage: `llmFirstTokenLatencyMs` (request build
+plus server time to first token) plus `llmStreamDurationMs`. On 4,328 local
+records the two fields equal the sum of their sub-fields within 3 ms, and 4,328
+of 4,329 turn usage records pair; a `step.end` whose usage differs, or that has
+no timing, leaves the event untimed. The gap between the request and `step.end`
+timestamps is not used, because it includes later waiting. Pi reads
+`message.durationMs` on assistant messages that ended with `stop` or `toolUse`
+(237 of 237 local calls with usage); errored and aborted calls keep their usage
+but carry no timing. Kimi parser revision 8 and Pi revision 9 rescan retained
+sources to enrich old events. Hermes rows are cumulative counters, Claude Code
+and Codex logs record turn or output-item times rather than one request, and
+the Antigravity timing fields are unnamed, so those adapters report no timing.
 Other adapters do not guess timing from session duration or adjacent events.
 
 Model summaries share one aggregation for snapshots and history reports:
@@ -254,7 +269,7 @@ missing or unreadable ledger is a stderr message with a non-zero exit code.
   the table is wholesale-replaced derived data, so only one stale quota round
   is lost.
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 8 so Kimi Code and ChatGPT subscription usage moves to its own cards, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, and Antigravity using 10: 9 reconciled decoder diagnostics and output-split validation, and 10 rescans conversations parsed before project attribution so their history is backfilled. Version changes force retained-history reconciliation.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 8 to backfill request timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, and Antigravity using 10: 9 reconciled decoder diagnostics and output-split validation, and 10 rescans conversations parsed before project attribution so their history is backfilled. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of `payload_hash` — it is attribution, not a measured quantity, and hashing it would make the same event hash differently after a parser upgrade, which non-mergeable adapters reject as an identity collision. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 
@@ -373,16 +388,20 @@ Backend (`src-tauri/src/i18n.rs`):
 
 The macOS WidgetKit extension is not localized by this mechanism.
 
-## Planned device sync
+## Device sync
 
-Sync is deliberately outside the first release. The planned boundary is:
+Sync is opt-in and uses a shared folder the user chooses; there is no cloud
+service, and the local application remains fully useful while offline.
 
-- opt-in only;
-- end-to-end encrypted;
-- standard events or aggregates only;
-- deterministic strong event IDs for cross-device deduplication;
-- paths, prompts, output, and credentials excluded;
-- local application remains fully useful while offline.
+- Each device writes one `metrik-usage-<deviceId>.json` holding the last 30
+  days of derived events: event ID, agent, timestamp, and processed tokens.
+  Models, paths, prompts, output, and credentials are excluded, as are
+  account-wide Cursor events.
+- The file is plain JSON; its confidentiality is that of the shared folder.
+- Export and import run at most every five minutes. A device's rows are
+  replaced wholesale when its export timestamp changes.
+- Event IDs are deterministic across devices. An event that is also in the
+  local ledger, or that several devices exported, is counted once.
 
 ## Request pricing and bounded Codex scans
 
@@ -398,7 +417,7 @@ in-memory checkpoint, including the cumulative baseline and fork state. A pendin
 source is prioritized on the next refresh. Only a complete captured file prefix
 is committed; append-only growth is handled on a later refresh. Truncation or a
 same-size rewrite restarts parsing. Other adapters retain per-file budgeting.
-Codex parser version 8 enriches existing events once; other adapters stay at 7.
+Codex parser version 8 enriches existing events once.
 
 Codex and Claude quota caches and notification episodes include the local account
 identity digest. Results arriving after an observed account or settings change

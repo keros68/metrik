@@ -34,14 +34,6 @@ export function resolveLanguage(setting, systemLocale) {
   return localeIsChinese(systemLocale) ? "zh" : "en";
 }
 
-export function getLanguage() {
-  return state.language;
-}
-
-export function getLanguageSetting() {
-  return state.setting;
-}
-
 /** 数字与日期格式化用的 BCP 47 标签，跟随生效语言。 */
 export function localeTag(language = state.language) {
   return language === "en" ? "en-US" : "zh-CN";
