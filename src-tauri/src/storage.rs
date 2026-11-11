@@ -24,10 +24,12 @@ pub const PARSER_VERSION: i64 = 7;
 /// Antigravity 9 重扫旧来源，让嵌套解码失败与零响应输出的口径异常正确标为不完整；
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
+/// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时。
 /// Hermes 8 重扫 Hermes 来源，让所有用量回到实际执行工具，不再按套餐路由拆卡。
 pub fn parser_version_for(adapter: &str) -> i64 {
     match adapter {
-        "codex" | "pi" | "zcode" | "hermes" => 8,
+        "codex" | "zcode" | "hermes" | "kimi" => 8,
+        "pi" => 9,
         "antigravity" => 10,
         _ => PARSER_VERSION,
     }

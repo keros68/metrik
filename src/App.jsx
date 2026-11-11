@@ -249,6 +249,8 @@ const TOKEN_COMPONENTS = [
   { key: "output", label: "输出", color: "#e36b49" },
 ];
 
+const MODEL_PREVIEW_COUNT = 6;
+
 // Token 构成 + 模型分布：都来自本地账本的精确解析（processed 口径，非账单）。
 function BreakdownSection({ snapshot, selectedAgent }) {
   const scopedAgents = selectedAgent === "all"
@@ -259,9 +261,10 @@ function BreakdownSection({ snapshot, selectedAgent }) {
     value: scopedAgents.reduce((sum, agent) => sum + Number(agent[component.key] || 0), 0),
   }));
   const componentTotal = components.reduce((sum, component) => sum + component.value, 0);
-  const models = (snapshot.models || [])
-    .filter((entry) => selectedAgent === "all" || entry.agent === selectedAgent)
-    .slice(0, 6);
+  const [showAllModels, setShowAllModels] = useState(false);
+  const scopedModels = (snapshot.models || [])
+    .filter((entry) => selectedAgent === "all" || entry.agent === selectedAgent);
+  const models = showAllModels ? scopedModels : scopedModels.slice(0, MODEL_PREVIEW_COUNT);
   const modelMax = models[0]?.tokens || 1;
 
   const cost = snapshot.cost;
@@ -349,6 +352,11 @@ function BreakdownSection({ snapshot, selectedAgent }) {
               </li>
             ))}
           </ul>
+          {scopedModels.length > MODEL_PREVIEW_COUNT && (
+            <button type="button" className="project-expand" onClick={() => setShowAllModels((value) => !value)}>
+              {showAllModels ? t("收起") : t("显示全部 {count} 个模型", { count: scopedModels.length })}
+            </button>
+          )}
         </article>
       )}
     </section>
@@ -904,6 +912,7 @@ export function App() {
         queuedLoadPeriod.current = null;
         const requestId = ++requestSequence.current;
         setLoading(true);
+        const quotaOnlyLoad = quotaOnly;
         const next = quotaOnly
           ? await getQuotaSnapshot(periodToLoad)
           : await getUsageSnapshot(periodToLoad, {
@@ -913,7 +922,10 @@ export function App() {
             });
         forceLoad = false;
         quotaOnly = false;
-        if (requestId === requestSequence.current && !queuedLoadPeriod.current) {
+        // 仅额度的刷新失败时保留现有快照：它只是聚焦时的加速通道，失败不该把
+        // 已载入的本地统计和上一轮额度清成不可用。
+        const keepCurrent = quotaOnlyLoad && next.loadError;
+        if (requestId === requestSequence.current && !queuedLoadPeriod.current && !keepCurrent) {
           setSnapshot(next);
         }
         periodToLoad = queuedLoadPeriod.current;

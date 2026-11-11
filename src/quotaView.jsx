@@ -10,7 +10,7 @@ import { AGENT_META } from "./agentMeta.jsx";
 /// 状态灯的含义：绿 = 数据正常，黄（呼吸）= 正在更新，红 = 读取失败。
 /// 灯本身只是装饰，含义必须悬浮可见，否则用户永远猜不到。
 export function statusDotTitle(loading, loadError) {
-  if (loadError) return t("数据读取失败，仍显示上次成功的数据");
+  if (loadError) return t("数据读取失败");
   return loading ? t("正在更新数据…") : t("数据正常");
 }
 

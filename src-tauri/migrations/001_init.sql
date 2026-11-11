@@ -87,6 +87,11 @@ CREATE TABLE IF NOT EXISTS remote_usage_event (
 CREATE INDEX IF NOT EXISTS idx_remote_usage_event_time
     ON remote_usage_event(occurred_at_ms);
 
+-- 主键以 device_id 开头，按 event_id 查不到索引；跨设备去重要逐条查同一事件
+-- 是否还出现在别的设备上。
+CREATE INDEX IF NOT EXISTS idx_remote_usage_event_identity
+    ON remote_usage_event(event_id, device_id);
+
 CREATE TABLE IF NOT EXISTS sync_device (
     device_id      TEXT PRIMARY KEY,
     label          TEXT NOT NULL,

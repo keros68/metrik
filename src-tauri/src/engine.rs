@@ -1,7 +1,8 @@
 use crate::adapters::{
-    AgentAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter, DshAdapter,
-    GrokAdapter, HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter, PiAdapter,
-    ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter, CURSOR_USAGE_SETTING_KEY,
+    AgentAdapter, AicrossAdapter, AntigravityAdapter, ClaudeAdapter, CodexAdapter, CursorAdapter,
+    DshAdapter, GrokAdapter, HermesAdapter, KimiAdapter, MinimaxAdapter, OpencodeAdapter,
+    PiAdapter, ScanDiagnostics, SourceCandidate, WorkbuddyAdapter, ZcodeAdapter,
+    CURSOR_USAGE_SETTING_KEY,
 };
 #[cfg(test)]
 use crate::claude_hook;
@@ -798,6 +799,7 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(HermesAdapter::detected()),
         Box::new(MinimaxAdapter::detected()),
         Box::new(DshAdapter::detected()),
+        Box::new(AicrossAdapter::detected()),
         Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
     let mut report = ScanReport::default();
@@ -1175,12 +1177,23 @@ fn period_bucket_count(period: &str, current_hour: u32) -> usize {
     }
 }
 
+/// 事件标识由 Agent 与来源自带的事件键决定，跨设备一致。同一份 Agent 日志被
+/// 几台设备各自解析时（共享或迁移过的日志目录），远端行只在本机没有这条事件、
+/// 且所属设备是持有它的远端设备里标识最小的一台时计入。
+const REMOTE_EVENT_COUNTS_ONCE: &str = "NOT EXISTS (
+        SELECT 1 FROM usage_event AS local_event
+        WHERE local_event.event_id = remote_usage_event.event_id)
+    AND NOT EXISTS (
+        SELECT 1 FROM remote_usage_event AS other_device
+        WHERE other_device.event_id = remote_usage_event.event_id
+          AND other_device.device_id < remote_usage_event.device_id)";
+
 fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Vec<StoredEvent>> {
     // 远端同步事件只带处理量总数，不带模型或分量拆解（见架构约束：同步导出
     // 只含派生统计字段）；模型列给哨兵值 "synced-remote"、分量记 0，让这些
     // 事件在模型聚合里单列成"其他设备同步（无模型名）"，与本地确实缺模型名
     // 的 "unknown" 区分开，而不是混在一起被误读成一个叫"未标注"的模型。
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare(&format!(
         "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
                 request_input_tokens, response_duration_ms
@@ -1190,9 +1203,9 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
          SELECT adapter_id, occurred_at_ms, processed_tokens, 'synced-remote' AS model,
                 0, 0, 0, 0, NULL, NULL
          FROM remote_usage_event
-         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
-         ORDER BY occurred_at_ms",
-    )?;
+         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2 AND {REMOTE_EVENT_COUNTS_ONCE}
+         ORDER BY occurred_at_ms"
+    ))?;
     let rows = statement.query_map(params![start_ms, end_ms], |row| {
         Ok(StoredEvent {
             adapter: row.get(0)?,
@@ -1220,10 +1233,13 @@ fn token_components(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<T
 fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<i64> {
     connection
         .query_row(
-            "SELECT (SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
-                     WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)
-                  + (SELECT COALESCE(SUM(processed_tokens), 0) FROM remote_usage_event
-                     WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)",
+            &format!(
+                "SELECT (SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
+                         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)
+                      + (SELECT COALESCE(SUM(processed_tokens), 0) FROM remote_usage_event
+                         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
+                           AND {REMOTE_EVENT_COUNTS_ONCE})"
+            ),
             params![start_ms, end_ms],
             |row| row.get(0),
         )
@@ -1780,6 +1796,21 @@ fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -
         // 按日读取的说明不是"发现 … 本次更新 …"那句扫描摘要。
         cursor.scan_summary = None;
         views.push(cursor);
+    }
+
+    // 没用过 aicross 的机器不列这一行。
+    if discovered("aicross") > 0 {
+        views.push(local(
+            "aicross",
+            "aicross-local",
+            i18n::tr_in!(lang, "aicross 派发用量", "aicross dispatch usage"),
+            scanned("aicross", "个月度记录文件", "个", ("monthly record file", "monthly record files")),
+            i18n::tr_in!(
+                lang,
+                "读取 aicross 在 ~/.aicross/usage 下写的派发用量记录，只含用量与归属，不含任务和回答。aicross 派发 Claude、Codex、pi 时不保存会话，这些调用不在各家自己的日志里，按执行的 Agent 记到对应卡片（pi 再按 provider 归属）；Kimi 与 Antigravity 的派发仍由各自的日志统计，不重复计入。",
+                "Reads the dispatch usage records aicross writes under ~/.aicross/usage, which hold usage and attribution only, never the task or the answer. aicross does not save sessions when it dispatches Claude, Codex or pi, so those calls are absent from each agent's own logs and are credited to the agent that ran them (pi usage is then attributed by provider). Kimi and Antigravity dispatches are still counted from their own logs and are not counted twice."
+            ),
+        ));
     }
 
     if let Some(sync_status) = sync_status.filter(|status| status.enabled) {
@@ -4281,6 +4312,41 @@ mod tests {
 
         assert_eq!(report.first_event_ms, Some(earliest_ms));
         assert_eq!(report.last_event_ms, Some(latest_ms));
+    }
+
+    #[test]
+    fn an_event_seen_on_several_devices_is_counted_once() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let local_now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+
+        // 同一份 Agent 日志被两台远端设备和本机各自解析：事件标识相同。
+        insert_test_usage(&connection, "shared", at, 100);
+        for (device, event_id, tokens) in [
+            ("device-a", "shared", 100),
+            ("device-b", "shared", 100),
+            ("device-a", "remote-only", 40),
+            ("device-b", "remote-only", 40),
+            ("device-b", "only-b", 7),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO remote_usage_event (device_id, event_id, adapter_id,
+                         occurred_at_ms, processed_tokens) VALUES (?1, ?2, 'codex', ?3, ?4)",
+                    params![device, event_id, at, tokens],
+                )
+                .unwrap();
+        }
+
+        let snapshot =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+        assert_eq!(snapshot.total_tokens, 147);
+        assert_eq!(sum_tokens_between(&connection, at, at + 1).unwrap(), 147);
+        assert_eq!(report_at(&connection, local_now).unwrap().total_tokens, 147);
     }
 
     #[test]

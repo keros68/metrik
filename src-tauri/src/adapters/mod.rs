@@ -1,3 +1,4 @@
+mod aicross;
 mod antigravity;
 mod claude;
 mod codex;
@@ -13,6 +14,7 @@ mod pi;
 mod workbuddy;
 mod zcode;
 
+pub use aicross::AicrossAdapter;
 pub use antigravity::AntigravityAdapter;
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;

@@ -133,6 +133,12 @@ change.
   goes to that plan's card, and DeepSeek API or platform-balance usage stays
   on the DSH card. It never feeds the DeepSeek card, which shows the official
   balance only, and the DSH card never carries a quota.
+- aicross is a dispatcher, not an agent: it has no card. Usage from its
+  dispatches belongs to the agent that ran them. Dispatches whose sessions
+  aicross disables (Claude Code, Codex, pi) are read from the usage records
+  aicross writes; dispatches that keep their own session logs are counted from
+  those logs only. The data-source drawer lists the aicross source only when
+  such records exist.
 - Cursor carries usage and one quota window: the remaining plan allowance for
   the current billing cycle. Local bubble `tokenCount` values are mostly zero
   and are not a source. Both come from the cursor.com dashboard, so they are
@@ -374,8 +380,8 @@ change.
   timing stays unavailable, never zero or an estimate from session spans.
   Speed is grouped by Agent and model within the selected period. It is a
   measurement of that usage source, not a benchmark of a model across providers.
-  Initially only Zcode's explicitly completed requests have verified timing;
-  other sources require their own timing validation before reporting speed.
+  Zcode, Kimi, and Pi have verified per-request timing; other sources require
+  their own timing validation before reporting speed.
 
 - Pinning belongs only to floating forms. Expanded mode is always a normal
   window.

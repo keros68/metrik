@@ -74,7 +74,7 @@ export default {
   "节奏偏快 {delta}% · 按当前用量重置前可能耗尽": "Fast, {delta}% over · may run out before reset at this rate",
 
   // Data sources status (viewParts.jsx)
-  "数据读取失败，仍显示上次成功的数据": "Couldn't read data. Showing the last successful read",
+  "数据读取失败": "Couldn't read data",
   "正在更新数据…": "Updating data…",
   "数据正常": "Data OK",
   "显示官方额度和重置时间。": "Shows the official quota and reset time.",
@@ -540,6 +540,7 @@ export default {
   "隐藏项目 {project}": "Hide project {project}",
   "收起": "Show less",
   "显示全部 {count} 个项目": "Show all {count} projects",
+  "显示全部 {count} 个模型": "Show all {count} models",
 
   // Reports view (ReportsSection.jsx)
   "所选时间段内暂无已索引的用量。": "No indexed usage in the selected range.",
