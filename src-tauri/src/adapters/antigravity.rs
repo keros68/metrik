@@ -2,11 +2,11 @@
 //!
 //! 两个来源，产出同一份 `GeneratorMetadata`、同一套事件键：
 //!
-//! 1. **本地会话库**（Antigravity 2.x）：每个会话（cascade）落成
-//!    `~/.gemini/antigravity/conversations/<cascadeId>.db`（SQLite，WAL）。
+//! 1. **本地会话库**（桌面版、IDE 与 CLI）：每个会话（cascade）落成
+//!    对应数据目录下的 `conversations/<cascadeId>.db`（SQLite，WAL）。
 //!    `gen_metadata.data` 是 protobuf 编码的 `GeneratorMetadata`，与 RPC
 //!    `GetCascadeTrajectoryGeneratorMetadata` 返回的是同一份数据；时间取自它
-//!    产出的 step（`steps.metadata` 的创建时间）。IDE 没在跑也能读到全部历史。
+//!    产出的 step（`steps.metadata` 的创建时间）。关闭应用后仍可读取历史。
 //!    项目归属取自同一数据根下 `conversation_summaries.db` 的工作区 URI。
 //! 2. **language server 私有 RPC**（`exa.language_server_pb`，自签 TLS，认证
 //!    令牌从进程命令行取）：只用于本地没有 `.db` 的会话（旧版 IDE 把会话存成
@@ -102,17 +102,19 @@ pub fn fetch_antigravity_quota_snapshot(timeout: Duration) -> Result<Vec<QuotaSa
 }
 
 pub struct AntigravityAdapter {
-    /// 本地会话库所在目录：2.x 应用写 `~/.gemini/antigravity`；单独安装的 IDE
-    /// 的数据目录是 `~/.gemini/antigravity-ide`（2.x 应用迁移会话时的目标）。
-    /// 后者的库格式还没在真机上见过，表结构对不上时该源报错、标数据不完整。
+    /// 桌面版、独立 IDE 和 CLI 各有自己的会话库和摘要库。
     conversation_dirs: Vec<PathBuf>,
 }
 
 impl AntigravityAdapter {
     pub fn detected() -> Self {
         let gemini = dirs::home_dir().unwrap_or_default().join(".gemini");
+        Self::from_gemini_dir(&gemini)
+    }
+
+    fn from_gemini_dir(gemini: &Path) -> Self {
         Self {
-            conversation_dirs: ["antigravity", "antigravity-ide"]
+            conversation_dirs: ["antigravity", "antigravity-ide", "antigravity-cli"]
                 .iter()
                 .map(|app| gemini.join(app).join("conversations"))
                 .collect(),
@@ -787,9 +789,9 @@ fn step_created_ms(connection: &Connection) -> Result<HashMap<u64, i64>> {
 }
 
 /// 一行 `gen_metadata` → RPC `generatorMetadata[]` 的一个元素。
-/// 读不懂、或带聊天元数据却找不到时间的行返回 None（调用方计入 malformed）；
-/// 不是聊天生成的行返回 `Value::Null`（本就没有用量，不算错）。损坏的重试
-/// 单独计入 malformed、保留空位，其他可读重试仍然入账。
+/// 读不懂、或有用量却找不到时间的行返回 None（调用方计入 malformed）。
+/// 无用量且无时间的尝试返回 `Value::Null`。损坏的重试单独计入 malformed，
+/// 保留空位，其他可读重试仍然入账。
 fn generation_json(
     data: &[u8],
     step_times: &HashMap<u64, i64>,
@@ -803,9 +805,10 @@ fn generation_json(
     let created_ms = generation
         .repeated_varints(GENERATION_STEP_INDICES)?
         .into_iter()
-        .find_map(|index| step_times.get(&index).copied())?;
+        .find_map(|index| step_times.get(&index).copied());
 
-    let usage_json = |usage: &ProtoMessage, total_mismatches: &mut usize| {
+    let mut needs_timestamp = false;
+    let mut usage_json = |usage: &ProtoMessage, total_mismatches: &mut usize| {
         // proto3 会省略零值：纯 thinking 输出和空失败重试也要复核这条等式。
         let response = usage.varint(USAGE_RESPONSE_OUTPUT).unwrap_or(0);
         let thinking = usage.varint(USAGE_THINKING_OUTPUT).unwrap_or(0);
@@ -814,8 +817,12 @@ fn generation_json(
         }
         let mut fields = serde_json::Map::new();
         for (number, key) in USAGE_COUNTERS {
-            if let Some(value) = usage.varint(number) {
-                fields.insert(key.into(), json!(value));
+            match usage.varint(number) {
+                Some(value) => {
+                    needs_timestamp |= value > 0;
+                    fields.insert(key.into(), json!(value));
+                }
+                None => needs_timestamp |= usage.has_field(number),
             }
         }
         if let Some(response_id) = usage.string(USAGE_RESPONSE_ID) {
@@ -825,10 +832,6 @@ fn generation_json(
     };
 
     let mut row = serde_json::Map::new();
-    row.insert(
-        "chatStartMetadata".into(),
-        json!({ "createdAt": created_ms }),
-    );
     if let Some(model) = chat_model.string(CHAT_MODEL_RESPONSE_MODEL) {
         row.insert("responseModel".into(), json!(model));
     }
@@ -865,6 +868,13 @@ fn generation_json(
     } else {
         row.insert("retryInfos".into(), Value::Array(retries));
     }
+    let Some(created_ms) = created_ms else {
+        return (!needs_timestamp).then_some(Value::Null);
+    };
+    row.insert(
+        "chatStartMetadata".into(),
+        json!({ "createdAt": created_ms }),
+    );
     Some(json!({ "chatModel": row }))
 }
 
@@ -1621,9 +1631,11 @@ mod tests {
     }
 
     #[test]
-    fn local_database_reads_usage_with_the_step_timestamp() {
+    fn cli_database_reads_usage_by_model_with_the_step_timestamp() {
         let test = TestDirectory::new("local");
-        let path = test.0.join("cascade-local.db");
+        let conversations = test.0.join("antigravity-cli").join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        let path = conversations.join("cascade-local.db");
         let created = 1_791_239_681u64;
         write_conversation(
             &path,
@@ -1632,6 +1644,9 @@ mod tests {
                 (3, step_blob(created + 6, 0)),
             ],
             &[
+                // CLI can record a failed attempt with only a model enum in usage
+                // and no resulting step.
+                pb_bytes(1, &pb_bytes(17, &pb_bytes(2, &pb_varint(1, 1318)))),
                 generation_blob(
                     &[1, 2],
                     "gemini-3.8-flash",
@@ -1640,7 +1655,7 @@ mod tests {
                 // 两次失败重试（零用量）后成功：只记成功那次。
                 generation_blob(
                     &[3, 4],
-                    "gemini-3.8-flash",
+                    "claude-sonnet-4-6",
                     &[
                         Vec::new(),
                         Vec::new(),
@@ -1649,8 +1664,10 @@ mod tests {
                 ),
             ],
         );
-        let adapter = AntigravityAdapter::with_conversation_dirs(vec![test.0.clone()]);
-        let candidates = crate::adapters::sqlite_candidate(&path, "antigravity", 0);
+        let adapter = AntigravityAdapter::from_gemini_dir(&test.0);
+        let databases = adapter.local_databases();
+        assert_eq!(databases, [path]);
+        let candidates = local_conversation_candidate(&databases[0], 0);
         let scan = adapter.parse(&candidates[0], 0).unwrap();
 
         assert!(!scan.diagnostics.is_partial(), "{:?}", scan.diagnostics);
@@ -1666,6 +1683,7 @@ mod tests {
         assert_eq!(events[0].tokens.reasoning_output, 265);
         assert_eq!(events[0].tokens.processed(), 13_470 + 339);
         assert_eq!(events[1].event_key, "response:resp-b");
+        assert_eq!(events[1].model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(events[1].occurred_at_ms, (created as i64 + 6) * 1000);
         assert_eq!(events[1].tokens.cache_read, 24_437);
         assert_eq!(events[1].tokens.processed(), 6_336 + 24_437 + 131);
@@ -1727,11 +1745,13 @@ mod tests {
                 vec![0x0a, 0x10, 0x01],
                 // 找不到产出 step 的时间：无法归日。
                 generation_blob(&[7], "gemini-3.8-flash", &[usage_blob(1, 0, 1, 1, "x")]),
+                // Token 计数不可读，无法确认是无用量的尝试。
+                pb_bytes(1, &pb_bytes(4, &pb_bytes(2, b"not a counter"))),
                 generation_blob(&[1], "gemini-3.8-flash", &[contradictory]),
             ],
         );
         let (_, events, diagnostics) = parse_local_database(&path, 0).unwrap();
-        assert_eq!(diagnostics.malformed_lines, 2);
+        assert_eq!(diagnostics.malformed_lines, 3);
         assert_eq!(diagnostics.total_mismatches, 1);
         assert!(diagnostics.is_partial());
         // 能读的那行仍然入账。

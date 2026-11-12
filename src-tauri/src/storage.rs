@@ -23,6 +23,7 @@ pub const PARSER_VERSION: i64 = 7;
 /// Pi 8 重扫 pi 来源，让 kimi-coding / openai-codex 路由的用量改记到 Kimi / Codex 卡片。
 /// Antigravity 9 重扫旧来源，让嵌套解码失败与零响应输出的口径异常正确标为不完整；
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
+/// 11 跳过没有时间的零用量尝试，有用量却缺少时间的记录仍标为不完整。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
 /// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时。
 /// Hermes 8 重扫 Hermes 来源，让所有用量回到实际执行工具，不再按套餐路由拆卡。
@@ -30,7 +31,7 @@ pub fn parser_version_for(adapter: &str) -> i64 {
     match adapter {
         "codex" | "zcode" | "hermes" | "kimi" => 8,
         "pi" => 9,
-        "antigravity" => 10,
+        "antigravity" => 11,
         _ => PARSER_VERSION,
     }
 }

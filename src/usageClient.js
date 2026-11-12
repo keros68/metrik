@@ -228,7 +228,7 @@ function demoSnapshot(period = "today") {
       { id: "zcode-local", kind: "local", label: t("GLM 本地 Token"), detail: t("读取 model_usage 统计表的逐请求计数；不读取消息内容。"), quality: "exact", qualityLabel: t("精确解析") },
       { id: "opencode-local", kind: "local", label: t("OpenCode 本地 Token"), detail: t("读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
       { id: "kimi-local", kind: "local", label: t("Kimi 本地 Token"), detail: t("只计单轮增量记录（会话累计记录会重复计数）；未安装 Kimi 时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
-      { id: "antigravity-live", kind: "local", label: t("Antigravity 用量"), detail: t("读取本地会话库（Antigravity 2.x，应用未运行也能读到）；旧版 IDE 的会话在 IDE 运行时经本机 language server RPC 读取。不估算。"), quality: "exact", qualityLabel: t("精确解析") },
+      { id: "antigravity-live", kind: "local", label: t("Antigravity 用量"), detail: t("从桌面版、IDE 和 CLI（agy）的本地会话库读取各模型的 Token 用量。旧版 IDE 会话通过运行中的本机语言服务读取。"), quality: "exact", qualityLabel: t("精确解析") },
       { id: "workbuddy-local", kind: "local", label: t("WorkBuddy 本地 Token"), detail: t("读取 CodeBuddy/WorkBuddy 会话转录的 usage 字段并以消息标识去重；未安装时保持为 0。"), quality: "exact", qualityLabel: t("精确解析") },
       { id: "qoder-quota", kind: "official", label: t("Qoder 官方配额"), detail: t("覆盖 Qoder、QoderWork 与 Qoder CLI 的账户级额度；设置 QODER_COOKIE 环境变量后读取官网额度，不把本地零 token 遥测当作用量。"), quality: "official", qualityLabel: t("官方") },
       { id: "kimi-quota", kind: "official", label: t("Kimi 官方配额"), detail: t("合并 Kimi Code 与 kimi-desktop 的官方窗口；重复的 5h/7d 只显示一份，并保留月度订阅周期。"), quality: "official", qualityLabel: t("官方") },

@@ -1641,8 +1641,8 @@ fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -
             scanned("antigravity", "个会话", "个", ("session", "sessions")),
             i18n::tr_in!(
                 lang,
-                "用量来自 ~/.gemini/antigravity/conversations 下的本地会话库（Antigravity 2.x，应用未运行也能读到），项目归属取自上一级目录的会话摘要库；没有本地库的会话（旧版 IDE）在 IDE 运行时经本机 language server 的 RPC 读取。按 responseId 去重，不估算。",
-                "Usage comes from the local conversation databases under ~/.gemini/antigravity/conversations (Antigravity 2.x, readable while the app is closed), with projects taken from the conversation summaries in the parent directory; sessions without a local database (older IDE builds) are read through the local language server's RPC while the IDE is running. Deduplicated by responseId, never estimated."
+                "从桌面版、IDE 和 CLI（agy）的本地会话库读取各模型的 Token 用量，项目取自对应的会话摘要库。旧版 IDE 会话通过运行中的本机语言服务读取。按响应 ID 去重。",
+                "Reads per-model token usage from the local conversation databases of the desktop app, IDE, and CLI (agy). Projects come from the corresponding conversation summaries. Older IDE sessions are read through the running local language server. Usage is deduplicated by response ID."
             ),
         ),
         official(

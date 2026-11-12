@@ -41,7 +41,7 @@ Metrik 是基于 Tauri 2 的桌面应用，支持 Windows、macOS 与 Ubuntu 24.
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5 小时、每周 |
 | Kimi（含桌面版 Kimi Work） | `~/.kimi-code`、`~/.kimi`、kimi-desktop 数据目录 | ✅ 5 小时、每周、月度 |
 | OpenCode | `~/.local/share/opencode/storage` | ✅ Go 订阅（OpenCode / pi 的 auth.json） |
-| Antigravity | `~/.gemini/antigravity/conversations`（2.x 本地会话库；旧版 IDE 回退到语言服务 RPC） | ✅ |
+| Antigravity | 桌面版、IDE 和 CLI（`agy`）的本地会话库，旧版 IDE 使用语言服务 RPC | ✅ |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | ✅ 官方 Credits |
 | Qoder | — | ✅ 官方 Credits |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 周 Credits（CLI 日志快照） |
