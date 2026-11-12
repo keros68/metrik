@@ -14,11 +14,24 @@ pub struct ModelTiming {
 
 /// A retried OTLP batch observes the same request. Never add its tokens to the
 /// usage ledger, or overwrite an established sample with conflicting metadata.
+#[cfg(test)]
 pub fn store_samples(
     connection: &mut Connection,
     samples: &[SpeedSample],
     now_ms: i64,
 ) -> Result<()> {
+    store_samples_with_prune(connection, samples, now_ms, true)
+}
+
+pub fn store_samples_with_prune(
+    connection: &mut Connection,
+    samples: &[SpeedSample],
+    now_ms: i64,
+    prune_expired: bool,
+) -> Result<()> {
+    if samples.is_empty() && !prune_expired {
+        return Ok(());
+    }
     let transaction = connection.transaction()?;
     for sample in samples {
         if !matches!(sample.agent.as_str(), "claude" | "codex")
@@ -51,10 +64,12 @@ pub fn store_samples(
             ],
         )?;
     }
-    transaction.execute(
-        "DELETE FROM response_speed_sample WHERE occurred_at_ms < ?1",
-        [now_ms.saturating_sub(RETENTION_MS)],
-    )?;
+    if prune_expired {
+        transaction.execute(
+            "DELETE FROM response_speed_sample WHERE occurred_at_ms < ?1",
+            [now_ms.saturating_sub(RETENTION_MS)],
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }

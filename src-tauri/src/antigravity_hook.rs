@@ -115,11 +115,15 @@ fn reset_time_ms(entry: &Value, now_ms: i64) -> Option<i64> {
 }
 
 /// 状态栏文本的额度段：`Gemini 每周 94% · Gemini 5h 88%`。
-fn quota_parts(payload: &QuotaFile) -> Vec<String> {
+fn quota_parts(payload: &QuotaFile) -> Vec<statusline::QuotaPart> {
     payload
         .windows
         .iter()
-        .map(|(key, window)| format!("{} {:.0}%", window_label(key), window.remaining_percent))
+        .map(|(key, window)| statusline::QuotaPart {
+            label: window_label(key),
+            value: format!("{:.0}%", window.remaining_percent),
+            remaining_percent: window.remaining_percent,
+        })
         .collect()
 }
 
@@ -265,10 +269,12 @@ fn windows_short_path(executable: &std::path::Path) -> Option<String> {
 /// `metrik --antigravity-hook`：agy 把会话 JSON 从 stdin 推进来，这里提取额度
 /// 落盘，并把状态栏文本写到 stdout。
 pub fn run_hook() {
+    let style = statusline::Style::from_env();
     statusline::run(|input| {
         render_hook_statusline(
             &AntigravityHook::detected(),
             input,
+            style,
             std::time::Duration::from_secs(10),
         )
     });
@@ -277,6 +283,7 @@ pub fn run_hook() {
 fn render_hook_statusline(
     hook: &AntigravityHook,
     input: &[u8],
+    style: statusline::Style,
     delegate_timeout: std::time::Duration,
 ) -> String {
     let metadata = hook.read_metadata();
@@ -284,17 +291,18 @@ fn render_hook_statusline(
     let payload = data
         .as_ref()
         .map(|value| payload_from_input(value, chrono::Utc::now().timestamp_millis()));
-    let quota_text = payload
-        .as_ref()
-        .map(quota_parts)
-        .unwrap_or_default()
-        .join(" · ");
+    let quota = payload.as_ref().map(quota_parts).unwrap_or_default();
     statusline::render(
         metadata.as_ref(),
         input,
         payload.and_then(|payload| serde_json::to_vec(&payload).ok()),
-        &quota_text,
-        statusline::model_name(data.as_ref(), "Antigravity"),
+        &statusline::RenderContent {
+            model: statusline::model_name(data.as_ref(), "Antigravity"),
+            workspace: statusline::workspace_info(data.as_ref()),
+            quota: &quota,
+            quota_joiner: " · ",
+            style,
+        },
         delegate_timeout,
     )
 }
@@ -546,7 +554,51 @@ mod tests {
             .collect(),
         };
         let parts = quota_parts(&file);
-        assert!(parts.contains(&"Gemini 每周 94%".to_owned()));
-        assert!(parts.contains(&"Gemini 5h 88%".to_owned()));
+        let formatted = statusline::format_quota(&parts, " · ", statusline::Style::PLAIN);
+        assert_eq!(formatted, "Gemini 5h 88% · Gemini 每周 94%");
+    }
+
+    #[test]
+    fn hook_statusline_renders_project_directory_branch_and_ansi_colors() {
+        let test = TestDirectory::new("render");
+        let hook = AntigravityHook::with_dir(test.path().to_path_buf());
+        hook.install().unwrap();
+
+        let payload = br#"{
+            "model": {"display_name": "Gemini 4 Carbon (High)"},
+            "workspace": {
+                "current_dir": "F:\\OneDrive\\19-\u793a\u4f8b\u8bfe\u9898\u6587\u6863",
+                "project_dir": "F:\\OneDrive\\19-\u793a\u4f8b\u8bfe\u9898\u6587\u6863"
+            },
+            "vcs": {"branch": "master", "dirty": true},
+            "quota": {
+                "3p-5h": {"remaining_fraction": 1.0},
+                "3p-weekly": {"remaining_fraction": 1.0},
+                "gemini-5h": {"remaining_fraction": 0.90},
+                "gemini-weekly": {"remaining_fraction": 0.97}
+            }
+        }"#;
+
+        let plain = render_hook_statusline(
+            &hook,
+            payload,
+            statusline::Style::PLAIN,
+            std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            plain,
+            "Gemini 4 Carbon (High) | 19-示例课题文档 (master*) | 3p 5h 100% · 3p 每周 100% · Gemini 5h 90% · Gemini 每周 97%"
+        );
+
+        let colored = render_hook_statusline(
+            &hook,
+            payload,
+            statusline::Style::ANSI,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(colored.contains("\x1b[94mGemini 4 Carbon (High)\x1b[0m"));
+        assert!(colored.contains("\x1b[36m19-示例课题文档\x1b[0m"));
+        assert!(colored.contains("\x1b[32m(master\x1b[91m*\x1b[32m)\x1b[0m"));
+        assert!(hook.quota_path().exists());
     }
 }

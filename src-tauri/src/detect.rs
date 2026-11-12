@@ -11,10 +11,11 @@
 //! 路径取自各 adapter 的 `discover()`，不另猜一套：改了那边这里要跟着改，
 //! `probe_paths_match_adapter_roots` 会在偏离时失败。
 
+use crate::adapters::{antigravity_data_dirs, kimi_code_dir, opencode_data_dir};
 use crate::coding_quota;
 use std::path::PathBuf;
 
-/// 一个 Agent 的安装探针。三种形态对应三类来源，与各 adapter 的取数方式一致。
+/// 一个 Agent 的安装探针。两种形态对应两类来源，与各 adapter 的取数方式一致。
 pub enum Probe {
     /// 任一路径存在即算装了。路径已按平台解析成绝对路径。
     Paths(Vec<PathBuf>),
@@ -22,9 +23,6 @@ pub enum Probe {
     /// pi auth.json 里有没有百炼 Token Plan 的 key；opencode 兼容"OpenCode
     /// 本体没装、只在 pi 里挂 Go 套餐"的形态）。
     Credential(fn() -> bool),
-    /// 没有便宜且可靠的安装痕迹。此类 Agent 只能靠"本周期有用量"反推，
-    /// 由调用方补上，这里如实返回"未知"而不是猜一个路径。
-    Unknown,
 }
 
 pub struct AgentProbe {
@@ -34,23 +32,6 @@ pub struct AgentProbe {
 
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_default()
-}
-
-/// OpenCode 的数据根：与 `OpencodeAdapter::detected()` 同一套解析。
-fn opencode_data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|value| value.is_absolute())
-        .unwrap_or_else(|| home().join(".local").join("share"))
-        .join("opencode")
-}
-
-/// Kimi 的数据根：与 `KimiAdapter::detected()` 同一套解析。
-fn kimi_code_dir() -> PathBuf {
-    std::env::var_os("KIMI_CODE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| home().join(".kimi-code"))
 }
 
 pub fn table() -> Vec<AgentProbe> {
@@ -90,10 +71,9 @@ pub fn table() -> Vec<AgentProbe> {
             ]),
         },
         AgentProbe {
-            // Antigravity 只在 IDE 运行时才有 language server 端点，扫进程与
-            // 试端口都太贵，不适合每次开设置页都跑一遍。
+            // 桌面版、独立 IDE 与 CLI（agy）的数据目录，与 AntigravityAdapter::detected() 同源。
             id: "antigravity",
-            probe: Probe::Unknown,
+            probe: Probe::Paths(antigravity_data_dirs()),
         },
         AgentProbe {
             id: "workbuddy",
@@ -165,7 +145,6 @@ pub fn installed_agents() -> Vec<&'static str> {
         .filter(|entry| match &entry.probe {
             Probe::Paths(paths) => paths.iter().any(|path| path.exists()),
             Probe::Credential(check) => check(),
-            Probe::Unknown => false,
         })
         .map(|entry| entry.id)
         .collect()
@@ -256,15 +235,6 @@ mod tests {
             paths(by_id("grokbot")),
             vec![crate::adapters::grokbot_data_dir()]
         );
-    }
-
-    #[test]
-    fn unknown_probe_never_claims_installed() {
-        let antigravity = table()
-            .into_iter()
-            .find(|entry| entry.id == "antigravity")
-            .expect("表里应有 antigravity");
-        assert!(matches!(antigravity.probe, Probe::Unknown));
-        assert!(!installed_agents().contains(&"antigravity"));
+        assert_eq!(paths(by_id("antigravity")), antigravity_data_dirs());
     }
 }

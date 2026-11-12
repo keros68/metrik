@@ -113,16 +113,18 @@ fn payload_from_input(input: &Value) -> StatusLinePayload {
     }
 }
 
-fn quota_parts(payload: &StatusLinePayload) -> Vec<String> {
+fn quota_parts(payload: &StatusLinePayload) -> Vec<statusline::QuotaPart> {
     let Some(windows) = payload.windows.as_ref() else {
         return Vec::new();
     };
     [("five_hour", "5h"), ("seven_day", "7d")]
         .into_iter()
         .filter_map(|(key, label)| {
-            windows
-                .get(key)
-                .map(|window| format!("{label} {:.0}%", window.used_percentage))
+            windows.get(key).map(|window| statusline::QuotaPart {
+                label: label.to_owned(),
+                value: format!("{:.0}%", window.used_percentage),
+                remaining_percent: 100.0 - window.used_percentage,
+            })
         })
         .collect()
 }
@@ -130,31 +132,35 @@ fn quota_parts(payload: &StatusLinePayload) -> Vec<String> {
 fn render_statusline(
     hook: &ClaudeHook,
     input: &[u8],
+    style: statusline::Style,
     delegate_timeout: std::time::Duration,
 ) -> String {
     let metadata = hook.read_metadata();
     let data = serde_json::from_slice::<Value>(input).ok();
     let payload = data.as_ref().map(payload_from_input);
-    let quota_text = payload
-        .as_ref()
-        .map(quota_parts)
-        .unwrap_or_default()
-        .join(" ");
+    let quota = payload.as_ref().map(quota_parts).unwrap_or_default();
     statusline::render(
         metadata.as_ref(),
         input,
         payload.and_then(|payload| serde_json::to_vec(&payload).ok()),
-        &quota_text,
-        statusline::model_name(data.as_ref(), "Claude"),
+        &statusline::RenderContent {
+            model: statusline::model_name(data.as_ref(), "Claude"),
+            workspace: statusline::workspace_info(data.as_ref()),
+            quota: &quota,
+            quota_joiner: " ",
+            style,
+        },
         delegate_timeout,
     )
 }
 
 pub fn run_statusline() {
+    let style = statusline::Style::from_env();
     statusline::run(|input| {
         render_statusline(
             &ClaudeHook::detected(),
             input,
+            style,
             std::time::Duration::from_secs(10),
         )
     });
@@ -461,7 +467,12 @@ mod tests {
 
     /// 在隔离环境里运行原生 statusLine 逻辑。
     fn run_native(hook: &ClaudeHook, payload: &[u8]) -> String {
-        render_statusline(hook, payload, std::time::Duration::from_secs(10))
+        render_statusline(
+            hook,
+            payload,
+            statusline::Style::PLAIN,
+            std::time::Duration::from_secs(10),
+        )
     }
 
     /// 回归：额度落盘位置必须是安装元数据保存的绝对路径。
@@ -693,7 +704,7 @@ Wait-Process -Id $child.Id
         // PowerShell and record the descendant before the process tree is terminated.
         let delegate_timeout = Duration::from_secs(10);
         let started = Instant::now();
-        let output = render_statusline(&hook, b"{}", delegate_timeout);
+        let output = render_statusline(&hook, b"{}", statusline::Style::PLAIN, delegate_timeout);
         assert_eq!(output, "");
         assert!(started.elapsed() < delegate_timeout + Duration::from_secs(4));
 
@@ -745,7 +756,7 @@ Wait-Process -Id $child.Id
 
         let delegate_timeout = Duration::from_secs(3);
         let started = Instant::now();
-        let output = render_statusline(&hook, b"{}", delegate_timeout);
+        let output = render_statusline(&hook, b"{}", statusline::Style::PLAIN, delegate_timeout);
         assert_eq!(output, "");
         assert!(started.elapsed() < delegate_timeout + Duration::from_secs(4));
 
@@ -1111,5 +1122,48 @@ Wait-Process -Id $child.Id
         let samples = hook.quota_samples();
         assert_eq!(samples[0].resets_at_ms, Some(1_784_945_748_000));
         assert_eq!(samples[1].resets_at_ms, Some(1_785_197_748_000));
+    }
+
+    #[test]
+    fn native_statusline_includes_project_directory_and_git_branch() {
+        let test = TestDirectory::new("workspace");
+        let repo = test.path().join("metrik-demo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let hook = ClaudeHook::with_dir(test.path().join("cfg"));
+        fs::create_dir_all(test.path().join("cfg")).unwrap();
+        hook.install().unwrap();
+
+        let payload = json!({
+            "model": {"display_name": "Sonnet 5.5"},
+            "workspace": {
+                "current_dir": repo.to_string_lossy(),
+                "project_dir": repo.to_string_lossy(),
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 42},
+                "seven_day": {"used_percentage": 88}
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            run_native(&hook, payload.as_bytes()),
+            "Sonnet 5.5 | metrik-demo (main) | 5h 42% 7d 88%"
+        );
+
+        let colored = render_statusline(
+            &hook,
+            payload.as_bytes(),
+            statusline::Style::ANSI,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(colored.contains("\x1b[94mSonnet 5.5\x1b[0m"));
+        assert!(colored.contains("\x1b[36mmetrik-demo\x1b[0m"));
+        assert!(colored.contains("\x1b[32m(main)\x1b[0m"));
+        // 58% remaining -> green; 12% remaining -> warn yellow.
+        assert!(colored.contains("\x1b[32m42%\x1b[0m"));
+        assert!(colored.contains("\x1b[33m88%\x1b[0m"));
     }
 }

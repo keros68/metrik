@@ -387,7 +387,7 @@ mod tests {
             assert_eq!(event.tokens.processed(), 100 + output, "{id}");
             assert_eq!(event.tokens.output, output, "{id}");
             assert_eq!(event.event_id, previous_event.event_id, "{id}");
-            assert_eq!(event.payload_hash, previous_event.payload_hash, "{id}");
+            assert!(event.same_measured_payload(&previous_event), "{id}");
         }
         let bad_start = scan
             .source

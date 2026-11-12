@@ -299,6 +299,7 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("GLM-5.2", "glm-5.2"),
     ("GLM-5.3", "glm-5.3"),
     ("GLM-5.3-Flash", "glm-5.3-flash"),
+    ("GLM-5.3-FlashX", "glm-5.3-flashx"),
     ("kimi-code/k3", "kimi-k3"),
     ("kimi-code/k3-256k", "kimi-k3"),
     ("k3", "kimi-k3"),
@@ -306,6 +307,10 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("kimi-code/k3.1-pro-highspeed", "kimi-k3.1-pro-highspeed"),
     ("k3.1-pro", "kimi-k3.1-pro"),
     ("k3.1-pro-highspeed", "kimi-k3.1-pro-highspeed"),
+    (
+        "kimi-code/kimi-for-coding-highspeed",
+        "kimi-k2.7-code-highspeed",
+    ),
     ("kimi-for-coding-highspeed", "kimi-k2.7-code-highspeed"),
     ("grok-4.5-build", "grok-4.5"),
     ("codex-auto-review", "gpt-5.4"),
@@ -366,19 +371,39 @@ pub fn price_for_request(
 }
 
 /// 归一到表里的规范名，连同标准价一起返回。规范名（而不是调用方传进来的
-/// 别名）才是查分时定价的依据。
-fn resolve(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
+/// 别名）才是查分时定价的依据。仅对完整模型名做大小写无关的精确匹配，
+/// 绝不做前缀或跨模型猜测。
+fn resolve(model: &str, occurred_at_ms: i64) -> Option<(&'static str, Pricing)> {
     // 别名先归一（版本名 deepseek-v4-flash-0731 → deepseek-v4-flash），
     // 再看归一后的名字在这一刻是否已下线改路由。
     let model = subscription_alias(model).unwrap_or(model);
     exact(model, occurred_at_ms).or_else(|| {
-        let canonical = PRICING_ALIASES
-            .binary_search_by(|(alias, _)| (*alias).cmp(model))
-            .ok()
-            .map(|index| PRICING_ALIASES[index].1)
-            .or_else(|| strip_date_suffix(model))?;
+        let canonical = pricing_alias(model).or_else(|| strip_date_suffix(model))?;
         exact(canonical, occurred_at_ms)
     })
+}
+
+/// 若模型名只是第一方价格表里某个官方模型 ID 的大小写变体（如 `GLM-5.3` / `glm-5.3`、
+/// `minimax-m3.1-flash` / `MiniMax-M3.1-Flash`），返回表内的官方拼写，供聚合展示去重。
+/// 不把订阅专属 ID（如 `kimi-code/k3` 与 `kimi-code/k3-256k`）合并成同一个展示名，
+/// 也不剥离 `-YYYYMMDD` 日期快照。
+pub fn canonical_model_spelling(model: &str) -> Option<&'static str> {
+    MANUAL_PRICING
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(model))
+        .map(|(name, _)| *name)
+        .or_else(|| {
+            PRICING_TABLE
+                .binary_search_by(|(name, _)| (*name).cmp(model))
+                .ok()
+                .map(|index| PRICING_TABLE[index].0)
+        })
+        .or_else(|| {
+            PRICING_TABLE
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(model))
+                .map(|(name, _)| *name)
+        })
 }
 
 /// DeepSeek 峰段是 01:00–04:00 与 06:00–10:00 UTC（左闭右开）、且只在周一至
@@ -425,40 +450,60 @@ fn in_beijing_holiday(occurred_at_ms: i64) -> bool {
     })
 }
 
-fn exact(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
+fn exact(model: &str, occurred_at_ms: i64) -> Option<(&'static str, Pricing)> {
     let model = RETIRED_ROUTES
         .iter()
-        .find(|(retired, from_ms, _)| *retired == model && occurred_at_ms >= *from_ms)
+        .find(|(retired, from_ms, _)| {
+            retired.eq_ignore_ascii_case(model) && occurred_at_ms >= *from_ms
+        })
         .map_or(model, |&(_, _, target)| target);
-    if let Some(&(_, from_ms, before, after)) = SCHEDULED_PRICE_CHANGES
+    if let Some(&(changed, from_ms, before, after)) = SCHEDULED_PRICE_CHANGES
         .iter()
-        .find(|(changed, _, _, _)| *changed == model)
+        .find(|(changed, _, _, _)| changed.eq_ignore_ascii_case(model))
     {
         let price = if occurred_at_ms < from_ms {
             before
         } else {
             after
         };
-        return Some((model, price));
+        return Some((changed, price));
     }
     MANUAL_PRICING
         .iter()
-        .find(|(name, _)| *name == model)
-        .map(|(_, pricing)| *pricing)
+        .find(|(name, _)| name.eq_ignore_ascii_case(model))
+        .map(|&(name, pricing)| (name, pricing))
         .or_else(|| {
             PRICING_TABLE
                 .binary_search_by(|(name, _)| (*name).cmp(model))
                 .ok()
-                .map(|index| PRICING_TABLE[index].1)
+                .map(|index| PRICING_TABLE[index])
         })
-        .map(|pricing| (model, pricing))
+        .or_else(|| {
+            PRICING_TABLE
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(model))
+                .copied()
+        })
+}
+
+fn pricing_alias(model: &str) -> Option<&'static str> {
+    PRICING_ALIASES
+        .binary_search_by(|(alias, _)| (*alias).cmp(model))
+        .ok()
+        .map(|index| PRICING_ALIASES[index].1)
+        .or_else(|| {
+            PRICING_ALIASES
+                .iter()
+                .find(|(alias, _)| alias.eq_ignore_ascii_case(model))
+                .map(|(_, target)| *target)
+        })
 }
 
 /// 订阅别名只按全名命中（`kimi-code/k3` → `kimi-k3`），不做任何前缀猜测。
-fn subscription_alias(model: &str) -> Option<&str> {
+fn subscription_alias(model: &str) -> Option<&'static str> {
     SUBSCRIPTION_ALIASES
         .iter()
-        .find(|(alias, _)| *alias == model)
+        .find(|(alias, _)| alias.eq_ignore_ascii_case(model))
         .map(|(_, target)| *target)
 }
 
@@ -1126,5 +1171,43 @@ mod tests {
             resolve("gemini-2.5-flash", 1_796_083_200_000).unwrap().0,
             "gemini-3.5-flash-lite"
         );
+    }
+
+    #[test]
+    fn case_variants_and_prefixed_kimi_highspeed_resolve_without_prefix_guessing() {
+        let flashx = price_for("GLM-5.3-FlashX", ANY_TIME_MS).expect("GLM-5.3-FlashX priced");
+        let flashx_lower = price_for("glm-5.3-flashx", ANY_TIME_MS).unwrap();
+        assert_eq!(
+            (flashx.input, flashx.output),
+            (flashx_lower.input, flashx_lower.output)
+        );
+
+        let minimax =
+            price_for("minimax-m3.1-flash", ANY_TIME_MS).expect("lowercase minimax priced");
+        let minimax_official = price_for("MiniMax-M3.1-Flash", ANY_TIME_MS).unwrap();
+        assert_eq!(
+            (minimax.input, minimax.output),
+            (minimax_official.input, minimax_official.output)
+        );
+
+        let kimi_hs = price_for("kimi-code/kimi-for-coding-highspeed", ANY_TIME_MS)
+            .expect("prefixed kimi-for-coding-highspeed priced");
+        let kimi_k27_hs = price_for("kimi-k2.7-code-highspeed", ANY_TIME_MS).unwrap();
+        assert_eq!(
+            (kimi_hs.input, kimi_hs.output),
+            (kimi_k27_hs.input, kimi_k27_hs.output)
+        );
+
+        assert_eq!(canonical_model_spelling("GLM-5.3"), Some("glm-5.3"));
+        assert_eq!(
+            canonical_model_spelling("GLM-5.3-FlashX"),
+            Some("glm-5.3-flashx")
+        );
+        assert_eq!(
+            canonical_model_spelling("minimax-m3.1-flash"),
+            Some("MiniMax-M3.1-Flash")
+        );
+        assert_eq!(canonical_model_spelling("kimi-code/k3-256k"), None);
+        assert!(price_for("GLM-5.3-UnknownSuffix", ANY_TIME_MS).is_none());
     }
 }

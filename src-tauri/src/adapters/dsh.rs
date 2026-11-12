@@ -36,11 +36,27 @@
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
 use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
 use anyhow::Result;
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{value::RawValue, Value};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+#[derive(Deserialize, Default)]
+struct DshEnvelope {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    seq: Option<i64>,
+    time: Option<i64>,
+    id: Option<String>,
+    cwd: Option<String>,
+    #[serde(rename = "isSeeded")]
+    is_seeded: Option<bool>,
+    #[serde(rename = "seedLength")]
+    seed_length: Option<i64>,
+    data: Option<Box<RawValue>>,
+}
 
 pub struct DshAdapter {
     home: PathBuf,
@@ -287,28 +303,41 @@ fn parse_transcript(
         if text.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
+        let Ok(envelope) = serde_json::from_str::<DshEnvelope>(text) else {
             // 没有换行收尾的最后一行是正在写入的记录，不是坏行。
             if index != last_line || complete {
                 diagnostics.malformed_lines += 1;
             }
             continue;
         };
-        let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        let seq = value.get("seq").and_then(Value::as_i64);
-        let data = value.get("data").unwrap_or(&Value::Null);
+        let event_type = envelope.event_type.as_deref().unwrap_or("");
+        let seq = envelope.seq;
+        let parse_data = || -> Value {
+            envelope
+                .data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok())
+                .unwrap_or(Value::Null)
+        };
         match event_type {
             "session" => {
-                session_id = non_empty(value.get("id")).map(str::to_owned);
-                project = non_empty(value.get("cwd")).map(str::to_owned);
-                seeded = value.get("isSeeded").and_then(Value::as_bool) == Some(true);
-                legacy_seed_length = value
-                    .get("seedLength")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-                    .max(0);
+                session_id = envelope
+                    .id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                project = envelope
+                    .cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                seeded = envelope.is_seeded == Some(true);
+                legacy_seed_length = envelope.seed_length.unwrap_or(0).max(0);
             }
             "session/end-seed" => {
+                let data = parse_data();
                 if data.get("inherited").and_then(Value::as_bool) == Some(true) {
                     inherited_cut = seq.or(inherited_cut);
                 }
@@ -316,12 +345,14 @@ fn parse_transcript(
                 settlement = None;
             }
             "request/header" => {
+                let data = parse_data();
                 let config = data.pointer("/header/config");
                 route_provider =
                     non_empty(config.and_then(|c| c.get("provider"))).map(str::to_owned);
                 route_model = non_empty(config.and_then(|c| c.get("model"))).map(str::to_owned);
             }
             "llm/retry-started" => {
+                let data = parse_data();
                 let slot = data
                     .get("turn")
                     .and_then(Value::as_i64)
@@ -331,6 +362,8 @@ fn parse_transcript(
                 }
             }
             "assistant/message" | "assistant/attempt" | "compaction/summary" => {
+                let data = parse_data();
+                let data = &data;
                 let usage = match event_type {
                     "assistant/message" => data.get("usage").or_else(|| last_stream_usage(data)),
                     "assistant/attempt" => last_stream_usage(data),
@@ -364,11 +397,7 @@ fn parse_transcript(
                 if tokens.disagrees_with_reported_total(int_field(usage, "totalTokens")) {
                     diagnostics.total_mismatches += 1;
                 }
-                let Some(timestamp) = value
-                    .get("time")
-                    .and_then(Value::as_i64)
-                    .filter(|time| *time > 0)
-                else {
+                let Some(timestamp) = envelope.time.filter(|time| *time > 0) else {
                     continue;
                 };
 

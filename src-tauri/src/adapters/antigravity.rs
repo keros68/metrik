@@ -106,6 +106,18 @@ pub struct AntigravityAdapter {
     conversation_dirs: Vec<PathBuf>,
 }
 
+pub fn antigravity_data_dirs() -> Vec<PathBuf> {
+    let gemini = dirs::home_dir().unwrap_or_default().join(".gemini");
+    antigravity_data_dirs_in(&gemini)
+}
+
+fn antigravity_data_dirs_in(gemini: &Path) -> Vec<PathBuf> {
+    ["antigravity", "antigravity-ide", "antigravity-cli"]
+        .iter()
+        .map(|app| gemini.join(app))
+        .collect()
+}
+
 impl AntigravityAdapter {
     pub fn detected() -> Self {
         let gemini = dirs::home_dir().unwrap_or_default().join(".gemini");
@@ -114,9 +126,9 @@ impl AntigravityAdapter {
 
     fn from_gemini_dir(gemini: &Path) -> Self {
         Self {
-            conversation_dirs: ["antigravity", "antigravity-ide", "antigravity-cli"]
-                .iter()
-                .map(|app| gemini.join(app).join("conversations"))
+            conversation_dirs: antigravity_data_dirs_in(gemini)
+                .into_iter()
+                .map(|dir| dir.join("conversations"))
                 .collect(),
         }
     }
@@ -229,7 +241,7 @@ fn local_conversation_candidate(database: &Path, cutoff_ms: i64) -> Vec<SourceCa
             }
         }
         let hash = stable_hash(&fingerprint);
-        candidate.size = u64::from_str_radix(&hash[..16], 16).unwrap_or_default();
+        candidate.size = super::positive_hash_u64(&hash);
     }
     candidates
 }
@@ -1721,7 +1733,7 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert_eq!(rpc.len(), 1);
         assert_eq!(local[0].event_id, rpc[0].event_id);
-        assert_eq!(local[0].payload_hash, rpc[0].payload_hash);
+        assert!(local[0].same_measured_payload(&rpc[0]));
     }
 
     #[test]
@@ -2085,7 +2097,7 @@ mod tests {
         let after = &attributed.source.events[0];
         assert_eq!(after.project_path.as_deref(), Some("D:/work/project A"));
         assert_eq!(after.event_id, before.event_id);
-        assert_eq!(after.payload_hash, before.payload_hash);
+        assert!(after.same_measured_payload(before));
         assert_eq!(after.tokens, before.tokens);
         crate::storage::replace_source(&mut ledger, &attributed.source, 0).unwrap();
         // 读摘要 WAL 可能改写 SHM；这种读取不能让来源每轮都重新解析。

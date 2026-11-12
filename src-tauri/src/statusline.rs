@@ -402,14 +402,289 @@ pub(crate) fn model_name<'a>(data: Option<&'a Value>, fallback: &'a str) -> &'a 
         .unwrap_or(fallback)
 }
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BLUE: &str = "\x1b[94m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_RED: &str = "\x1b[91m";
+const ANSI_DIM: &str = "\x1b[90m";
+
+/// 状态栏输出样式：默认启用 16 色 ANSI 层次，显式设置非空 `NO_COLOR` 时退回纯文本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Style {
+    pub ansi: bool,
+}
+
+impl Style {
+    pub fn from_env() -> Self {
+        Self::from_no_color(std::env::var_os("NO_COLOR").as_deref())
+    }
+
+    pub(crate) fn from_no_color(no_color: Option<&std::ffi::OsStr>) -> Self {
+        Self {
+            ansi: no_color.is_none_or(|value| value.is_empty()),
+        }
+    }
+
+    #[cfg(test)]
+    pub const PLAIN: Self = Self { ansi: false };
+    #[cfg(test)]
+    pub const ANSI: Self = Self { ansi: true };
+
+    fn paint(self, code: &str, text: &str) -> String {
+        if self.ansi {
+            format!("{code}{text}{ANSI_RESET}")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    fn pipe(self) -> String {
+        if self.ansi {
+            format!(" {ANSI_DIM}|{ANSI_RESET} ")
+        } else {
+            " | ".to_owned()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceInfo {
+    pub directory: String,
+    pub branch: Option<String>,
+    pub dirty: bool,
+}
+
+impl WorkspaceInfo {
+    fn format(&self, style: Style) -> String {
+        let dir = style.paint(ANSI_CYAN, &self.directory);
+        let Some(branch) = self.branch.as_deref() else {
+            return dir;
+        };
+        if style.ansi {
+            if self.dirty {
+                format!("{dir} {ANSI_GREEN}({branch}{ANSI_RED}*{ANSI_GREEN}){ANSI_RESET}")
+            } else {
+                format!("{dir} {ANSI_GREEN}({branch}){ANSI_RESET}")
+            }
+        } else if self.dirty {
+            format!("{dir} ({branch}*)")
+        } else {
+            format!("{dir} ({branch})")
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuotaPart {
+    pub label: String,
+    pub value: String,
+    /// 剩余百分比（0–100），对齐桌面端 `quotaSeverity`（≤5% 告急红、≤15% 提醒黄、其余绿）。
+    pub remaining_percent: f64,
+}
+
+pub(crate) struct RenderContent<'a> {
+    pub model: &'a str,
+    pub workspace: Option<WorkspaceInfo>,
+    pub quota: &'a [QuotaPart],
+    pub quota_joiner: &'a str,
+    pub style: Style,
+}
+
+/// 从会话 JSON 提取项目目录与 Git 分支；载荷未带 `vcs.branch` 时只读本机 `.git/HEAD` 兜底。
+pub(crate) fn workspace_info(data: Option<&Value>) -> Option<WorkspaceInfo> {
+    workspace_info_with_home(data, dirs::home_dir().as_deref())
+}
+
+pub(crate) fn workspace_info_with_home(
+    data: Option<&Value>,
+    home_dir: Option<&Path>,
+) -> Option<WorkspaceInfo> {
+    let data = data?;
+    let workspace = data.get("workspace");
+    let project_dir = workspace
+        .and_then(|value| value.get("project_dir"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let current_dir = workspace
+        .and_then(|value| value.get("current_dir"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let cwd = data
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+
+    let display_source = project_dir.or(current_dir).or(cwd)?;
+    let directory = sanitize_inline(&directory_label(display_source, home_dir)?);
+    if directory.is_empty() {
+        return None;
+    }
+
+    let vcs = data.get("vcs");
+    let dirty = vcs
+        .and_then(|value| value.get("dirty"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let branch = vcs
+        .and_then(|value| value.get("branch"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            [current_dir, project_dir, cwd]
+                .into_iter()
+                .flatten()
+                .find_map(|dir| git_head_branch(Path::new(dir)))
+        })
+        .map(|branch| sanitize_inline(&branch))
+        .filter(|branch| !branch.is_empty());
+
+    Some(WorkspaceInfo {
+        directory,
+        branch,
+        dirty,
+    })
+}
+
+fn sanitize_inline(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_control()).collect()
+}
+
+fn directory_label(raw_dir: &str, home_dir: Option<&Path>) -> Option<String> {
+    let normalized = crate::domain::normalize_project_path(raw_dir)?;
+    if let Some(home) =
+        home_dir.and_then(|dir| crate::domain::normalize_project_path(&dir.to_string_lossy()))
+    {
+        let same_home = if cfg!(any(windows, target_os = "macos")) {
+            normalized.eq_ignore_ascii_case(&home)
+        } else {
+            normalized == home
+        };
+        if same_home {
+            return Some("~".to_owned());
+        }
+    }
+    if normalized == "/" || normalized.ends_with(":/") {
+        return Some(normalized);
+    }
+    Some(
+        normalized
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(&normalized)
+            .to_owned(),
+    )
+}
+
+fn is_network_or_unc_path(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    raw.starts_with(r"\\") || raw.starts_with("//")
+}
+
+/// 沿父目录向上读取 `.git/HEAD`（兼容常规仓库与 worktree/submodule 的 `.git` 指针文件），
+/// 不拉起任何 `git` 子进程；跳过 UNC 网络路径以避免 Windows SMB 超时阻塞状态栏。
+pub(crate) fn git_head_branch(start: &Path) -> Option<String> {
+    if is_network_or_unc_path(start) || !start.exists() {
+        return None;
+    }
+    let mut current = if start.is_file() {
+        start.parent()
+    } else {
+        Some(start)
+    };
+    while let Some(dir) = current {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return parse_git_head(&dot_git.join("HEAD"));
+        }
+        if dot_git.is_file() {
+            let pointer = std::fs::read_to_string(&dot_git).ok()?;
+            let raw_gitdir = pointer
+                .lines()
+                .find_map(|line| line.strip_prefix("gitdir:"))?
+                .trim();
+            if raw_gitdir.is_empty() {
+                return None;
+            }
+            let git_dir = Path::new(raw_gitdir);
+            let resolved = if git_dir.is_absolute() {
+                git_dir.to_path_buf()
+            } else {
+                dir.join(git_dir)
+            };
+            if is_network_or_unc_path(&resolved) {
+                return None;
+            }
+            return parse_git_head(&resolved.join("HEAD"));
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn parse_git_head(head_path: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(head_path).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref:") {
+        let reference = reference.trim();
+        let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        return (!branch.is_empty()).then(|| branch.to_owned());
+    }
+    if head.len() >= 7 && head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some(head[..7].to_owned());
+    }
+    None
+}
+
+fn quota_value_color(remaining_percent: f64) -> &'static str {
+    if remaining_percent <= 5.0 {
+        ANSI_RED
+    } else if remaining_percent <= 15.0 {
+        ANSI_YELLOW
+    } else {
+        ANSI_GREEN
+    }
+}
+
+pub(crate) fn format_quota(parts: &[QuotaPart], joiner: &str, style: Style) -> String {
+    if parts.is_empty() {
+        return String::new();
+    }
+    let separator = if style.ansi && !joiner.trim().is_empty() {
+        let leading = &joiner[..joiner.len() - joiner.trim_start().len()];
+        let trailing = &joiner[joiner.trim_end().len()..];
+        format!("{leading}{ANSI_DIM}{}{ANSI_RESET}{trailing}", joiner.trim())
+    } else {
+        joiner.to_owned()
+    };
+    parts
+        .iter()
+        .map(|part| {
+            if style.ansi {
+                let label = style.paint(ANSI_DIM, &part.label);
+                let value = style.paint(quota_value_color(part.remaining_percent), &part.value);
+                format!("{label} {value}")
+            } else {
+                format!("{} {}", part.label, part.value)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(&separator)
+}
+
 /// 落盘额度快照，再渲染状态栏：有串联命令时执行它，单行输出在行尾追加额度，
-/// 多行输出原样透传（多行 statusLine 自带排版）；没有串联时显示模型名与额度。
+/// 多行输出原样透传（多行 statusLine 自带排版）；没有串联时显示模型名、项目目录与额度。
 pub(crate) fn render(
     metadata: Option<&StatusLineMetadata>,
     input: &[u8],
     payload: Option<Vec<u8>>,
-    quota_text: &str,
-    model: &str,
+    content: &RenderContent<'_>,
     delegate_timeout: std::time::Duration,
 ) -> String {
     if let Some(metadata) = metadata {
@@ -428,25 +703,32 @@ pub(crate) fn render(
         }
     }
 
+    let style = content.style;
+    let quota_text = format_quota(content.quota, content.quota_joiner, style);
+
     if let Some(delegate) = metadata
         .map(|metadata| metadata.delegate.trim())
         .filter(|delegate| !delegate.is_empty())
     {
         let delegated = run_delegate(delegate, input, delegate_timeout);
         if delegated.is_empty() {
-            return quota_text.to_owned();
+            return quota_text;
         }
         if !delegated.contains('\r') && !delegated.contains('\n') && !quota_text.is_empty() {
-            return format!("{delegated} | {quota_text}");
+            return format!("{delegated}{}{quota_text}", style.pipe());
         }
         return delegated;
     }
 
-    if quota_text.is_empty() {
-        model.to_owned()
-    } else {
-        format!("{model} | {quota_text}")
+    let model = sanitize_inline(content.model);
+    let mut segments = vec![style.paint(ANSI_BLUE, &model)];
+    if let Some(workspace) = &content.workspace {
+        segments.push(workspace.format(style));
     }
+    if !quota_text.is_empty() {
+        segments.push(quota_text);
+    }
+    segments.join(&style.pipe())
 }
 
 /// 读取钩子自己的 JSON 文件（额度快照、元数据、备份）；缺失或损坏返回 None。
@@ -677,4 +959,225 @@ pub(crate) fn run_delegate(delegate: &str, input: &[u8], timeout: std::time::Dur
     String::from_utf8_lossy(&bytes)
         .trim_end_matches(['\r', '\n'])
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::fs;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "metrik-statusline-{label}-{}-{}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ));
+            fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn strip_ansi(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && chars.peek() == Some(&'[') {
+                let _ = chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn no_color_env_disables_ansi_only_when_non_empty() {
+        assert!(Style::from_no_color(None).ansi);
+        assert!(Style::from_no_color(Some(OsStr::new(""))).ansi);
+        assert!(!Style::from_no_color(Some(OsStr::new("1"))).ansi);
+        assert!(!Style::from_no_color(Some(OsStr::new("true"))).ansi);
+    }
+
+    #[test]
+    fn workspace_extracts_project_dir_fallbacks_and_vcs_dirty_branch() {
+        let input = json!({
+            "cwd": r"F:\OneDrive\19-示例课题文档\chapters",
+            "workspace": {
+                "current_dir": r"F:\OneDrive\19-示例课题文档\chapters",
+                "project_dir": r"F:\OneDrive\19-示例课题文档\"
+            },
+            "vcs": {
+                "branch": "master",
+                "dirty": true
+            }
+        });
+        let info =
+            workspace_info_with_home(Some(&input), Some(Path::new("C:/Users/tester"))).unwrap();
+        assert_eq!(
+            info,
+            WorkspaceInfo {
+                directory: "19-示例课题文档".to_owned(),
+                branch: Some("master".to_owned()),
+                dirty: true,
+            }
+        );
+
+        let cwd_only = json!({ "cwd": "/Users/tester/work/metrik/" });
+        let fallback =
+            workspace_info_with_home(Some(&cwd_only), Some(Path::new("/Users/tester"))).unwrap();
+        assert_eq!(fallback.directory, "metrik");
+        assert_eq!(fallback.branch, None);
+
+        let at_home = json!({ "workspace": { "project_dir": "C:\\Users\\tester\\" } });
+        let home_info =
+            workspace_info_with_home(Some(&at_home), Some(Path::new("C:/Users/tester"))).unwrap();
+        assert_eq!(home_info.directory, "~");
+    }
+
+    #[test]
+    fn git_head_fallback_reads_repo_nested_subdir_worktree_and_detached_sha() {
+        let test = TestDirectory::new("githead");
+        let repo = test.path().join("usage");
+        let nested = repo.join("src-tauri").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(
+            repo.join(".git").join("HEAD"),
+            "ref: refs/heads/feat/statusline\n",
+        )
+        .unwrap();
+
+        let input = json!({
+            "workspace": {
+                "current_dir": nested.to_string_lossy(),
+                "project_dir": repo.to_string_lossy(),
+            }
+        });
+        let info = workspace_info_with_home(Some(&input), None).unwrap();
+        assert_eq!(info.directory, "usage");
+        assert_eq!(info.branch.as_deref(), Some("feat/statusline"));
+        assert!(!info.dirty);
+
+        // Detached HEAD -> short 7-char SHA.
+        fs::write(
+            repo.join(".git").join("HEAD"),
+            "090c433deadbeef1234567890abcdef123456789\n",
+        )
+        .unwrap();
+        assert_eq!(git_head_branch(&nested).as_deref(), Some("090c433"));
+
+        // Worktree: `.git` is a pointer file referencing a separate gitdir.
+        let worktree = test.path().join("usage-wt");
+        let wt_gitdir = repo.join(".git").join("worktrees").join("usage-wt");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::create_dir_all(&wt_gitdir).unwrap();
+        fs::write(wt_gitdir.join("HEAD"), "ref: refs/heads/wt-branch\r\n").unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", wt_gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(git_head_branch(&worktree).as_deref(), Some("wt-branch"));
+
+        // UNC paths are skipped immediately without touching SMB.
+        assert_eq!(git_head_branch(Path::new(r"\\192.0.2.1\share\repo")), None);
+    }
+
+    #[test]
+    fn ansi_and_plain_render_keep_identical_visible_text_and_color_hierarchy() {
+        let quota = vec![
+            QuotaPart {
+                label: "3p 5h".into(),
+                value: "100%".into(),
+                remaining_percent: 100.0,
+            },
+            QuotaPart {
+                label: "Gemini 5h".into(),
+                value: "12%".into(),
+                remaining_percent: 12.0,
+            },
+            QuotaPart {
+                label: "Gemini 每周".into(),
+                value: "4%".into(),
+                remaining_percent: 4.0,
+            },
+        ];
+        let workspace = Some(WorkspaceInfo {
+            directory: "19-示例课题文档".into(),
+            branch: Some("master".into()),
+            dirty: true,
+        });
+        let plain = render(
+            None,
+            b"{}",
+            None,
+            &RenderContent {
+                model: "Gemini 4 Carbon (High)",
+                workspace: workspace.clone(),
+                quota: &quota,
+                quota_joiner: " · ",
+                style: Style::PLAIN,
+            },
+            std::time::Duration::from_secs(1),
+        );
+        let colored = render(
+            None,
+            b"{}",
+            None,
+            &RenderContent {
+                model: "Gemini 4 Carbon (High)",
+                workspace,
+                quota: &quota,
+                quota_joiner: " · ",
+                style: Style::ANSI,
+            },
+            std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            plain,
+            "Gemini 4 Carbon (High) | 19-示例课题文档 (master*) | 3p 5h 100% · Gemini 5h 12% · Gemini 每周 4%"
+        );
+        assert_eq!(strip_ansi(&colored), plain);
+        // Model = bright blue, dir = cyan, branch = green, dirty `*` = red, separators = dim,
+        // quota values = green (>15%), yellow (<=15%), red (<=5%).
+        assert!(colored.contains("\x1b[94mGemini 4 Carbon (High)\x1b[0m"));
+        assert!(colored.contains("\x1b[36m19-示例课题文档\x1b[0m"));
+        assert!(colored.contains("\x1b[32m(master\x1b[91m*\x1b[32m)\x1b[0m"));
+        assert!(colored.contains("\x1b[90m|\x1b[0m"));
+        assert!(colored.contains("\x1b[90m·\x1b[0m"));
+        assert!(colored.contains("\x1b[32m100%\x1b[0m"));
+        assert!(colored.contains("\x1b[33m12%\x1b[0m"));
+        assert!(colored.contains("\x1b[91m4%\x1b[0m"));
+    }
+
+    #[test]
+    fn control_characters_in_untrusted_names_are_stripped() {
+        let input = json!({
+            "workspace": { "project_dir": "/tmp/clean\x1b[31mdir" },
+            "vcs": { "branch": "main\n\x1b]52;c;evil\x07" }
+        });
+        let info = workspace_info_with_home(Some(&input), None).unwrap();
+        assert!(!info.directory.chars().any(char::is_control));
+        assert!(!info.branch.unwrap().chars().any(char::is_control));
+    }
 }

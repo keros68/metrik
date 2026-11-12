@@ -68,6 +68,7 @@ struct WidgetAgent<'a> {
     id: &'a str,
     label: &'static str,
     tokens: i64,
+    binding_window_key: Option<&'a str>,
     windows: Vec<WidgetQuotaWindow<'a>>,
 }
 
@@ -101,17 +102,22 @@ fn make_payload<'a>(
     let agents = selected
         .iter()
         .map(|agent| {
-            let windows = snapshot
+            let (binding_window_key, windows) = snapshot
                 .agent_quotas
                 .iter()
                 .find(|quota| quota.agent == agent.id)
                 .map(|quota| {
-                    quota
-                        .windows
-                        .iter()
-                        // 余额窗口（balance_*）存的是金额不是百分比，小组件圆环
-                        // 无法表达，不喂给小组件。
-                        .filter(|window| !window.key.starts_with("balance"))
+                    // 余额窗口（balance_*）存的是金额不是百分比，小组件圆环
+                    // 无法表达，不喂给小组件。
+                    let non_balance = || {
+                        quota
+                            .windows
+                            .iter()
+                            .filter(|window| !crate::domain::is_balance_window(&window.key))
+                    };
+                    let binding_key = crate::domain::binding_quota_window(non_balance())
+                        .map(|window| window.key.as_str());
+                    let windows = non_balance()
                         .map(|window| WidgetQuotaWindow {
                             key: &window.key,
                             // WidgetKit 扩展只有中文界面，窗口名也固定用中文。
@@ -127,13 +133,15 @@ fn make_payload<'a>(
                             reset_expired: window.view.reset_expired,
                             quality: &window.view.quality,
                         })
-                        .collect()
+                        .collect();
+                    (binding_key, windows)
                 })
                 .unwrap_or_default();
             WidgetAgent {
                 id: &agent.id,
                 label: crate::domain::agent_label(&agent.id),
                 tokens: agent.tokens,
+                binding_window_key,
                 windows,
             }
         })

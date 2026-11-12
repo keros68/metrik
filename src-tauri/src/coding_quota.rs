@@ -94,6 +94,28 @@ const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
 // ── 拉取入口（供 engine 层带缓存调用） ─────────────────────────
 
+/// 进程级按超时桶复用 `ureq::Agent`（共享 TLS 根证书加载与解析器配置），
+/// 但关闭跨请求空闲连接池（`max_idle_connections(0)`）：配额刷新间隔为分钟级，
+/// 远超常见服务端 keep-alive 超时，而 `ureq 2.x` 对 `POST` 请求在已断连的复用套接字上
+/// 不会自动重试（如 `fetch_kimiwork_quota` 等只读 RPC）。
+fn http_agent(timeout: Duration) -> ureq::Agent {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    let build = || {
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .max_idle_connections(0)
+            .build()
+    };
+    static AGENTS: OnceLock<Mutex<HashMap<Duration, ureq::Agent>>> = OnceLock::new();
+    let pool = AGENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = pool.lock() {
+        return guard.entry(timeout).or_insert_with(build).clone();
+    }
+    build()
+}
+
 /// 多个来源都可能有 GLM key，且离线无法判断哪把是 coding-plan 的——真机上就
 /// 发生过：环境变量 `GLM_API_KEY` 是开放平台 key（配额接口不认），真正的
 /// coding-plan key 在 zcode 的 provider 配置里。所以逐把尝试，先成功者胜；
@@ -106,7 +128,7 @@ pub fn fetch_zcode_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No GLM/ZCode API key found (zcode config, environment variable, OpenCode auth.json or pi auth.json)"
         ));
     }
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let mut last_error = None;
     for cred in candidates {
         match fetch_glm_once(&agent, &cred, "zcode") {
@@ -176,7 +198,7 @@ pub fn fetch_qoder_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No Qoder cookie found (available after setting the QODER_COOKIE environment variable)"
         )
     })?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let mut last_error = None;
     for origin in qoder_origin_candidates() {
         match fetch_qoder_once(&agent, origin, &cookie) {
@@ -446,7 +468,7 @@ pub fn fetch_kimi_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No Kimi credentials found (config.toml/credentials in ~/.kimi-code, or OpenCode auth.json)"
         )
     })?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let result = agent
         .get(KIMI_USAGE_URL)
         .set("Authorization", &format!("Bearer {token}"))
@@ -472,7 +494,7 @@ pub fn fetch_kimiwork_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No Kimi Work credentials found (bridge-store/token-store.json in kimi-desktop; sign in to Kimi Work first)"
         )
     })?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let result = agent
         .post(KIMIWORK_STATS_URL)
         .set("Authorization", &format!("Bearer {token}"))
@@ -502,7 +524,7 @@ pub fn fetch_workbuddy_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No WorkBuddy/CodeBuddy sign-in credentials found (sign in to the client first)"
         )
     })?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let now = chrono::Utc::now();
     let body = serde_json::json!({
         "PageNumber": 1,
@@ -758,7 +780,7 @@ pub fn fetch_opencode_go_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No OpenCode Go API key found (the OPENCODE_GO_API_KEY environment variable, or the opencode-go provider in OpenCode auth.json or pi auth.json)"
         )
     })?;
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let result = agent
         .get(OPENCODE_GO_USAGE_URL)
         .set("Authorization", &format!("Bearer {key}"))
@@ -784,7 +806,7 @@ pub fn fetch_deepseek_quota(timeout: Duration) -> Result<Vec<QuotaSample>> {
             "No DeepSeek API key found (the DEEPSEEK_API_KEY environment variable, or the deepseek provider in OpenCode auth.json or pi auth.json)"
         ));
     }
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = http_agent(timeout);
     let mut last_error = None;
     for key in &candidates {
         match fetch_deepseek_once(&agent, key) {
@@ -1165,12 +1187,18 @@ fn kimi_provider_key(name: &str, base_url: Option<&str>, key: Option<&str>) -> O
 /// `METHOD_ACCESS_TOKEN`）。只读，不刷新也不写回——续期是 Kimi Code 自己的事；
 /// 令牌过期就照实显示不可用。加密存储的凭据一律不碰（见 zcode）。
 fn kimi_oauth_paths() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    [".kimi-code", ".kimi"]
-        .into_iter()
-        .map(|dir| home.join(dir).join("credentials").join("kimi-code.json"))
+    let mut dirs = vec![crate::adapters::kimi_code_dir()];
+    if let Some(home) = dirs::home_dir() {
+        for name in [".kimi-code", ".kimi"] {
+            let candidate = home.join(name);
+            if !dirs.contains(&candidate) {
+                dirs.push(candidate);
+            }
+        }
+    }
+    dirs.into_iter()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join("credentials").join("kimi-code.json"))
         .collect()
 }
 
@@ -1289,38 +1317,46 @@ fn read_opencode_auth() -> HashMap<String, String> {
 
 fn opencode_auth_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        let base = PathBuf::from(xdg);
-        if base.is_absolute() {
-            paths.push(base.join("opencode").join("auth.json"));
-        }
+    let primary = crate::adapters::opencode_data_dir();
+    if !primary.as_os_str().is_empty() {
+        paths.push(primary.join("auth.json"));
     }
     if let Some(home) = dirs::home_dir() {
-        paths.push(
-            home.join(".local")
-                .join("share")
-                .join("opencode")
-                .join("auth.json"),
-        );
+        let fallback = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
+        if !paths.contains(&fallback) {
+            paths.push(fallback);
+        }
     }
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        paths.push(PathBuf::from(appdata).join("opencode").join("auth.json"));
+        let win = PathBuf::from(appdata).join("opencode").join("auth.json");
+        if !paths.contains(&win) {
+            paths.push(win);
+        }
     }
     paths
 }
 
 fn kimi_config_paths() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
+    let mut dirs = Vec::new();
+    let share = crate::adapters::kimi_code_dir();
+    if !share.as_os_str().is_empty() {
+        dirs.push(share);
+    }
+    if let Some(home) = dirs::home_dir() {
+        for name in [".kimi", ".kimi-code"] {
+            let candidate = home.join(name);
+            if !dirs.contains(&candidate) {
+                dirs.push(candidate);
+            }
+        }
+    }
     ["config.toml", "config.json"]
         .into_iter()
-        .flat_map(|name| {
-            [
-                home.join(".kimi").join(name),
-                home.join(".kimi-code").join(name),
-            ]
-        })
+        .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)))
         .collect()
 }
 
@@ -2438,5 +2474,70 @@ mod tests {
             assert!(sample.window_key.starts_with("balance_"));
             assert!(sample.remaining_percent >= 0.0, "余额是金额，可能超过 100");
         }
+    }
+
+    #[test]
+    fn http_agent_post_succeeds_after_server_closes_previous_connection() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0_u8; 256];
+                let mut expected_total = None;
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    if expected_total.is_none() {
+                        if let Some(header_end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&req[..header_end]);
+                            let content_len = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (k, v) = line.split_once(':')?;
+                                    k.trim()
+                                        .eq_ignore_ascii_case("content-length")
+                                        .then(|| v.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            expected_total = Some(header_end + 4 + content_len);
+                        }
+                    }
+                    if expected_total.is_some_and(|total| req.len() >= total) {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+                    .unwrap();
+                let _ = stream.flush();
+                // 模拟服务端在完整消费请求并响应后立即关闭连接（不发 Connection: close 头，如同 keep-alive 空闲超时断开）。
+                drop(stream);
+            }
+        });
+
+        let agent = http_agent(Duration::from_secs(3));
+        let url = format!("http://{addr}/rpc");
+        for _ in 0..2 {
+            let response = agent
+                .post(&url)
+                .set("Content-Type", "application/json")
+                .send_string("{}")
+                .expect("POST should not reuse a server-closed idle socket");
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.into_string().unwrap(), "{}");
+        }
+        server.join().unwrap();
     }
 }

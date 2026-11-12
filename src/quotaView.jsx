@@ -1,5 +1,5 @@
 import {
-  bindingWindow,
+  entryBindingWindow,
   formatReset,
   isBalanceWindow,
   QUOTA_LOW_REMAINING,
@@ -155,7 +155,7 @@ export function stripCellData(entry) {
     (window) => window.view.available && !window.view.resetExpired,
   );
   if (!windows.length) return null;
-  return { tightest: bindingWindow(windows) || windows[0], windows };
+  return { tightest: entryBindingWindow(entry) || windows[0], windows };
 }
 
 export function conciseSourceDetail(source) {

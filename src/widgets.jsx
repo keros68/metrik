@@ -23,7 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { glassShellAppearance, nextGlassTint } from "./glassAppearance.js";
 import { compactTokens } from "./tokenFormat.js";
-import { bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
+import { entryBindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 import { t } from "./i18n.js";
 import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
@@ -1168,7 +1168,7 @@ export function CompactWidget({
               const windows = compactDisplayWindows(entry);
               // 行内头条窗口与胶囊条同规则，见 quotaWindows.js；
               // 完整窗口明细在该行的原生 tooltip 与焦点卡中。
-              const headline = bindingWindow(entry.windows) || windows[0] || null;
+              const headline = entryBindingWindow(entry) || windows[0] || null;
               const headlineView = headline?.view || null;
               const current = Boolean(headlineView && headlineView.available && !headlineView.resetExpired);
               const severity = headlineView ? quotaSeverity(headlineView, headline.key) : "";

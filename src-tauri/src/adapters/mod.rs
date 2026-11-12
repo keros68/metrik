@@ -15,16 +15,16 @@ mod workbuddy;
 mod zcode;
 
 pub use aicross::AicrossAdapter;
-pub use antigravity::AntigravityAdapter;
+pub use antigravity::{antigravity_data_dirs, AntigravityAdapter};
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
 pub use cursor::{cursor_state_db, CursorAdapter};
 pub use dsh::{dsh_home, DshAdapter};
 pub use grok::GrokAdapter;
 pub use hermes::HermesAdapter;
-pub use kimi::KimiAdapter;
+pub use kimi::{kimi_code_dir, KimiAdapter};
 pub use minimax::{minimax_data_dir, MinimaxAdapter};
-pub use opencode::OpencodeAdapter;
+pub use opencode::{opencode_data_dir, OpencodeAdapter};
 pub use pi::PiAdapter;
 pub use workbuddy::WorkbuddyAdapter;
 pub use zcode::ZcodeAdapter;
@@ -349,8 +349,7 @@ pub(super) fn sqlite_candidate(
     let fingerprint = stable_hash(&format!(
         "sqlite-metadata-v1|{database_size}|{database_mtime_ns}|{wal_size}|{wal_mtime_ns}"
     ));
-    let size = u64::from_str_radix(&fingerprint[..16], 16)
-        .expect("stable_hash returns lowercase hexadecimal SHA-256");
+    let size = positive_hash_u64(&fingerprint);
     let normalized = normalize_locator(database);
     vec![SourceCandidate {
         source_id: stable_hash(&format!("{adapter_id}|{normalized}")),
@@ -358,6 +357,14 @@ pub(super) fn sqlite_candidate(
         size,
         mtime_ns,
     }]
+}
+
+/// 账本把 `SourceCandidate.size` 按 `i64` 存入 SQLite `observed_size`；
+/// 将 64 位哈希掩码限制在 63 位非负整数域，消除有符号溢出导致的负数尺寸。
+pub(super) fn positive_hash_u64(hex_sha256: &str) -> u64 {
+    u64::from_str_radix(&hex_sha256[..16], 16)
+        .expect("stable_hash returns lowercase hexadecimal SHA-256")
+        & (i64::MAX as u64)
 }
 
 pub fn timestamp_str_ms(value: Option<&str>) -> Option<i64> {

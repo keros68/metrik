@@ -4,6 +4,7 @@ use chrono::Utc;
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // Version 3 rebuilds Claude sources after provider message identity stopped
@@ -25,12 +26,13 @@ pub const PARSER_VERSION: i64 = 7;
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
 /// 11 跳过没有时间的零用量尝试，有用量却缺少时间的记录仍标为不完整。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
-/// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时。
+/// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时；
+/// Kimi 9 重扫历史会话，清掉旧版把 `turn.step.interrupted` 字符串 `message` 误判为脏行的陈旧标记。
 /// Hermes 8 重扫 Hermes 来源，让所有用量回到实际执行工具，不再按套餐路由拆卡。
 pub fn parser_version_for(adapter: &str) -> i64 {
     match adapter {
-        "codex" | "zcode" | "hermes" | "kimi" => 8,
-        "pi" => 9,
+        "codex" | "zcode" | "hermes" => 8,
+        "pi" | "kimi" => 9,
         "antigravity" => 11,
         _ => PARSER_VERSION,
     }
@@ -48,14 +50,13 @@ enum EventWriteOutcome {
 }
 
 struct StoredUsageEvent {
-    adapter_id: String,
-    event_key: String,
+    id: i64,
     occurred_at_ms: i64,
     session_id: String,
     model: Option<String>,
     tokens: TokenVector,
-    payload_hash: String,
     project_path: Option<String>,
+    source_seq: Option<i64>,
 }
 
 pub fn open_database(path: &Path) -> Result<Connection> {
@@ -105,7 +106,7 @@ fn reset_derived_ledger_connection(connection: &mut Connection) -> Result<()> {
         .context("failed to begin local ledger reset")?;
     transaction
         .execute_batch(
-            "DELETE FROM event_observation;
+            "DELETE FROM event_extra_source;
              DELETE FROM usage_event;
              DELETE FROM quota_snapshot;
              DELETE FROM scan_source;",
@@ -120,18 +121,23 @@ fn reset_derived_ledger_connection(connection: &mut Connection) -> Result<()> {
 /// 删掉一个 Agent 的全部来源、事件与配额。用于关闭需要联网的来源：关掉后不留它拉来的数据。
 pub fn remove_adapter_ledger(connection: &mut Connection, adapter_id: &str) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "DELETE FROM event_observation WHERE source_id IN
-             (SELECT source_id FROM scan_source WHERE adapter_id = ?1)
-         OR event_id IN (SELECT event_id FROM usage_event WHERE adapter_id = ?1)",
-        [adapter_id],
-    )?;
+    let source_seqs: Vec<i64> = {
+        let mut statement =
+            transaction.prepare("SELECT source_seq FROM scan_source WHERE adapter_id = ?1")?;
+        let rows = statement.query_map([adapter_id], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut orphan_candidates = Vec::new();
+    for source_seq in source_seqs {
+        orphan_candidates.extend(detach_source_observations(&transaction, source_seq)?);
+        transaction.execute(
+            "DELETE FROM scan_source WHERE source_seq = ?1",
+            [source_seq],
+        )?;
+    }
+    delete_orphan_events(&transaction, &orphan_candidates)?;
     transaction.execute(
         "DELETE FROM usage_event WHERE adapter_id = ?1",
-        [adapter_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM scan_source WHERE adapter_id = ?1",
         [adapter_id],
     )?;
     transaction.execute(
@@ -195,6 +201,48 @@ pub fn set_flag(connection: &Connection, key: &str, enabled: bool) -> Result<()>
     set_app_setting(connection, key, if enabled { "1" } else { "0" })
 }
 
+pub struct StoredSourceState {
+    pub adapter_id: String,
+    pub observed_size: i64,
+    pub mtime_ns: i64,
+    pub parser_version: i64,
+    pub coverage_start_ms: i64,
+    pub last_error: Option<String>,
+}
+
+impl StoredSourceState {
+    pub fn is_current(&self, size: u64, mtime_ns: i64, requested_coverage_start_ms: i64) -> bool {
+        self.observed_size == size as i64
+            && self.mtime_ns == mtime_ns
+            && self.parser_version == parser_version_for(&self.adapter_id)
+            && self.coverage_start_ms <= requested_coverage_start_ms
+    }
+}
+
+/// 一次查询批量读取全部 `scan_source` 元数据，消除每轮扫描对数百个本地日志文件的 N+1 主键点查。
+pub fn load_source_states(connection: &Connection) -> Result<HashMap<String, StoredSourceState>> {
+    let mut statement = connection.prepare(
+        "SELECT source_id, adapter_id, observed_size, mtime_ns,
+                parser_version, coverage_start_ms, last_error
+         FROM scan_source",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            StoredSourceState {
+                adapter_id: row.get(1)?,
+                observed_size: row.get(2)?,
+                mtime_ns: row.get(3)?,
+                parser_version: row.get(4)?,
+                coverage_start_ms: row.get(5)?,
+                last_error: row.get(6)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+}
+
+#[cfg(test)]
 pub fn source_is_current(
     connection: &Connection,
     source_id: &str,
@@ -266,32 +314,31 @@ pub fn replace_source(
     )?;
 
     // 解析视界对所有源都一样（见 engine::RETENTION_DAYS），所以一次重扫覆盖这个源
-    // 的全部保留期历史：直接清掉它的旧观察记录，不必再按时间窗口切片。
-    // 孤儿清扫也只针对刚被清掉的这批事件——全局清扫的代价与账本总量成正比，
+    // 的全部保留期历史：直接卸下它的旧观察记录，不必再按时间窗口切片。
+    // 孤儿清扫也只针对刚被卸下的这批事件——全局清扫的代价与账本总量成正比，
     // 每个源都做一次会让补齐退化成 O(源数 × 事件总数)。
-    let previously_observed = observed_event_ids(&transaction, &source.source_id)?;
-    transaction.execute(
-        "DELETE FROM event_observation WHERE source_id = ?1",
+    let source_seq: i64 = transaction.query_row(
+        "SELECT source_seq FROM scan_source WHERE source_id = ?1",
         [&source.source_id],
+        |row| row.get(0),
     )?;
+    let previously_observed = detach_source_observations(&transaction, source_seq)?;
 
     for event in &source.events {
-        let write_outcome =
-            insert_or_merge_usage_event(&transaction, event, source.adapter_id, &source.locator)?;
+        let write_outcome = insert_or_merge_usage_event(
+            &transaction,
+            event,
+            source.adapter_id,
+            &source.locator,
+            source_seq,
+        )?;
         if write_outcome == EventWriteOutcome::RejectedClaudeModelConflict {
             outcome.rejected_events += 1;
-            continue;
         }
-
-        transaction.execute(
-            "INSERT OR REPLACE INTO event_observation (event_id, source_id, observed_at_ms)
-             VALUES (?1, ?2, ?3)",
-            params![event.event_id, source.source_id, now],
-        )?;
     }
 
-    // 本次重扫后仍然没有任何观察记录的，才是真孤儿（比如日志被改写、事件消失）。
-    // 仍被本源或其他源观察到的事件在上面已经重新登记，不会命中。
+    // 本次重扫后仍然没有任何来源引用的，才是真孤儿（比如日志被改写、事件消失）。
+    // 仍被本源或其他源观察到的事件在上面已经登记 source_seq，不会命中。
     delete_orphan_events(&transaction, &previously_observed)?;
 
     for quota in &source.quotas {
@@ -302,13 +349,85 @@ pub fn replace_source(
     Ok(outcome)
 }
 
-fn observed_event_ids(transaction: &Transaction<'_>, source_id: &str) -> Result<Vec<String>> {
-    let mut statement =
-        transaction.prepare("SELECT event_id FROM event_observation WHERE source_id = ?1")?;
-    let ids = statement
-        .query_map([source_id], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    Ok(ids)
+fn detach_source_observations(transaction: &Transaction<'_>, source_seq: i64) -> Result<Vec<i64>> {
+    let mut candidates: Vec<i64> = {
+        let mut statement =
+            transaction.prepare("SELECT id FROM usage_event WHERE source_seq = ?1")?;
+        let rows = statement.query_map([source_seq], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let extra_ids: Vec<i64> = {
+        let mut statement =
+            transaction.prepare("SELECT event_id FROM event_extra_source WHERE source_seq = ?1")?;
+        let rows = statement.query_map([source_seq], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if !extra_ids.is_empty() {
+        transaction.execute(
+            "DELETE FROM event_extra_source WHERE source_seq = ?1",
+            [source_seq],
+        )?;
+    }
+
+    let has_any_extra: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM event_extra_source LIMIT 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_any_extra {
+        if !candidates.is_empty() {
+            transaction.execute(
+                "UPDATE usage_event SET source_seq = NULL WHERE source_seq = ?1",
+                [source_seq],
+            )?;
+        }
+    } else if !candidates.is_empty() {
+        transaction.execute(
+            "UPDATE usage_event
+             SET source_seq = (
+                 SELECT MIN(extra.source_seq)
+                 FROM event_extra_source AS extra
+                 WHERE extra.event_id = usage_event.id
+             )
+             WHERE source_seq = ?1",
+            [source_seq],
+        )?;
+        for &event_id in &candidates {
+            transaction.execute(
+                "DELETE FROM event_extra_source
+                 WHERE event_id = ?1
+                   AND source_seq = (SELECT source_seq FROM usage_event WHERE id = ?1)",
+                [event_id],
+            )?;
+        }
+    }
+
+    candidates.extend(extra_ids);
+    Ok(candidates)
+}
+
+fn attach_source_observation(
+    transaction: &Transaction<'_>,
+    event_row_id: i64,
+    current_primary: Option<i64>,
+    source_seq: i64,
+) -> Result<()> {
+    match current_primary {
+        None => {
+            transaction.execute(
+                "UPDATE usage_event SET source_seq = ?2 WHERE id = ?1",
+                params![event_row_id, source_seq],
+            )?;
+        }
+        Some(existing) if existing == source_seq => {}
+        Some(_) => {
+            transaction.execute(
+                "INSERT OR IGNORE INTO event_extra_source (event_id, source_seq) VALUES (?1, ?2)",
+                params![event_row_id, source_seq],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn insert_or_merge_usage_event(
@@ -316,30 +435,31 @@ fn insert_or_merge_usage_event(
     event: &UsageEvent,
     source_adapter: &str,
     locator: &Path,
+    source_seq: i64,
 ) -> Result<EventWriteOutcome> {
     let stored = transaction
         .query_row(
-            "SELECT adapter_id, event_key, occurred_at_ms, session_id, model,
+            "SELECT id, occurred_at_ms, session_id, model,
                     input_uncached_tokens, cache_read_tokens, cache_write_tokens,
-                    output_tokens, reasoning_tokens, payload_hash, project_path
-             FROM usage_event WHERE event_id = ?1",
-            [&event.event_id],
+                    output_tokens, reasoning_tokens, project_path, source_seq
+             FROM usage_event
+             WHERE adapter_id = ?1 AND event_key = ?2",
+            params![event.adapter_id, event.event_key],
             |row| {
                 Ok(StoredUsageEvent {
-                    adapter_id: row.get(0)?,
-                    event_key: row.get(1)?,
-                    occurred_at_ms: row.get(2)?,
-                    session_id: row.get(3)?,
-                    model: row.get(4)?,
+                    id: row.get(0)?,
+                    occurred_at_ms: row.get(1)?,
+                    session_id: row.get(2)?,
+                    model: row.get(3)?,
                     tokens: TokenVector {
-                        input_uncached: row.get(5)?,
-                        cache_read: row.get(6)?,
-                        cache_write: row.get(7)?,
-                        output: row.get(8)?,
-                        reasoning_output: row.get(9)?,
+                        input_uncached: row.get(4)?,
+                        cache_read: row.get(5)?,
+                        cache_write: row.get(6)?,
+                        output: row.get(7)?,
+                        reasoning_output: row.get(8)?,
                     },
-                    payload_hash: row.get(10)?,
-                    project_path: row.get(11)?,
+                    project_path: row.get(9)?,
+                    source_seq: row.get(10)?,
                 })
             },
         )
@@ -348,13 +468,12 @@ fn insert_or_merge_usage_event(
     let Some(stored) = stored else {
         transaction.execute(
             "INSERT INTO usage_event (
-                event_id, adapter_id, event_key, occurred_at_ms, session_id, model,
+                adapter_id, event_key, occurred_at_ms, session_id, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens,
-                output_tokens, reasoning_tokens, processed_tokens, quality, payload_hash,
-                project_path, request_input_tokens, response_duration_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                output_tokens, reasoning_tokens, processed_tokens, quality,
+                project_path, request_input_tokens, response_duration_ms, source_seq
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
-                event.event_id,
                 event.adapter_id,
                 event.event_key,
                 event.occurred_at_ms,
@@ -367,24 +486,15 @@ fn insert_or_merge_usage_event(
                 event.tokens.reasoning_output,
                 event.tokens.processed(),
                 event.quality,
-                event.payload_hash,
                 event.project_path,
                 event.request_input_tokens,
                 event.response_duration_ms.filter(|duration| *duration > 0),
+                source_seq,
             ],
         )?;
         return Ok(EventWriteOutcome::Accepted);
     };
 
-    // Always retain the stable-hash collision guard. A matching event_id must
-    // resolve to exactly the same adapter and provider event key.
-    if stored.adapter_id != event.adapter_id || stored.event_key != event.event_key {
-        return Err(anyhow!(
-            "event identity collision for {} from {}",
-            event.event_id,
-            locator.display()
-        ));
-    }
     // Claude emits the same provider message repeatedly while usage fields are
     // being completed, and may copy it into a branched session log. Those are
     // observations of one event, so merge each token component monotonically.
@@ -430,26 +540,29 @@ fn insert_or_merge_usage_event(
         }
     }
     let fills_missing_model = mergeable && stored.model.is_none() && event.model.is_some();
-    // 项目归属不参与 payload_hash（见 domain::UsageEvent），所以它要在这里单独补：
+    // 项目归属不参与计量载荷比对，所以在这里单独补：
     // 解析器升级后重扫时，事件内容一模一样，只有这一列从 NULL 变成有值。
     // 已有值不覆盖——事件发生在哪个目录是既成事实，仓库改名不该改写历史。
     let fills_missing_project = stored.project_path.is_none() && event.project_path.is_some();
     if fills_missing_project {
         transaction.execute(
-            "UPDATE usage_event SET project_path = ?2 WHERE event_id = ?1",
-            params![event.event_id, event.project_path],
+            "UPDATE usage_event SET project_path = ?2 WHERE id = ?1",
+            params![stored.id, event.project_path],
         )?;
     }
-    if stored.payload_hash == event.payload_hash && !fills_missing_model {
-        transaction.execute(
-            "UPDATE usage_event SET request_input_tokens = COALESCE(?2, request_input_tokens),
-                 response_duration_ms = COALESCE(?3, response_duration_ms) WHERE event_id = ?1",
-            params![
-                event.event_id,
-                event.request_input_tokens,
-                event.response_duration_ms.filter(|duration| *duration > 0)
-            ],
-        )?;
+    let same_payload = stored.occurred_at_ms == event.occurred_at_ms
+        && stored.session_id == event.session_id
+        && stored.tokens == event.tokens;
+    let candidate_duration = event.response_duration_ms.filter(|duration| *duration > 0);
+    if same_payload && !fills_missing_model {
+        if event.request_input_tokens.is_some() || candidate_duration.is_some() {
+            transaction.execute(
+                "UPDATE usage_event SET request_input_tokens = COALESCE(?2, request_input_tokens),
+                     response_duration_ms = COALESCE(?3, response_duration_ms) WHERE id = ?1",
+                params![stored.id, event.request_input_tokens, candidate_duration],
+            )?;
+        }
+        attach_source_observation(transaction, stored.id, stored.source_seq, source_seq)?;
         return Ok(EventWriteOutcome::Accepted);
     }
     if !mergeable {
@@ -468,15 +581,7 @@ fn insert_or_merge_usage_event(
         event.session_id.clone()
     };
     let model = stored.model.or_else(|| event.model.clone());
-    let merged = UsageEvent::new(
-        event.adapter_id,
-        event.event_key.clone(),
-        occurred_at_ms,
-        session_id,
-        model,
-        merged_tokens,
-        event.quality,
-    );
+    let primary_source = stored.source_seq.unwrap_or(source_seq);
 
     transaction.execute(
         "UPDATE usage_event SET
@@ -490,28 +595,32 @@ fn insert_or_merge_usage_event(
             reasoning_tokens = ?9,
             processed_tokens = ?10,
             quality = ?11,
-            payload_hash = ?12,
-            response_duration_ms = ?13
-         WHERE event_id = ?1",
+            response_duration_ms = ?12,
+            source_seq = ?13
+         WHERE id = ?1",
         params![
-            merged.event_id,
-            merged.occurred_at_ms,
-            merged.session_id,
-            merged.model,
-            merged.tokens.input_uncached,
-            merged.tokens.cache_read,
-            merged.tokens.cache_write,
-            merged.tokens.output,
-            merged.tokens.reasoning_output,
-            merged.tokens.processed(),
-            merged.quality,
-            merged.payload_hash,
+            stored.id,
+            occurred_at_ms,
+            session_id,
+            model,
+            merged_tokens.input_uncached,
+            merged_tokens.cache_read,
+            merged_tokens.cache_write,
+            merged_tokens.output,
+            merged_tokens.reasoning_output,
+            merged_tokens.processed(),
+            event.quality,
             // Never pair an earlier sample's duration with merged counters.
-            event
-                .response_duration_ms
-                .filter(|duration| { *duration > 0 && merged.tokens == event.tokens }),
+            candidate_duration.filter(|_| merged_tokens == event.tokens),
+            primary_source,
         ],
     )?;
+    if stored.source_seq.is_some() && stored.source_seq != Some(source_seq) {
+        transaction.execute(
+            "INSERT OR IGNORE INTO event_extra_source (event_id, source_seq) VALUES (?1, ?2)",
+            params![stored.id, source_seq],
+        )?;
+    }
     Ok(EventWriteOutcome::Accepted)
 }
 
@@ -542,18 +651,18 @@ pub fn upsert_quota(connection: &Connection, quota: &QuotaSample) -> Result<()> 
 }
 
 pub fn prune_missing_sources(connection: &mut Connection) -> Result<()> {
-    let mut statement = connection.prepare("SELECT source_id, locator FROM scan_source")?;
+    let mut statement = connection.prepare("SELECT source_seq, locator FROM scan_source")?;
     let rows = statement.query_map([], |row| {
         Ok((
-            row.get::<_, String>(0)?,
+            row.get::<_, i64>(0)?,
             PathBuf::from(row.get::<_, String>(1)?),
         ))
     })?;
-    let missing: Vec<String> = rows
+    let missing: Vec<i64> = rows
         .filter_map(Result::ok)
         // `antigravity://` 这类 RPC 定位符不在磁盘上，存在性判断对它们无意义。
         .filter(|(_, locator)| !locator.to_string_lossy().contains("://") && !locator.exists())
-        .map(|(source_id, _)| source_id)
+        .map(|(source_seq, _)| source_seq)
         .collect();
     drop(statement);
 
@@ -562,12 +671,13 @@ pub fn prune_missing_sources(connection: &mut Connection) -> Result<()> {
     }
 
     let transaction = connection.transaction()?;
-    // 观察记录会被 scan_source 的 ON DELETE CASCADE 一并删掉，所以先记下候选，
-    // 删完再回头判断哪些事件真的没人观察了。
     let mut orphan_candidates = Vec::new();
-    for source_id in missing {
-        orphan_candidates.extend(observed_event_ids(&transaction, &source_id)?);
-        transaction.execute("DELETE FROM scan_source WHERE source_id = ?1", [&source_id])?;
+    for source_seq in missing {
+        orphan_candidates.extend(detach_source_observations(&transaction, source_seq)?);
+        transaction.execute(
+            "DELETE FROM scan_source WHERE source_seq = ?1",
+            [source_seq],
+        )?;
     }
     delete_orphan_events(&transaction, &orphan_candidates)?;
     transaction.commit()?;
@@ -575,30 +685,43 @@ pub fn prune_missing_sources(connection: &mut Connection) -> Result<()> {
 }
 
 pub fn prune_old_events(connection: &Connection, cutoff_ms: i64) -> Result<()> {
-    connection.execute(
+    let deleted_usage = connection.execute(
         "DELETE FROM usage_event WHERE occurred_at_ms < ?1",
         [cutoff_ms],
     )?;
     // Captured timings are not rebuildable from logs, but share the ledger's
     // retention horizon even when both collectors have been disabled.
-    connection.execute(
+    let deleted_speed = connection.execute(
         "DELETE FROM response_speed_sample WHERE occurred_at_ms < ?1",
         [cutoff_ms],
     )?;
+    if deleted_usage > 0 || deleted_speed > 0 {
+        // SQLite 的 incremental_vacuum 每释放一页产出一行结果；execute_batch 只 step
+        // 一次即提前结束语句，必须循环消费全部结果行才能按上限回收空闲页。
+        if let Ok(mut statement) = connection.prepare("PRAGMA incremental_vacuum(256)") {
+            if let Ok(mut rows) = statement.query([]) {
+                while let Ok(Some(_)) = rows.next() {}
+            }
+        }
+    }
     Ok(())
 }
 
-/// 只检查候选事件，不扫全表：调用方知道哪些事件刚失去过观察记录。
-fn delete_orphan_events(transaction: &Transaction<'_>, candidates: &[String]) -> Result<()> {
+/// 只检查候选事件，不扫全表：调用方知道哪些事件刚失去过来源引用。
+fn delete_orphan_events(transaction: &Transaction<'_>, candidates: &[i64]) -> Result<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
     let mut statement = transaction.prepare(
         "DELETE FROM usage_event
-         WHERE event_id = ?1
+         WHERE id = ?1
+           AND source_seq IS NULL
            AND NOT EXISTS (
-               SELECT 1 FROM event_observation
-               WHERE event_observation.event_id = usage_event.event_id
+               SELECT 1 FROM event_extra_source
+               WHERE event_extra_source.event_id = usage_event.id
            )",
     )?;
-    for event_id in candidates {
+    for &event_id in candidates {
         statement.execute([event_id])?;
     }
     Ok(())
@@ -650,6 +773,17 @@ mod tests {
         }
     }
 
+    fn total_observations(connection: &Connection) -> i64 {
+        connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM usage_event WHERE source_seq IS NOT NULL)
+                      + (SELECT COUNT(*) FROM event_extra_source)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn response_timing_backfills_without_changing_usage_and_is_stable_on_replay() {
         let mut connection = Connection::open_in_memory().unwrap();
@@ -667,10 +801,13 @@ mod tests {
             "exact",
         );
         let stored = |connection: &Connection| -> (i64, i64, String, Option<i64>) {
-            connection.query_row(
-                "SELECT COUNT(*), SUM(processed_tokens), MIN(payload_hash), MIN(response_duration_ms) FROM usage_event",
-                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            ).unwrap()
+            connection
+                .query_row(
+                    "SELECT COUNT(*), SUM(processed_tokens), MIN(event_key), MIN(response_duration_ms) FROM usage_event",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap()
         };
         replace_source(
             &mut connection,
@@ -678,10 +815,7 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
-            stored(&connection),
-            (1, 40, event.payload_hash.clone(), None)
-        );
+        assert_eq!(stored(&connection), (1, 40, event.event_key.clone(), None));
         let timed = event.clone().with_response_timing(Some(1_000), Some(3_000));
         for candidate in [timed.clone(), timed, event.clone()] {
             replace_source(
@@ -692,7 +826,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 stored(&connection),
-                (1, 40, event.payload_hash.clone(), Some(2_000))
+                (1, 40, event.event_key.clone(), Some(2_000))
             );
         }
     }
@@ -814,7 +948,7 @@ mod tests {
             count("SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'codex'"),
             1
         );
-        assert_eq!(count("SELECT COUNT(*) FROM event_observation"), 1);
+        assert_eq!(total_observations(&connection), 1);
         assert_eq!(
             count("SELECT COUNT(*) FROM quota_snapshot WHERE adapter_id = 'cursor'"),
             0
@@ -946,12 +1080,11 @@ mod tests {
                      mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
                  ) VALUES ('source', 'codex', 'source', 'agent-log.jsonl', 10, 1, 0, 3, 1, NULL);
                  INSERT INTO usage_event (
-                     event_id, adapter_id, event_key, occurred_at_ms, session_id, model,
+                     adapter_id, event_key, occurred_at_ms, session_id, model,
                      input_uncached_tokens, cache_read_tokens, cache_write_tokens,
-                     output_tokens, reasoning_tokens, processed_tokens, quality, payload_hash
-                 ) VALUES ('event', 'codex', 'session:event', 1, 'session', NULL,
-                           10, 0, 0, 2, 0, 12, 'exact', 'hash');
-                 INSERT INTO event_observation VALUES ('event', 'source', 1);
+                     output_tokens, reasoning_tokens, processed_tokens, quality, source_seq
+                 ) VALUES ('codex', 'session:event', 1, 'session', NULL,
+                           10, 0, 0, 2, 0, 12, 'exact', 1);
                  INSERT INTO quota_snapshot VALUES (
                      'codex', 'primary', 75, 1000, 1, 'official_live', 'Codex'
                  );",
@@ -963,7 +1096,7 @@ mod tests {
         for table in [
             "scan_source",
             "usage_event",
-            "event_observation",
+            "event_extra_source",
             "quota_snapshot",
         ] {
             let count: i64 = connection
@@ -1072,15 +1205,15 @@ mod tests {
         )
         .unwrap();
 
-        let (events, observations, processed): (i64, i64, i64) = connection
+        let (events, processed): (i64, i64) = connection
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_event),
-                        (SELECT COUNT(*) FROM event_observation),
                         (SELECT MAX(processed_tokens) FROM usage_event)",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        let observations = total_observations(&connection);
         assert_eq!(events, 1, "fork 副本必须并入同一事件");
         assert_eq!(observations, 2, "两个源各自登记观察");
         assert_eq!(processed, 4_531, "相同分量合并后不叠加");
@@ -1179,16 +1312,16 @@ mod tests {
         )
         .unwrap();
 
-        let (events, observations, processed, old_credit_events): (i64, i64, i64, i64) = connection
+        let (events, processed, old_credit_events): (i64, i64, i64) = connection
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'hermes'),
-                        (SELECT COUNT(*) FROM event_observation),
                         (SELECT SUM(processed_tokens) FROM usage_event),
                         (SELECT COUNT(*) FROM usage_event WHERE adapter_id = 'kimi')",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
+        let observations = total_observations(&connection);
         assert_eq!(events, 1);
         assert_eq!(observations, 1);
         assert_eq!(processed, 420);
@@ -1260,12 +1393,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (100, 9, 109, 200, "session-a".into()));
-        let observations: i64 = connection
-            .query_row("SELECT COUNT(*) FROM event_observation", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(observations, 2);
+        assert_eq!(total_observations(&connection), 2);
     }
 
     #[test]
@@ -1445,13 +1573,15 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(keys, ["session:shared"]);
+        assert_eq!(total_observations(&connection), 2);
 
-        let observations: i64 = connection
-            .query_row("SELECT COUNT(*) FROM event_observation", [], |row| {
-                row.get(0)
-            })
+        // 原件再把 shared 删掉后，archive 从溢出表晋升为主来源，事件依然保留。
+        replace_source(&mut connection, &source("origin", "codex", vec![]), 0).unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(observations, 2);
+        assert_eq!(remaining, 1);
+        assert_eq!(total_observations(&connection), 1);
     }
 
     /// 解析器升级后，即使文件本身没变、覆盖范围也够，源仍必须重新解析。
@@ -1528,19 +1658,19 @@ mod tests {
         connection
             .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
-        for (event_id, adapter, project) in [
+        for (event_key, adapter, project) in [
             ("ag-1", "antigravity", Some("bad\\label")),
             ("cl-1", "claude", Some("/home/me/keep")),
         ] {
             connection
                 .execute(
                     "INSERT INTO usage_event (
-                        event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                        adapter_id, event_key, occurred_at_ms, session_id,
                         input_uncached_tokens, cache_read_tokens, cache_write_tokens,
                         output_tokens, reasoning_tokens, processed_tokens, quality,
-                        payload_hash, project_path
-                     ) VALUES (?1, ?2, ?1, 0, 's', 1, 0, 0, 1, 0, 1, 'exact', 'h', ?3)",
-                    params![event_id, adapter, project],
+                        project_path
+                     ) VALUES (?2, ?1, 0, 's', 1, 0, 0, 1, 0, 1, 'exact', ?3)",
+                    params![event_key, adapter, project],
                 )
                 .unwrap();
         }
@@ -1566,7 +1696,7 @@ mod tests {
         assert!(repair_antigravity_project_attribution(&mut connection).unwrap());
         let ag_label: Option<String> = connection
             .query_row(
-                "SELECT project_path FROM usage_event WHERE event_id = 'ag-1'",
+                "SELECT project_path FROM usage_event WHERE event_key = 'ag-1'",
                 [],
                 |row| row.get(0),
             )
@@ -1574,7 +1704,7 @@ mod tests {
         assert_eq!(ag_label, None);
         let cl_label: String = connection
             .query_row(
-                "SELECT project_path FROM usage_event WHERE event_id = 'cl-1'",
+                "SELECT project_path FROM usage_event WHERE event_key = 'cl-1'",
                 [],
                 |row| row.get(0),
             )
@@ -1676,5 +1806,56 @@ mod tests {
         assert!(error
             .to_string()
             .contains("failed to open usage database read-only"));
+    }
+
+    #[test]
+    fn prune_old_events_reclaims_multiple_freelist_pages() {
+        let dir = TestDbDir::new("incremental-vacuum-pages");
+        let path = dir.database_path();
+        let connection = open_database(&path).unwrap();
+
+        let padded_project = format!("D:/work/{}", "p".repeat(1200));
+        let events: Vec<UsageEvent> = (0..80)
+            .map(|i| {
+                UsageEvent::new(
+                    "codex",
+                    format!("old-{i}"),
+                    1_000 + i,
+                    "session-old".into(),
+                    Some("gpt-5".into()),
+                    TokenVector {
+                        input_uncached: 10,
+                        output: 5,
+                        ..TokenVector::default()
+                    },
+                    "exact",
+                )
+                .with_project(Some(padded_project.clone()))
+            })
+            .collect();
+        let mut connection = connection;
+        replace_source(&mut connection, &source("bulk-old", "codex", events), 0).unwrap();
+
+        let pages_before: i64 = connection
+            .pragma_query_value(None, "page_count", |row| row.get(0))
+            .unwrap();
+        assert!(
+            pages_before > 15,
+            "expected multi-page ledger, got {pages_before}"
+        );
+
+        prune_old_events(&connection, 10_000).unwrap();
+
+        let freelist_after: i64 = connection
+            .pragma_query_value(None, "freelist_count", |row| row.get(0))
+            .unwrap();
+        let pages_after: i64 = connection
+            .pragma_query_value(None, "page_count", |row| row.get(0))
+            .unwrap();
+        assert_eq!(freelist_after, 0);
+        assert!(
+            pages_after < pages_before - 5,
+            "expected incremental_vacuum to shrink page_count ({pages_before} -> {pages_after})"
+        );
     }
 }

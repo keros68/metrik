@@ -45,6 +45,21 @@ export function bindingWindow(windows) {
   );
 }
 
+/// 优先读取后端统一计算好的 `bindingWindowKey`，缺省时（如浏览器预览 mock）回退前端计算。
+export function entryBindingWindow(entry) {
+  const windows = entry?.windows || [];
+  if (entry?.bindingWindowKey) {
+    const matched = windows.find(
+      (window) =>
+        window.key === entry.bindingWindowKey &&
+        window.view.available &&
+        !window.view.resetExpired,
+    );
+    if (matched) return matched;
+  }
+  return bindingWindow(windows);
+}
+
 // 后端给的是带小数的分钟数：先整体取整再拆天/时/分，避免出现"1 小时 60 分"。
 export function formatReset(minutes) {
   if (!Number.isFinite(minutes)) return t("暂不可用");

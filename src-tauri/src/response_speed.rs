@@ -234,13 +234,13 @@ impl Collector {
         let database = self.database.clone();
         let config = Arc::clone(&self.config);
         let thread = std::thread::Builder::new().name("metrik-response-speed".into()).spawn(move || {
-            let mut decoder = Decoder::default();
+            let mut state = ExportWorkerState::default();
             for incoming in listener.incoming() {
                 if thread_stop.load(Ordering::Acquire) {break;}
                 let Ok(mut stream) = incoming else {break;};
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                let response = handle_export(&mut stream, address.port(), &database, &config, &mut decoder);
+                let response = handle_export(&mut stream, address.port(), &database, &config, &mut state);
                 let (code, content_type) = match response {
                     Ok(content_type) => (200, content_type),
                     Err(code) => (code, "application/json".to_owned()),
@@ -407,17 +407,25 @@ fn read_more(
     Ok(())
 }
 
-fn handle_export(
-    stream: &mut TcpStream,
-    port: u16,
+const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Default)]
+struct ExportWorkerState {
+    decoder: Decoder,
+    last_pruned_at: Option<Instant>,
+}
+
+fn open_export_ledger(
     database: &std::path::Path,
-    config: &ConfigManager,
-    decoder: &mut Decoder,
-) -> std::result::Result<String, u16> {
-    let request = read_export(stream, port)?;
+) -> std::result::Result<rusqlite::Connection, u16> {
     // Startup owns schema migration. An export must not repeat schema writes
-    // or recreate a removed ledger while the normal scanner is working.
-    let mut connection = rusqlite::Connection::open_with_flags(
+    // or recreate a removed ledger while the normal scanner is working; closing
+    // the handle at the end of each export also avoids holding a Windows file
+    // lock or a stale Unix inode across manual ledger removal/replacement.
+    if !database.is_file() {
+        return Err(503);
+    }
+    let connection = rusqlite::Connection::open_with_flags(
         database,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
     )
@@ -425,6 +433,18 @@ fn handle_export(
     connection
         .busy_timeout(Duration::from_secs(2))
         .map_err(|_| 503_u16)?;
+    Ok(connection)
+}
+
+fn handle_export(
+    stream: &mut TcpStream,
+    port: u16,
+    database: &std::path::Path,
+    config: &ConfigManager,
+    state: &mut ExportWorkerState,
+) -> std::result::Result<String, u16> {
+    let request = read_export(stream, port)?;
+    let mut connection = open_export_ledger(database)?;
     if !is_enabled(&connection, request.agent).map_err(|_| 503_u16)? {
         return Err(403);
     }
@@ -434,20 +454,43 @@ fn handle_export(
     if !status.configured || status.conflict {
         return Err(403);
     }
-    // Decoding caches cross-batch spans and replay IDs. Advance it only when
-    // the database transaction succeeds, so a retried export remains usable.
-    let mut candidate = decoder.clone();
-    let samples = candidate
-        .decode(
+    // Decoding caches cross-batch spans and replay IDs for Codex traces.
+    // Advance stateful decoders only when the database transaction succeeds,
+    // while avoiding cloning the span cache on stateless Claude log exports.
+    let stateful = Decoder::is_stateful_signal(request.agent, request.signal);
+    let mut candidate = stateful.then(|| state.decoder.clone());
+    let samples = match candidate.as_mut() {
+        Some(staged) => staged.decode(
             request.agent,
             request.signal,
             &request.content_type,
             &request.body,
-        )
-        .map_err(|_| 400_u16)?;
-    speed_store::store_samples(&mut connection, &samples, Utc::now().timestamp_millis())
-        .map_err(|_| 503_u16)?;
-    *decoder = candidate;
+        ),
+        None => state.decoder.decode(
+            request.agent,
+            request.signal,
+            &request.content_type,
+            &request.body,
+        ),
+    }
+    .map_err(|_| 400_u16)?;
+
+    let prune_expired = state
+        .last_pruned_at
+        .is_none_or(|last| last.elapsed() >= RETENTION_PRUNE_INTERVAL);
+    speed_store::store_samples_with_prune(
+        &mut connection,
+        &samples,
+        Utc::now().timestamp_millis(),
+        prune_expired,
+    )
+    .map_err(|_| 503_u16)?;
+    if prune_expired {
+        state.last_pruned_at = Some(Instant::now());
+    }
+    if let Some(staged) = candidate {
+        state.decoder = staged;
+    }
     Ok(request.content_type)
 }
 
@@ -567,10 +610,10 @@ mod tests {
         bytes.extend_from_slice(&body);
         let config = Arc::clone(&collector.config);
         let database = collector.database.clone();
-        let (result, mut decoder) = exchange(bytes.clone(), move |stream| {
-            let mut decoder = Decoder::default();
-            let result = handle_export(stream, PORT, &database, &config, &mut decoder);
-            (result, decoder)
+        let (result, mut state) = exchange(bytes.clone(), move |stream| {
+            let mut state = ExportWorkerState::default();
+            let result = handle_export(stream, PORT, &database, &config, &mut state);
+            (result, state)
         });
         assert_eq!(result.unwrap_err(), 503);
         connection
@@ -579,7 +622,7 @@ mod tests {
         let config = Arc::clone(&collector.config);
         let database = collector.database.clone();
         let result = exchange(bytes, move |stream| {
-            handle_export(stream, PORT, &database, &config, &mut decoder)
+            handle_export(stream, PORT, &database, &config, &mut state)
         });
         assert!(result.is_ok());
         let timings = speed_store::model_timings(&connection, 0, i64::MAX).unwrap();
@@ -696,7 +739,13 @@ mod tests {
             let db = database.clone();
             let config = Arc::clone(&config);
             let result = exchange(bytes.clone(), move |stream| {
-                handle_export(stream, PORT, &db, &config, &mut Decoder::default())
+                handle_export(
+                    stream,
+                    PORT,
+                    &db,
+                    &config,
+                    &mut ExportWorkerState::default(),
+                )
             });
             assert_eq!(result.unwrap(), "application/json");
         }
@@ -717,11 +766,97 @@ mod tests {
         storage::set_app_setting(&connection, &setting("claude"), "0").unwrap();
         let db = database.clone();
         let disabled = exchange(bytes, move |stream| {
-            handle_export(stream, PORT, &db, &config, &mut Decoder::default())
+            handle_export(
+                stream,
+                PORT,
+                &db,
+                &config,
+                &mut ExportWorkerState::default(),
+            )
         });
         assert_eq!(disabled.unwrap_err(), 403);
         assert_eq!(
             speed_store::source_counts(&connection, "claude", now + 1)
+                .unwrap()
+                .0,
+            1
+        );
+    }
+
+    #[test]
+    fn recreated_ledger_receives_subsequent_exports_with_same_worker_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("usage.sqlite3");
+        let config = Arc::new(ConfigManager::with_paths(
+            temporary.path().join("state"),
+            temporary.path().join("claude.json"),
+            temporary.path().join("codex.toml"),
+        ));
+        config.enable("claude", &endpoint("claude")).unwrap();
+
+        let init_ledger = |path: &std::path::Path| {
+            let conn = storage::open_database(path).unwrap();
+            storage::set_app_setting(&conn, &setting("claude"), "1").unwrap();
+        };
+        init_ledger(&database);
+
+        let now = Utc::now().timestamp_millis();
+        let make_request = |req_id: &str| {
+            let attributes = [
+                ("event.name", "api_request"),
+                ("model", "claude-test"),
+                ("request_id", req_id),
+                ("output_tokens", "80"),
+                ("duration_ms", "1000"),
+            ]
+            .into_iter()
+            .map(|(key, value)| json!({"key":key,"value":{"stringValue":value}}))
+            .collect::<Vec<_>>();
+            let body = serde_json::to_vec(&json!({
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "timeUnixNano": (now as u64 * 1_000_000).to_string(),
+                            "body": {"stringValue": "claude_code.api_request"},
+                            "attributes": attributes
+                        }]
+                    }]
+                }]
+            }))
+            .unwrap();
+            request(&body, "")
+        };
+
+        let db = database.clone();
+        let cfg = Arc::clone(&config);
+        let (first, state) = exchange(make_request("req-1"), move |stream| {
+            let mut state = ExportWorkerState::default();
+            let res = handle_export(stream, PORT, &db, &cfg, &mut state);
+            (res, state)
+        });
+        assert_eq!(first.unwrap(), "application/json");
+
+        // Windows 下若导出线程仍持有 SQLite 文件句柄，remove_file 会直接报错；
+        // Unix 下若仍持有旧 inode 连接，后续导出会静默写进已 unlink 的旧文件。
+        std::fs::remove_file(&database).expect("worker must not hold open lock on ledger");
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = database.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(sidecar);
+        }
+        init_ledger(&database);
+
+        let db = database.clone();
+        let cfg = Arc::clone(&config);
+        let second = exchange(make_request("req-2"), move |stream| {
+            let mut state = state;
+            handle_export(stream, PORT, &db, &cfg, &mut state)
+        });
+        assert_eq!(second.unwrap(), "application/json");
+
+        let conn = storage::open_database(&database).unwrap();
+        assert_eq!(
+            speed_store::source_counts(&conn, "claude", now + 1)
                 .unwrap()
                 .0,
             1

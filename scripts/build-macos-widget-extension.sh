@@ -85,9 +85,15 @@ for asset in \
   antigravity-app-icon.png \
   workbuddy-app-icon.png \
   qoder-app-icon.png \
+  deepseek-app-icon.png \
+  dsh-app-icon.png \
   grok-app-icon.png \
+  grokbot-app-icon.png \
+  hermes-app-icon.png \
   pi-app-icon.png \
-  qwen-app-icon.png
+  qwen-app-icon.png \
+  cursor-app-icon.png \
+  minimax-app-icon.png
 do
   ditto "$PROJECT_DIR/src/assets/$asset" "$APPEX_RESOURCES/$asset"
 done

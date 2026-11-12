@@ -1,12 +1,14 @@
 use super::{
-    discover_files, non_empty, AgentAdapter, JsonlRecords, ParsedScan, ScanDiagnostics,
-    SourceCandidate,
+    discover_files, file_mtime_ns, non_empty, AgentAdapter, JsonlRecords, ParsedScan,
+    ScanDiagnostics, SourceCandidate,
 };
 use crate::domain::{ParsedSource, TokenVector, UsageEvent};
 use anyhow::Result;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use serde_json::value::RawValue;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Kimi CLI / Kimi Code 的 wire 日志（JSONL）。两代格式并存：
 ///
@@ -24,23 +26,36 @@ use std::path::{Path, PathBuf};
 /// 保持 `None`（诚实标注"未标注模型"，不猜测）。
 pub struct KimiAdapter {
     roots: Vec<PathBuf>,
+    project_cache: Mutex<HashMap<PathBuf, HomeProjectCache>>,
 }
 
+#[derive(Default)]
+struct HomeProjectCache {
+    workspaces_stamp: Option<(i64, u64)>,
+    workspaces: HashMap<String, String>,
+    session_index_stamp: Option<(i64, u64)>,
+    session_dirs: HashMap<String, String>,
+}
+
+/// 顶层轻量信封：`usage`、`event`、`message` 都保留为 `RawValue`，只在命中对应
+/// 记录类型后才反序列化载荷。这样既避免为每条无关请求/工具快照分配嵌套结构，
+/// 也防止 `{"type":"turn.step.interrupted","message":"..."}` 这类同名字符串字段
+/// 把合法会话误判成 `malformed_lines`（数据残缺）。
 #[derive(Deserialize, Default)]
 struct KimiRecord {
     // 新版
     #[serde(rename = "type")]
     record_type: Option<String>,
     model: Option<String>,
-    usage: Option<NewUsage>,
+    usage: Option<Box<RawValue>>,
     #[serde(rename = "usageScope")]
     usage_scope: Option<String>,
     time: Option<i64>,
     /// `context.append_loop_event` 的载荷；只读 `step.end` 的用量与耗时。
-    event: Option<LoopEvent>,
+    event: Option<Box<RawValue>>,
     // 旧版
     timestamp: Option<f64>,
-    message: Option<LegacyMessage>,
+    message: Option<Box<RawValue>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -90,14 +105,19 @@ struct LegacyUsage {
     output: i64,
 }
 
+pub fn kimi_code_dir() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_default();
+    std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".kimi-code"))
+}
+
 impl KimiAdapter {
     pub fn detected() -> Self {
         let home = dirs::home_dir().unwrap_or_default();
         // 新版数据根可被 KIMI_CODE_HOME 覆盖。
-        let kimi_code = std::env::var_os("KIMI_CODE_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .unwrap_or_else(|| home.join(".kimi-code"));
+        let kimi_code = kimi_code_dir();
         // Kimi Work（kimi-desktop）内嵌同源 kimi-code 内核，把会话写在
         // daimon 运行时的 home 下（2026-08 真机核实：wire.jsonl 逐字段同构，
         // 含 usageScope=turn；项目归属在 home/session_index.jsonl）。与
@@ -120,13 +140,105 @@ impl KimiAdapter {
                 home.join(".kimi").join("sessions"),
                 kimi_work,
             ],
+            project_cache: Mutex::new(HashMap::new()),
         }
     }
 
     #[cfg(test)]
     fn with_roots(roots: Vec<PathBuf>) -> Self {
-        Self { roots }
+        Self {
+            roots,
+            project_cache: Mutex::new(HashMap::new()),
+        }
     }
+
+    /// 项目归属映射，按 `<home>` 缓存 `workspaces.json` 与 `session_index.jsonl`（按
+    /// mtime + size 失效），避免上百个 `wire.jsonl` 每个都重复读盘与全量反序列化。
+    fn project_root_from_path(&self, path: &Path) -> Option<String> {
+        let sessions_dir = path
+            .ancestors()
+            .find(|dir| dir.file_name().and_then(|name| name.to_str()) == Some("sessions"))?;
+        let home = sessions_dir.parent()?;
+        let mut segments = path.strip_prefix(sessions_dir).ok()?.iter();
+        let workspace_id = segments.next()?.to_str()?;
+        let session_id = segments.next().and_then(|value| value.to_str());
+
+        let Ok(mut guard) = self.project_cache.lock() else {
+            return None;
+        };
+        let entry = guard.entry(home.to_path_buf()).or_default();
+
+        let workspaces_path = home.join("workspaces.json");
+        let ws_stamp = file_stamp(&workspaces_path);
+        if entry.workspaces_stamp != ws_stamp {
+            match ws_stamp {
+                None => {
+                    entry.workspaces.clear();
+                    entry.workspaces_stamp = None;
+                }
+                Some(_) => match std::fs::read_to_string(&workspaces_path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<KimiWorkspaces>(&raw).ok())
+                {
+                    Some(parsed) => {
+                        let mut next = HashMap::with_capacity(parsed.workspaces.len());
+                        for (id, ws) in parsed.workspaces {
+                            if let Some(root) = ws.root.filter(|r| !r.trim().is_empty()) {
+                                next.insert(id, root);
+                            }
+                        }
+                        entry.workspaces = next;
+                        entry.workspaces_stamp = ws_stamp;
+                    }
+                    // 文件被瞬时锁住或非原子重写截断时保留旧映射（stale-on-error），
+                    // 不缓存当前 stamp 以便后续查询重试，避免当次解析把会话记为未归属。
+                    None => entry.workspaces_stamp = None,
+                },
+            }
+        }
+        if let Some(root) = entry.workspaces.get(workspace_id) {
+            return Some(root.clone());
+        }
+
+        if let Some(session_id) = session_id {
+            let index_path = home.join("session_index.jsonl");
+            let idx_stamp = file_stamp(&index_path);
+            if entry.session_index_stamp != idx_stamp {
+                match idx_stamp {
+                    None => {
+                        entry.session_dirs.clear();
+                        entry.session_index_stamp = None;
+                    }
+                    Some(_) => match std::fs::read_to_string(&index_path) {
+                        Ok(raw) if raw.trim().is_empty() && !entry.session_dirs.is_empty() => {
+                            // 已有映射时读到空文件，通常是截断重写的中间态，保留旧映射等重试。
+                            entry.session_index_stamp = None;
+                        }
+                        Ok(raw) => {
+                            let (dirs, truncated_tail) = parse_session_index_map(&raw);
+                            if truncated_tail {
+                                entry.session_dirs.extend(dirs);
+                                entry.session_index_stamp = None;
+                            } else {
+                                entry.session_dirs = dirs;
+                                entry.session_index_stamp = idx_stamp;
+                            }
+                        }
+                        Err(_) => entry.session_index_stamp = None,
+                    },
+                }
+            }
+            if let Some(dir) = entry.session_dirs.get(session_id) {
+                return Some(dir.clone());
+            }
+        }
+        None
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(i64, u64)> {
+    let meta = path.metadata().ok()?;
+    Some((file_mtime_ns(&meta), meta.len()))
 }
 
 /// 会话 ID 取自路径：新版 `sessions/<workspace>/<session>/agents/<agent>/wire.jsonl`
@@ -162,38 +274,6 @@ struct KimiWorkspace {
     root: Option<String>,
 }
 
-/// 项目归属映射，两个来源逐个尝试（会话目录都在 `sessions/<id>/…` 下）：
-/// - CLI：`<home>/workspaces.json` 的 `workspaces.<workspace-id>.root`；
-/// - Kimi Work：`<home>/session_index.jsonl` 每行 `{sessionId, workDir}`，
-///   后行覆盖前行。两者都查不到时返回 None：不拿目录名里的工作区 ID
-///   冒充路径（旧版 `~/.kimi/sessions/<group>/…` 的 `<group>` 不是工作区 ID）。
-fn project_root_from_path(path: &Path) -> Option<String> {
-    let sessions_dir = path
-        .ancestors()
-        .find(|dir| dir.file_name().and_then(|name| name.to_str()) == Some("sessions"))?;
-    let home = sessions_dir.parent()?;
-    let mut segments = path.strip_prefix(sessions_dir).ok()?.iter();
-    let workspace_id = segments.next()?.to_str()?;
-    let session_id = segments.next().and_then(|value| value.to_str());
-
-    if let Ok(raw) = std::fs::read_to_string(home.join("workspaces.json")) {
-        if let Some(root) = serde_json::from_str::<KimiWorkspaces>(&raw)
-            .ok()
-            .and_then(|parsed| parsed.workspaces.get(workspace_id)?.root.clone())
-        {
-            return Some(root);
-        }
-    }
-    if let Some(session_id) = session_id {
-        if let Ok(raw) = std::fs::read_to_string(home.join("session_index.jsonl")) {
-            if let Some(dir) = work_dir_from_session_index(&raw, session_id) {
-                return Some(dir);
-            }
-        }
-    }
-    None
-}
-
 #[derive(Deserialize)]
 struct SessionIndexEntry {
     #[serde(rename = "sessionId")]
@@ -204,17 +284,38 @@ struct SessionIndexEntry {
 
 /// Kimi Work 的会话索引（home/session_index.jsonl）：每行一个会话，
 /// `workDir` 是真实工作目录。同 sessionId 多行时后行覆盖（目录可能被改）。
-fn work_dir_from_session_index(raw: &str, session_id: &str) -> Option<String> {
-    let mut found: Option<String> = None;
-    for line in raw.lines() {
+/// 返回 `(映射表, 是否存在末尾无换行的半写坏行)`：中间已封尾的历史坏行跳过即可，
+/// 只有文件末尾正在追加的半写行才要求调用方放弃固化缓存指纹并在下次重试。
+fn parse_session_index_map(raw: &str) -> (HashMap<String, String>, bool) {
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    let ends_with_newline = raw.ends_with('\n');
+    let lines: Vec<&str> = raw.lines().collect();
+    let last_non_empty_idx = lines.iter().rposition(|line| !line.trim().is_empty());
+
+    let mut dirs = HashMap::new();
+    let mut truncated_tail = false;
+    for (idx, line) in lines.into_iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let Ok(entry) = serde_json::from_str::<SessionIndexEntry>(line) else {
+            if !ends_with_newline && Some(idx) == last_non_empty_idx {
+                truncated_tail = true;
+            }
             continue;
         };
-        if entry.session_id.as_deref() == Some(session_id) {
-            found = entry.work_dir.filter(|dir| !dir.trim().is_empty());
+        if let Some(id) = entry.session_id.filter(|id| !id.is_empty()) {
+            match entry.work_dir.filter(|dir| !dir.trim().is_empty()) {
+                Some(dir) => {
+                    dirs.insert(id, dir);
+                }
+                None => {
+                    dirs.remove(&id);
+                }
+            }
         }
     }
-    found
+    (dirs, truncated_tail)
 }
 
 impl AgentAdapter for KimiAdapter {
@@ -232,7 +333,7 @@ impl AgentAdapter for KimiAdapter {
         let mut records = JsonlRecords::<KimiRecord>::open(&candidate.path)?;
 
         let session_id = session_id_from_path(&candidate.path);
-        let project = project_root_from_path(&candidate.path);
+        let project = self.project_root_from_path(&candidate.path);
         let mut events: Vec<UsageEvent> = Vec::new();
         // 旧版按 message_id 合并（分量取最大值），值同时记录首见时间。
         let mut legacy: BTreeMap<String, (i64, TokenVector)> = BTreeMap::new();
@@ -245,7 +346,10 @@ impl AgentAdapter for KimiAdapter {
             // `step.end` 紧跟在它那次请求的用量记录之后，带同一份用量和这次请求的
             // 耗时：首 token 延迟（含请求构建）加流式输出时长。用量对不上就不配对。
             if record.record_type.as_deref() == Some("context.append_loop_event") {
-                let Some(event) = record.event else {
+                let Some(raw_event) = record.event else {
+                    continue;
+                };
+                let Ok(event) = serde_json::from_str::<LoopEvent>(raw_event.get()) else {
                     continue;
                 };
                 if event.event_type.as_deref() != Some("step.end") {
@@ -275,7 +379,13 @@ impl AgentAdapter for KimiAdapter {
                     }
                     continue;
                 }
-                let (Some(usage), Some(timestamp)) = (record.usage, record.time) else {
+                let (Some(raw_usage), Some(timestamp)) = (record.usage, record.time) else {
+                    continue;
+                };
+                let Ok(usage) = serde_json::from_str::<NewUsage>(raw_usage.get()) else {
+                    if track_skipped_lines {
+                        diagnostics.malformed_lines += 1;
+                    }
                     continue;
                 };
                 let tokens = TokenVector {
@@ -308,9 +418,18 @@ impl AgentAdapter for KimiAdapter {
                 );
                 continue;
             }
+            if record.record_type.is_some() {
+                continue;
+            }
 
-            // 旧版 StatusUpdate。
-            let Some(message) = record.message else {
+            // 旧版 StatusUpdate（顶层无 type 字段）。
+            let Some(raw_message) = record.message else {
+                continue;
+            };
+            let Ok(message) = serde_json::from_str::<LegacyMessage>(raw_message.get()) else {
+                if track_skipped_lines {
+                    diagnostics.malformed_lines += 1;
+                }
                 continue;
             };
             if message.message_type.as_deref() != Some("StatusUpdate") {
@@ -664,5 +783,123 @@ mod tests {
         assert_eq!(parsed.diagnostics.malformed_lines, 1);
         assert!(parsed.diagnostics.is_partial());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn interrupted_turn_with_string_message_does_not_mark_scan_partial() {
+        let path = wire_file(
+            "interrupted",
+            &["sessions", "ws-1", "session-int", "agents", "main"],
+            concat!(
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":200,"output":50,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1782113184943}"#,
+                "\n",
+                r#"{"type":"turn.step.interrupted","message":"User interrupted the step","time":1782113185000}"#,
+                "\n",
+            ),
+        );
+
+        let parsed = KimiAdapter::with_roots(vec![])
+            .parse(&candidate_for(&path), i64::MIN)
+            .unwrap();
+
+        assert_eq!(parsed.source.events.len(), 1);
+        assert_eq!(parsed.source.events[0].tokens.processed(), 250);
+        assert!(!parsed.diagnostics.is_partial(), "{:?}", parsed.diagnostics);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn project_mapping_retries_after_unparseable_snapshot_and_keeps_stale_on_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let wire = root
+            .join("sessions")
+            .join("ws-1")
+            .join("sess-1")
+            .join("wire.jsonl");
+        let wire_idx = root
+            .join("sessions")
+            .join("ws-unknown")
+            .join("sess-2")
+            .join("wire.jsonl");
+        std::fs::create_dir_all(wire.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(wire_idx.parent().unwrap()).unwrap();
+        std::fs::write(&wire, "").unwrap();
+        std::fs::write(&wire_idx, "").unwrap();
+
+        let workspaces_path = root.join("workspaces.json");
+        let valid = r#"{"workspaces":{"ws-1":{"root":"D:/work/metrik"}}}"#;
+        // 构造与 valid 字节长度完全一致的损坏内容，并钉死相同的 mtime，模拟锁冲突/半写恢复后 stamp 不变。
+        let broken = "{".to_owned() + &" ".repeat(valid.len() - 1);
+        assert_eq!(broken.len(), valid.len());
+
+        let fixed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_780_000_000);
+        std::fs::write(&workspaces_path, &broken).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&workspaces_path)
+            .unwrap()
+            .set_modified(fixed_time)
+            .unwrap();
+
+        let adapter = KimiAdapter::with_roots(vec![root.clone()]);
+        assert_eq!(adapter.project_root_from_path(&wire), None);
+
+        std::fs::write(&workspaces_path, valid).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&workspaces_path)
+            .unwrap()
+            .set_modified(fixed_time)
+            .unwrap();
+
+        assert_eq!(
+            adapter.project_root_from_path(&wire).as_deref(),
+            Some("D:/work/metrik")
+        );
+
+        // 非原子重写截断 workspaces.json 时保留已缓存映射（stale-on-error），当次不掉回未归属。
+        let newer_time = fixed_time + std::time::Duration::from_secs(5);
+        std::fs::write(&workspaces_path, "{").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&workspaces_path)
+            .unwrap()
+            .set_modified(newer_time)
+            .unwrap();
+        assert_eq!(
+            adapter.project_root_from_path(&wire).as_deref(),
+            Some("D:/work/metrik")
+        );
+
+        // session_index.jsonl：中间已封尾的历史坏行不阻塞 stamp 缓存；末尾无换行的半写行则自动重试。
+        let index_path = root.join("session_index.jsonl");
+        std::fs::write(
+            &index_path,
+            "not-json-history-line\n{\"sessionId\":\"sess-2\",\"workDir\":\"D:/work/idx",
+        )
+        .unwrap();
+        assert_eq!(adapter.project_root_from_path(&wire_idx), None);
+
+        std::fs::write(
+            &index_path,
+            "not-json-history-line\n{\"sessionId\":\"sess-2\",\"workDir\":\"D:/work/idx\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            adapter.project_root_from_path(&wire_idx).as_deref(),
+            Some("D:/work/idx")
+        );
+        let cached_stamp = adapter
+            .project_cache
+            .lock()
+            .unwrap()
+            .get(&root)
+            .and_then(|entry| entry.session_index_stamp);
+        assert!(
+            cached_stamp.is_some(),
+            "historical malformed line must not disable session_index stamp caching"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

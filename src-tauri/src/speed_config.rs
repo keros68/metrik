@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
 use toml_edit::{Document, Item, Table};
 
 const CLAUDE_ENDPOINT: &str = "http://127.0.0.1:46319/claude/v1/logs";
@@ -33,6 +34,52 @@ pub struct ConfigManager {
     state_dir: PathBuf,
     claude_settings: Option<PathBuf>,
     codex_config: Option<PathBuf>,
+    inspect_cache: Mutex<[Option<InspectCacheEntry>; 2]>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileStamp {
+    Missing,
+    Present {
+        len: u64,
+        modified: Option<SystemTime>,
+    },
+    Unstatable,
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Self {
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => Self::Present {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Missing,
+            _ => Self::Unstatable,
+        }
+    }
+
+    fn is_settled(self, now: SystemTime) -> bool {
+        match self {
+            Self::Missing => true,
+            Self::Present {
+                modified: Some(modified),
+                ..
+            } => now
+                .duration_since(modified)
+                .is_ok_and(|age| age >= Duration::from_secs(2)),
+            Self::Present { modified: None, .. } | Self::Unstatable => false,
+        }
+    }
+}
+
+struct InspectCacheEntry {
+    config_path: PathBuf,
+    config_stamp: FileStamp,
+    ownership_stamp: FileStamp,
+    config_bytes: Option<Vec<u8>>,
+    ownership_bytes: Option<Vec<u8>>,
+    status: ConfigStatus,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -48,6 +95,13 @@ impl Agent {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             _ => bail!("Unsupported timing client"),
+        }
+    }
+
+    fn cache_slot(self) -> usize {
+        match self {
+            Self::Claude => 0,
+            Self::Codex => 1,
         }
     }
 
@@ -152,6 +206,7 @@ impl ConfigManager {
                 .map(|directory| directory.join("settings.json")),
             codex_config: directory("CODEX_HOME", ".codex")
                 .map(|directory| directory.join("config.toml")),
+            inspect_cache: Mutex::new([None, None]),
         }
     }
 
@@ -161,14 +216,55 @@ impl ConfigManager {
             state_dir,
             claude_settings: Some(claude_settings),
             codex_config: Some(codex_config),
+            inspect_cache: Mutex::new([None, None]),
+        }
+    }
+
+    fn clear_inspect_cache(&self, agent: Agent) {
+        if let Ok(mut cache) = self.inspect_cache.lock() {
+            cache[agent.cache_slot()] = None;
         }
     }
 
     pub fn inspect(&self, agent: &str, endpoint: &str) -> Result<ConfigStatus> {
         let _guard = lock()?;
         let agent = checked_agent(agent, endpoint)?;
-        let loaded = load(self.config_path(agent)?, agent)?;
-        let ownership = self.read_ownership(agent)?;
+        let config_path = self.config_path(agent)?;
+        let ownership_path = self.ownership_path(agent);
+        let config_stamp = FileStamp::of(config_path);
+        let ownership_stamp = FileStamp::of(&ownership_path);
+        let now = SystemTime::now();
+        if config_stamp != FileStamp::Unstatable && ownership_stamp != FileStamp::Unstatable {
+            if let Ok(cache) = self.inspect_cache.lock() {
+                if let Some(entry) = cache[agent.cache_slot()].as_ref() {
+                    if entry.config_path == config_path
+                        && entry.config_stamp == config_stamp
+                        && entry.ownership_stamp == ownership_stamp
+                    {
+                        if config_stamp.is_settled(now) && ownership_stamp.is_settled(now) {
+                            return Ok(entry.status);
+                        }
+                        if let (Ok(current_cfg), Ok(current_own)) = (
+                            read_optional(config_path, MAX_CONFIG_BYTES),
+                            read_optional(&ownership_path, MAX_OWNERSHIP_BYTES),
+                        ) {
+                            let cfg_matches = match (&entry.config_bytes, &current_cfg) {
+                                (None, None) => config_stamp == FileStamp::Missing,
+                                (Some(cached), Some(live)) => cached == live,
+                                _ => false,
+                            };
+                            if cfg_matches && entry.ownership_bytes == current_own {
+                                return Ok(entry.status);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let loaded = load(config_path, agent)?;
+        let ownership_raw = read_optional(&ownership_path, MAX_OWNERSHIP_BYTES)?;
+        let ownership = self.parse_ownership(agent, ownership_raw.as_deref())?;
         let ownership_conflict = ownership.as_ref().is_some_and(|ownership| {
             ownership.config_path != loaded.path
                 || ownership.changes.iter().any(|change| {
@@ -179,15 +275,34 @@ impl ConfigManager {
                 })
         });
         let setting_conflict = loaded.settings.conflict(agent);
-        Ok(ConfigStatus {
+        let status = ConfigStatus {
             configured: loaded.settings.configured(agent) && !setting_conflict,
             conflict: setting_conflict || ownership_conflict,
-        })
+        };
+        if config_stamp != FileStamp::Unstatable && ownership_stamp != FileStamp::Unstatable {
+            if let Ok(mut cache) = self.inspect_cache.lock() {
+                let config_bytes = loaded
+                    .original
+                    .as_ref()
+                    .filter(|bytes| bytes.len() <= MAX_OWNERSHIP_BYTES)
+                    .cloned();
+                cache[agent.cache_slot()] = Some(InspectCacheEntry {
+                    config_path: loaded.path,
+                    config_stamp,
+                    ownership_stamp,
+                    config_bytes,
+                    ownership_bytes: ownership_raw,
+                    status,
+                });
+            }
+        }
+        Ok(status)
     }
 
     pub fn enable(&self, agent: &str, endpoint: &str) -> Result<()> {
         let _guard = lock()?;
         let agent = checked_agent(agent, endpoint)?;
+        self.clear_inspect_cache(agent);
         let mut loaded = load(self.config_path(agent)?, agent)?;
         if loaded.settings.conflict(agent) {
             bail!("An existing timing exporter conflicts with the local collector");
@@ -244,6 +359,7 @@ impl ConfigManager {
     pub fn disable(&self, agent: &str) -> Result<()> {
         let _guard = lock()?;
         let agent = Agent::parse(agent)?;
+        self.clear_inspect_cache(agent);
         let Some(ownership) = self.read_ownership(agent)? else {
             return Ok(());
         };
@@ -291,10 +407,15 @@ impl ConfigManager {
     }
 
     fn read_ownership(&self, agent: Agent) -> Result<Option<Ownership>> {
-        let Some(bytes) = read_optional(&self.ownership_path(agent), MAX_OWNERSHIP_BYTES)? else {
+        let bytes = read_optional(&self.ownership_path(agent), MAX_OWNERSHIP_BYTES)?;
+        self.parse_ownership(agent, bytes.as_deref())
+    }
+
+    fn parse_ownership(&self, agent: Agent, bytes: Option<&[u8]>) -> Result<Option<Ownership>> {
+        let Some(bytes) = bytes else {
             return Ok(None);
         };
-        let ownership: Ownership = serde_json::from_slice(&bytes)
+        let ownership: Ownership = serde_json::from_slice(bytes)
             .map_err(|_| anyhow!("Invalid timing ownership metadata"))?;
         let desired = agent.desired();
         let mut keys = std::collections::HashSet::new();

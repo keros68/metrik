@@ -88,6 +88,24 @@ fn device_label() -> String {
     system_hostname().unwrap_or_else(|| FALLBACK_LABEL.into())
 }
 
+/// 检查账本是否已经落盘完备的设备标识（后续 `device_identity` 可纯读返回，不会写库）。
+pub fn has_device_identity(connection: &Connection) -> bool {
+    let Ok(Some(label)) = get_setting(connection, SETTING_DEVICE_LABEL) else {
+        return false;
+    };
+    if label == LEGACY_FALLBACK_LABEL && system_hostname().is_some() {
+        return false;
+    }
+    matches!(get_setting(connection, SETTING_DEVICE_ID), Ok(Some(_)))
+}
+
+fn ensure_writable_autocommit(connection: &Connection) -> Result<()> {
+    if !connection.is_autocommit() || connection.is_readonly(rusqlite::MAIN_DB).unwrap_or(false) {
+        bail!("device identity must be initialized on a writable autocommit connection");
+    }
+    Ok(())
+}
+
 /// 返回（并在首次调用时生成）本机的稳定设备标识与名称。
 pub fn device_identity(connection: &Connection) -> Result<(String, String)> {
     let label = match get_setting(connection, SETTING_DEVICE_LABEL)? {
@@ -96,6 +114,7 @@ pub fn device_identity(connection: &Connection) -> Result<(String, String)> {
         // 自己改过的名字不碰。
         Some(value) if value == LEGACY_FALLBACK_LABEL => match system_hostname() {
             Some(hostname) => {
+                ensure_writable_autocommit(connection)?;
                 set_setting(connection, SETTING_DEVICE_LABEL, &hostname)?;
                 hostname
             }
@@ -103,6 +122,7 @@ pub fn device_identity(connection: &Connection) -> Result<(String, String)> {
         },
         Some(value) => value,
         None => {
+            ensure_writable_autocommit(connection)?;
             let value = device_label();
             set_setting(connection, SETTING_DEVICE_LABEL, &value)?;
             value
@@ -111,6 +131,7 @@ pub fn device_identity(connection: &Connection) -> Result<(String, String)> {
     let id = match get_setting(connection, SETTING_DEVICE_ID)? {
         Some(value) => value,
         None => {
+            ensure_writable_autocommit(connection)?;
             let seed = format!(
                 "{label}|{}|{}",
                 std::process::id(),
@@ -346,15 +367,17 @@ fn export_local_events(connection: &Connection, dir: &Path, now_ms: i64) -> Resu
     let (device_id, label) = device_identity(connection)?;
     let mut statement = connection.prepare(
         // Cursor 的事件是账号级的，每台开启的设备都拉到同一份，导出会重复计数。
-        "SELECT event_id, adapter_id, occurred_at_ms, processed_tokens
+        "SELECT adapter_id, event_key, occurred_at_ms, processed_tokens
          FROM usage_event WHERE occurred_at_ms >= ?1 AND adapter_id != 'cursor'
          ORDER BY occurred_at_ms",
     )?;
     let events = statement
         .query_map([now_ms - EXPORT_HORIZON_MS], |row| {
+            let agent: String = row.get(0)?;
+            let event_key: String = row.get(1)?;
             Ok(ExportEvent {
-                id: row.get(0)?,
-                agent: row.get(1)?,
+                id: stable_hash(&format!("{agent}|{event_key}")),
+                agent,
                 at: row.get(2)?,
                 tokens: row.get(3)?,
             })
@@ -522,15 +545,15 @@ mod tests {
         connection
     }
 
-    fn insert_local_event(connection: &Connection, event_id: &str, at_ms: i64, tokens: i64) {
+    fn insert_local_event(connection: &Connection, event_key: &str, at_ms: i64, tokens: i64) {
         connection
             .execute(
                 "INSERT INTO usage_event (
-                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    adapter_id, event_key, occurred_at_ms, session_id,
                     model, input_uncached_tokens, cache_read_tokens, cache_write_tokens,
-                    output_tokens, reasoning_tokens, processed_tokens, quality, payload_hash
-                 ) VALUES (?1, 'codex', ?1, ?2, 'session', NULL, ?3, 0, 0, 0, 0, ?3, 'exact', ?1)",
-                params![event_id, at_ms, tokens],
+                    output_tokens, reasoning_tokens, processed_tokens, quality
+                 ) VALUES ('codex', ?1, ?2, 'session', NULL, ?3, 0, 0, 0, 0, ?3, 'exact')",
+                params![event_key, at_ms, tokens],
             )
             .unwrap();
     }
@@ -647,7 +670,7 @@ mod tests {
         insert_local_event(&device_a, "event-a", now - 1_000, 111);
         device_a
             .execute(
-                "UPDATE usage_event SET adapter_id = 'cursor' WHERE event_id = 'event-a'",
+                "UPDATE usage_event SET adapter_id = 'cursor' WHERE event_key = 'event-a'",
                 [],
             )
             .unwrap();
