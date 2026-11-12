@@ -48,6 +48,30 @@ const LITELLM_PROVIDERS = new Set([
 const MODELS_DEV_PROVIDERS = ["openai", "anthropic", "moonshotai", "zai", "google", "xai", "minimax"];
 const asOf = new Date().toISOString().slice(0, 10);
 
+// https://docs.x.ai/developers/models: the model pages list these exact aliases.
+const XAI_ALIASES = [
+  ["grok-4.20-0309-reasoning", [
+    "grok-4.20", "grok-4.20-0309", "grok-4.20-reasoning", "grok-4.20-reasoning-latest",
+    "grok-4.20-reasoning-gv2", "grok-4.20-beta", "grok-4.20-beta-0309",
+    "grok-4.20-beta-0309-reasoning", "grok-4.20-beta-latest", "grok-4.20-beta-reasoning",
+    "grok-4.20-beta-latest-reasoning", "grok-4.20-experimental-beta-0304",
+    "grok-4.20-experimental-beta-0304-reasoning", "grok-4.20-experimental-beta-latest",
+    "grok-4.20-experimental-beta-reasoning-latest",
+  ]],
+  ["grok-4.20-0309-non-reasoning", [
+    "grok-4.20-non-reasoning", "grok-4.20-non-reasoning-latest", "grok-4.20-non-reasoning-gv2",
+    "grok-4.20-beta-non-reasoning", "grok-4.20-beta-latest-non-reasoning",
+    "grok-4.20-beta-0309-non-reasoning", "grok-4.20-experimental-beta-0304-non-reasoning",
+    "grok-4.20-experimental-beta-non-reasoning-latest",
+  ]],
+  ["grok-4.20-multi-agent-0309", [
+    "grok-4.20-multi-agent", "grok-4.20-multi-agent-latest", "grok-4.20-multi-agent-beta-0309",
+    "grok-4.20-multi-agent-beta-latest", "grok-4.20-multi-agent-experimental-beta-0304",
+    "grok-4.20-multi-agent-experimental-beta-latest",
+  ]],
+  ["grok-build-0.1", ["grok-code-fast", "grok-code-fast-1", "grok-code-fast-1-0825"]],
+];
+
 // 官方已公布、但尚未开始计费的价格只能在生效日后进入估算表。
 const PRICING_START_DATES = new Map();
 
@@ -238,6 +262,24 @@ for (const row of [...litellmRows, ...modelsDevRows]) {
 const byName = (a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : 0);
 rows.sort(byName);
 
+const sameRates = (a, b) => FIELDS.every((field) => a[field] === b[field]);
+const aliases = new Map();
+for (const [target, names] of XAI_ALIASES) {
+  const canonical = byModel.get(target);
+  if (!canonical) continue;
+  for (const name of names) {
+    const row = byModel.get(name);
+    if (row && sameRates(row, canonical)) aliases.set(name, target);
+  }
+}
+const rateRows = rows.filter((row) => {
+  if (aliases.has(row.model)) return false;
+  // The Rust lookup already resolves an eight-digit Claude snapshot suffix.
+  const base = row.model.match(/^(claude-.+)-\d{8}$/)?.[1];
+  const undated = byModel.get(base);
+  return !undated || !sameRates(row, undated);
+});
+
 if (rejectedNames) {
   console.log(`跳过 ${rejectedNames} 个含非法字符的模型名`);
 }
@@ -272,12 +314,17 @@ const f64Literal = (value) => {
   return fixed.includes(".") ? fixed : `${fixed}.0`;
 };
 
-const body = rows
+const body = rateRows
   .map(
     (row) =>
       `    ("${row.model}", Pricing { input: ${f64Literal(row.input)}, cache_read: ${f64Literal(row.cache_read)}, cache_write: ${f64Literal(row.cache_write)}, output: ${f64Literal(row.output)} }),` +
       (row.source === "models.dev" ? " // models.dev" : ""),
   )
+  .join("\n");
+
+const aliasBody = [...aliases.keys()]
+  .sort()
+  .map((alias) => `    ("${alias}", "${aliases.get(alias)}"),`)
   .join("\n");
 
 const prices = (row) => FIELDS.map((field) => f64Literal(row[field])).join(" / ");
@@ -317,8 +364,14 @@ pub const PRICING_AS_OF: &str = "${asOf}";
 pub const PRICING_TABLE: &[(&str, Pricing)] = &[
 ${body}
 ];
+
+/// Exact official model aliases with the same rates as their canonical IDs.
+#[rustfmt::skip]
+pub const PRICING_ALIASES: &[(&str, &str)] = &[
+${aliasBody}
+];
 `,
   "utf8",
 );
 
-console.log(`已写入 ${OUT}：${rows.length} 个模型，日期 ${asOf}`);
+console.log(`已写入 ${OUT}：${rateRows.length} 条费率，${aliases.size} 个显式别名，日期 ${asOf}`);

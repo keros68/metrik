@@ -407,8 +407,8 @@ service, and the local application remains fully useful while offline.
 
 Codex stores nullable request input counts only when `last_token_usage` agrees
 with the cumulative delta. This metadata does not change event identity or token
-totals. Astra requests above 272,000 input tokens use the published long-context
-multipliers; absent request evidence retains the base estimate. Fast pricing is
+totals. Supported OpenAI models use published long-context rates above
+272,000 input tokens. Missing request size uses the base rate. Fast pricing is
 not inferred from model names or arbitrary log text. Synced events currently
 lack request-size metadata and retain base pricing.
 
