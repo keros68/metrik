@@ -126,11 +126,11 @@ fn add_collected_model_timings(
 ) -> Result<()> {
     for timing in crate::speed_store::model_timings(connection, start_ms, end_ms)? {
         let model = models.entry((timing.agent, timing.model)).or_default();
-        // The dedicated timing stream is authoritative for these two agents.
-        // It contributes speed metadata only, never processed tokens or cost.
-        model.response_output = timing.output_tokens;
-        model.response_duration_ms = timing.duration_ms;
-        model.response_sample_count = timing.sample_count;
+        // Pi can call the subscription API directly while being credited to
+        // Codex. Its local request timings complement native client telemetry.
+        model.response_output += timing.output_tokens;
+        model.response_duration_ms += timing.duration_ms;
+        model.response_sample_count += timing.sample_count;
     }
     Ok(())
 }
@@ -3364,6 +3364,7 @@ mod tests {
         let at = test_local_time(today, 10).timestamp_millis();
         for (id, agent, model, output, duration) in [
             ("codex-usage", "codex", "gpt-5", 500, None),
+            ("pi-codex-usage", "codex", "gpt-5", 100, Some(2000)),
             ("claude-usage", "claude", "gpt-5", 700, None),
             ("untimed-usage", "codex", "untimed-model", 9000, None),
             ("zcode-usage", "zcode", "legacy-zcode-model", 60, Some(2000)),
@@ -3405,7 +3406,7 @@ mod tests {
         let report = report_at(&connection, local_now).unwrap();
 
         for (agent, model, expected_rate, expected_count) in [
-            ("codex", "gpt-5", Some(20.0), 2),
+            ("codex", "gpt-5", Some(25.0), 3),
             ("claude", "gpt-5", Some(40.0), 2),
             ("codex", "timing-only-model", Some(50.0), 1),
             ("zcode", "legacy-zcode-model", Some(30.0), 1),
@@ -3416,8 +3417,8 @@ mod tests {
                 .iter()
                 .find(|entry| entry.agent == agent && entry.model == model)
                 .unwrap();
-            // 200/10s = 20; the per-request arithmetic mean would be 55.56.
-            // The untimed ledger output must never enter this numerator.
+            // Codex and Pi contribute 300 timed tokens over 12 seconds.
+            // The untimed ledger output stays outside the numerator.
             assert_eq!(model_summary.response_tokens_per_second, expected_rate);
             assert_eq!(model_summary.response_sample_count, expected_count);
             let historical = report
@@ -3456,7 +3457,7 @@ mod tests {
         let usage_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(usage_count, 4);
+        assert_eq!(usage_count, 5);
     }
 
     #[test]

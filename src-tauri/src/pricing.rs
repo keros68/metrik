@@ -9,9 +9,8 @@
 //!
 //! ## 匹配规则：精确匹配，绝不前缀猜测
 //!
-//! 只认表里**完全同名**的模型；仅有一个例外，是把 `-YYYYMMDD` 日期快照后缀剥掉
-//! 再试一次（`claude-haiku-4-5-20251001` 与 `claude-haiku-4-5` 是同一模型的两种
-//! 写法，同价），这是别名归一化，不是猜价。
+//! 费率按模型 ID 或已确认的别名精确匹配。未单列费率的 `-YYYYMMDD` 日期快照
+//! 使用基础模型的费率，例如 `claude-haiku-4-5-20251001` 使用 `claude-haiku-4-5`。
 //!
 //! 这里曾经用「最长前缀匹配」，结果是一场事故：表最新只到 `gpt-5.2`，而实际用的
 //! 是 `gpt-5.6-sol`/`gpt-5.5`，于是它们静默命中了 `gpt-5` 的老价格——占 60% 用量
@@ -62,7 +61,7 @@
 mod table;
 
 pub use table::PRICING_AS_OF;
-use table::PRICING_TABLE;
+use table::{PRICING_ALIASES, PRICING_TABLE};
 
 /// 单个模型的分量单价，单位：美元 / 百万 token。
 #[derive(Clone, Copy, Debug)]
@@ -184,10 +183,14 @@ const WEEKEND_OFF_PEAK_FROM_MS: i64 = 1_787_414_400_000;
 const BEIJING_HOLIDAYS: &[(&str, &str)] =
     &[("2026-09-25", "2026-09-27"), ("2026-10-01", "2026-10-07")];
 
+const GEMINI_DECEMBER_CUTOVER_MS: i64 = 1_796_083_200_000;
+
 /// 已下线、由新模型接管并按新模型价计费的旧模型名：(旧名, 生效时刻, 新名)。
 /// DeepSeek 2026-09-10 更新日志：V4-Flash 与 V4-Flash-Vision-Exp 下线，
 /// 旧名路由到 V4.1-Flash 并按 Flash 价计费，新价 04:00 UTC 生效。生效前的
 /// 事件仍按旧名当时的价目。
+/// Gemini API 定价页（2026-11-12 核对）：2026-12-01 起，2.5 Pro 和 2.5 Flash
+/// 分别按 3.8 Flash 和 3.5 Flash-Lite 的费率计费。
 const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
     ("deepseek-v4-flash", 1_789_012_800_000, "deepseek-flash"),
     (
@@ -195,27 +198,66 @@ const RETIRED_ROUTES: &[(&str, i64, &str)] = &[
         1_789_012_800_000,
         "deepseek-flash",
     ),
+    (
+        "gemini-2.5-pro",
+        GEMINI_DECEMBER_CUTOVER_MS,
+        "gemini-3.8-flash",
+    ),
+    (
+        "gemini-2.5-flash",
+        GEMINI_DECEMBER_CUTOVER_MS,
+        "gemini-3.5-flash-lite",
+    ),
 ];
 
-/// 官方已公布生效日的调价：(模型, 生效时刻, 新价)。生效后的事件按新价计，
-/// 之前的事件仍按当时的价——与 RETIRED_ROUTES 一样按事件时间戳分段，不重算
-/// 历史。上游价格表只反映「当前价」，不会在官方公布的生效日自动翻转，这里
-/// 先行接管；生成表刷新成新价、数值一致后删除本条目。
-///
-/// - gemini-4-argon：Google 定价页（2026-10-25 核对）输入 $2、缓存命中
-///   $0.10、输出 $10（含思考 token）是限时价，只到 2026-11-30；2026-12-01
-///   起输入 $4、缓存 $0.20、输出 $20。页面只写日期未写时刻，按 UTC 午夜
-///   生效计。Batch/Flex/Priority 档与 grounding 不计。
-const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing)] = &[(
-    "gemini-4-argon",
-    1_796_083_200_000,
-    Pricing {
-        input: 4.0,
-        cache_read: 0.2,
-        cache_write: 0.0,
-        output: 20.0,
-    },
-)];
+const GEMINI_4_PROMOTIONAL_RATE: Pricing = Pricing {
+    input: 2.0,
+    cache_read: 0.1,
+    cache_write: 0.0,
+    output: 10.0,
+};
+
+const GEMINI_4_STANDARD_RATE: Pricing = Pricing {
+    input: 4.0,
+    cache_read: 0.2,
+    cache_write: 0.0,
+    output: 20.0,
+};
+
+/// (模型, 生效时刻, 调价前费率, 调价后费率)。保留两档费率可让生成表刷新后
+/// 继续按事件时间计价。历史费率滑出解析视界且生成表采用新价后可移除。
+/// https://aistudio.google.com/docs/pricing （2026-11-12 核对）。页面按日期
+/// 公布标准档，切换时刻取 UTC 午夜。
+const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing, Pricing)] = &[
+    (
+        "gemini-4-argon",
+        GEMINI_DECEMBER_CUTOVER_MS,
+        GEMINI_4_PROMOTIONAL_RATE,
+        GEMINI_4_STANDARD_RATE,
+    ),
+    (
+        "gemini-4-carbon",
+        GEMINI_DECEMBER_CUTOVER_MS,
+        GEMINI_4_PROMOTIONAL_RATE,
+        GEMINI_4_STANDARD_RATE,
+    ),
+    (
+        "gemini-3.8-flash",
+        1_798_761_600_000,
+        Pricing {
+            input: 0.75,
+            cache_read: 0.075,
+            cache_write: 0.0,
+            output: 3.75,
+        },
+        Pricing {
+            input: 1.5,
+            cache_read: 0.15,
+            cache_write: 0.0,
+            output: 7.5,
+        },
+    ),
+];
 
 /// 订阅制 coding plan 的模型 ID → 同一模型的官方第一方 API 价（估算口径）。
 /// 仅限"同一模型"，且要有官方佐证，不是看名字像就归一：
@@ -248,9 +290,8 @@ const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing)] = &[(
 ///   (low reasoning)」（2026-08-20 核对），故按 gpt-5.4 官方 API 价估算。
 ///
 /// - DeepSeek 定价页「模型版本」一栏的版本名：DeepSeek-V4-Flash-0731、
-///   DeepSeek-V4-Pro-0813（2026-08-28 存档）与 DeepSeek-V4.1-Flash（2026-10-04
-///   核对）。Pi 经 OpenCode Go、千问 Token Plan 记的就是这些小写版本名，
-///   分别是 deepseek-v4-flash、deepseek-v4-pro、deepseek-flash 本身。
+///   DeepSeek-V4-Pro-0813 与 DeepSeek-V4.1-Flash-1017。V4.1-Flash 的 1017
+///   更新沿用 Flash 费率（api-docs.deepseek.com/news/news261017/）。
 ///
 /// 没有官方价的订阅 ID 继续 unpriced（kimi-for-coding → K2.8 Preview、
 /// kimi-code/k2.8-preview、kimi-code/k4 等），见上。
@@ -271,6 +312,8 @@ const SUBSCRIPTION_ALIASES: &[(&str, &str)] = &[
     ("deepseek-v4-flash-0731", "deepseek-v4-flash"),
     ("deepseek-v4-pro-0813", "deepseek-v4-pro"),
     ("deepseek-v4.1-flash", "deepseek-flash"),
+    ("deepseek-v4.1-flash-1017", "deepseek-flash"),
+    ("DeepSeek-V4.1-Flash-1017", "deepseek-flash"),
 ];
 
 /// 不带单次请求输入量的定价，即只按基础档计。
@@ -281,10 +324,9 @@ pub fn price_for(model: &str, occurred_at_ms: i64) -> Option<Pricing> {
 
 /// 返回 `model` 在 `occurred_at_ms` 时刻的定价；表里没有则返回 `None`
 /// （调用方归入 unpriced，不得臆造价格）。见模块文档：只精确匹配，日期快照
-/// 后缀与订阅别名除外。时间戳只对 OFF_PEAK_HALF_PRICE 里的模型有影响，
-/// 其余模型全天一价。
+/// 后缀与明确别名除外。时间戳决定分时折扣、退役路由和定期调价。
 ///
-/// https://developers.openai.com/api/docs/pricing (2026-09-23).
+/// https://developers.openai.com/api/docs/pricing.md (2026-11-12).
 /// Only validated request sizes select the long-context tier; missing evidence
 /// retains the base estimate rather than using cumulative session counters.
 pub fn price_for_request(
@@ -299,11 +341,26 @@ pub fn price_for_request(
         base
     };
     let input = request_input_tokens.unwrap_or_default();
-    if input > 272_000 && matches!(canonical, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna") {
-        price.input *= 2.0;
-        price.cache_read *= 2.0;
-        price.cache_write *= 2.0;
-        price.output *= 1.5;
+    if input > 272_000 {
+        match canonical {
+            "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-astra" | "gpt-6-sol"
+            | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra" => {
+                price.input *= 2.0;
+                price.cache_read *= 2.0;
+                price.cache_write *= 2.0;
+                price.output *= 1.5;
+            }
+            // The long-context table publishes input, cache read and output only.
+            "gpt-6-cyber" => {
+                price = Pricing {
+                    input: 40.0,
+                    cache_read: 4.0,
+                    cache_write: 0.0,
+                    output: 150.0,
+                };
+            }
+            _ => {}
+        }
     }
     Some(price)
 }
@@ -314,24 +371,14 @@ fn resolve(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
     // 别名先归一（版本名 deepseek-v4-flash-0731 → deepseek-v4-flash），
     // 再看归一后的名字在这一刻是否已下线改路由。
     let model = subscription_alias(model).unwrap_or(model);
-    if let Some(&(_, _, target)) = RETIRED_ROUTES
-        .iter()
-        .find(|(retired, from_ms, _)| *retired == model && occurred_at_ms >= *from_ms)
-    {
-        return exact(target).map(|pricing| (target, pricing));
-    }
-    // 再看官方公布的调价是否已在这一刻生效。
-    if let Some(&(_, _, scheduled)) = SCHEDULED_PRICE_CHANGES
-        .iter()
-        .find(|(changed, from_ms, _)| *changed == model && occurred_at_ms >= *from_ms)
-    {
-        return Some((model, scheduled));
-    }
-    if let Some(pricing) = exact(model) {
-        return Some((model, pricing));
-    }
-    let base = strip_date_suffix(model)?;
-    exact(base).map(|pricing| (base, pricing))
+    exact(model, occurred_at_ms).or_else(|| {
+        let canonical = PRICING_ALIASES
+            .binary_search_by(|(alias, _)| (*alias).cmp(model))
+            .ok()
+            .map(|index| PRICING_ALIASES[index].1)
+            .or_else(|| strip_date_suffix(model))?;
+        exact(canonical, occurred_at_ms)
+    })
 }
 
 /// DeepSeek 峰段是 01:00–04:00 与 06:00–10:00 UTC（左闭右开）、且只在周一至
@@ -378,7 +425,22 @@ fn in_beijing_holiday(occurred_at_ms: i64) -> bool {
     })
 }
 
-fn exact(model: &str) -> Option<Pricing> {
+fn exact(model: &str, occurred_at_ms: i64) -> Option<(&str, Pricing)> {
+    let model = RETIRED_ROUTES
+        .iter()
+        .find(|(retired, from_ms, _)| *retired == model && occurred_at_ms >= *from_ms)
+        .map_or(model, |&(_, _, target)| target);
+    if let Some(&(_, from_ms, before, after)) = SCHEDULED_PRICE_CHANGES
+        .iter()
+        .find(|(changed, _, _, _)| *changed == model)
+    {
+        let price = if occurred_at_ms < from_ms {
+            before
+        } else {
+            after
+        };
+        return Some((model, price));
+    }
     MANUAL_PRICING
         .iter()
         .find(|(name, _)| *name == model)
@@ -389,6 +451,7 @@ fn exact(model: &str) -> Option<Pricing> {
                 .ok()
                 .map(|index| PRICING_TABLE[index].1)
         })
+        .map(|pricing| (model, pricing))
 }
 
 /// 订阅别名只按全名命中（`kimi-code/k3` → `kimi-k3`），不做任何前缀猜测。
@@ -442,9 +505,31 @@ mod tests {
     }
 
     #[test]
-    fn gpt6_sol_and_luna_use_long_context_rates_only_with_request_evidence() {
+    fn openai_models_use_long_context_rates_only_with_request_evidence() {
         for (model, standard, long) in [
+            ("gpt-5.6-sol", (4.0, 0.4, 5.0, 20.0), (8.0, 0.8, 10.0, 30.0)),
+            (
+                "gpt-5.6-terra",
+                (2.0, 0.2, 2.5, 12.0),
+                (4.0, 0.4, 5.0, 18.0),
+            ),
+            (
+                "gpt-5.6-luna",
+                (0.2, 0.02, 0.25, 1.2),
+                (0.4, 0.04, 0.5, 1.8),
+            ),
+            (
+                "gpt-6-cyber",
+                (20.0, 2.0, 25.0, 100.0),
+                (40.0, 4.0, 0.0, 150.0),
+            ),
             ("gpt-6-sol", (2.0, 0.2, 2.5, 10.0), (4.0, 0.4, 5.0, 15.0)),
+            ("gpt-6.1-sol", (2.0, 0.1, 2.5, 10.0), (4.0, 0.2, 5.0, 15.0)),
+            (
+                "gpt-6.1-terra",
+                (1.0, 0.05, 1.25, 5.0),
+                (2.0, 0.1, 2.5, 7.5),
+            ),
             (
                 "gpt-6-luna",
                 (0.1, 0.01, 0.125, 0.5),
@@ -458,14 +543,11 @@ mod tests {
             );
             let extended = price_for_request(model, 0, Some(272_001)).unwrap();
             assert_eq!(
-                (
-                    extended.input,
-                    extended.cache_read,
-                    extended.cache_write,
-                    extended.output
-                ),
-                long
+                (extended.input, extended.cache_read, extended.cache_write),
+                (long.0, long.1, long.2),
+                "{model}"
             );
+            assert!((extended.output - long.3).abs() < 1e-9, "{model}");
             let unknown = price_for_request(model, 0, None).unwrap();
             assert_eq!(
                 (
@@ -490,12 +572,16 @@ mod tests {
             PRICING_TABLE.windows(2).all(|pair| pair[0].0 < pair[1].0),
             "价格表必须按模型名严格有序，否则 binary_search 会漏查",
         );
+        assert!(PRICING_ALIASES.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for &(alias, target) in PRICING_ALIASES {
+            assert!(exact(alias, ANY_TIME_MS).is_none());
+            assert!(exact(target, ANY_TIME_MS).is_some());
+        }
     }
 
     #[test]
     fn dated_snapshot_falls_back_to_the_undated_alias() {
         let base = price_for("claude-haiku-4-5", ANY_TIME_MS).expect("priced");
-        // LiteLLM 恰好也收录了这个日期版；剥后缀的回退对它未收录的新快照才关键。
         let dated = price_for("claude-haiku-4-5-20251001", ANY_TIME_MS).expect("priced");
         assert_eq!(base.input, dated.input);
         assert_eq!(base.output, dated.output);
@@ -506,6 +592,28 @@ mod tests {
             future.input,
             price_for("claude-opus-4-8", ANY_TIME_MS).unwrap().input
         );
+    }
+
+    #[test]
+    fn official_grok_aliases_resolve_to_their_own_model() {
+        for (alias, model) in [
+            (
+                "grok-4.20-experimental-beta-0304",
+                "grok-4.20-0309-reasoning",
+            ),
+            (
+                "grok-4.20-beta-non-reasoning",
+                "grok-4.20-0309-non-reasoning",
+            ),
+            (
+                "grok-4.20-multi-agent-beta-latest",
+                "grok-4.20-multi-agent-0309",
+            ),
+            ("grok-code-fast-1-0825", "grok-build-0.1"),
+        ] {
+            assert_eq!(resolve(alias, ANY_TIME_MS).unwrap().0, model);
+        }
+        assert!(price_for("grok-4.20-unknown", ANY_TIME_MS).is_none());
     }
 
     #[test]
@@ -537,10 +645,28 @@ mod tests {
     }
 
     #[test]
+    fn claude_fable_and_mythos_5_2_use_the_published_api_rates() {
+        for model in ["claude-fable-5-2", "claude-mythos-5-2"] {
+            let price = price_for(model, ANY_TIME_MS).expect("priced");
+            assert_eq!(
+                (
+                    price.input,
+                    price.cache_read,
+                    price.cache_write,
+                    price.output
+                ),
+                (8.0, 0.2, 10.0, 40.0),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
     fn subscription_only_model_ids_stay_unpriced() {
         // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
         // 转售价或同系模型的价格蒙混（Kimi Code 订阅等）。
         assert!(price_for("kimi-code/kimi-for-coding", ANY_TIME_MS).is_none());
+        assert!(price_for("qwen4-max-preview", ANY_TIME_MS).is_none());
         // 有 -preview 后缀的官方价也不补给稳定版名字。
         assert!(price_for("gemini-3.1-pro", ANY_TIME_MS).is_none());
     }
@@ -793,6 +919,19 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_flash_1017_uses_the_same_peak_and_off_peak_rates() {
+        for model in ["deepseek-v4.1-flash-1017", "DeepSeek-V4.1-Flash-1017"] {
+            for (at_ms, expected) in [
+                (1_794_445_200_000, (0.3, 0.006, 1.2)),  // Thu 01:00 UTC
+                (1_794_456_000_000, (0.15, 0.003, 0.6)), // Thu 04:00 UTC
+            ] {
+                let price = price_for(model, at_ms).expect("priced");
+                assert_eq!((price.input, price.cache_read, price.output), expected);
+            }
+        }
+    }
+
+    #[test]
     fn deepseek_chinese_public_holidays_are_off_peak() {
         // 2026-10-05 02:00 UTC = 北京周一 10:00，钟点在峰段，但处于国庆假期。
         assert_eq!(
@@ -939,23 +1078,53 @@ mod tests {
     }
 
     #[test]
-    fn gemini_4_argon_price_doubles_at_the_official_cutover() {
-        // Google 定价页（2026-10-25 核对）：$2/$0.10/$10（含思考 token）是
-        // 限时价，只到 2026-11-30；2026-12-01 起输入 $4、缓存 $0.20、输出
-        // $20。按事件时间戳分段，历史事件不重算；生成表刷新到新价后此
-        // 覆盖即删。
-        let before = price_for("gemini-4-argon", 1_796_083_199_999).expect("priced");
+    fn gemini_prices_follow_event_time_at_the_cutovers() {
+        for (model, cutover, before, after) in [
+            (
+                "gemini-4-argon",
+                1_796_083_200_000,
+                (2.0, 0.1, 10.0),
+                (4.0, 0.2, 20.0),
+            ),
+            (
+                "gemini-4-carbon",
+                1_796_083_200_000,
+                (2.0, 0.1, 10.0),
+                (4.0, 0.2, 20.0),
+            ),
+            (
+                "gemini-3.8-flash",
+                1_798_761_600_000,
+                (0.75, 0.075, 3.75),
+                (1.5, 0.15, 7.5),
+            ),
+            (
+                "gemini-2.5-pro",
+                1_796_083_200_000,
+                (1.25, 0.125, 10.0),
+                (0.75, 0.075, 3.75),
+            ),
+            (
+                "gemini-2.5-pro",
+                1_798_761_600_000,
+                (0.75, 0.075, 3.75),
+                (1.5, 0.15, 7.5),
+            ),
+        ] {
+            for (at_ms, expected) in [(cutover - 1, before), (cutover, after)] {
+                let price = price_for(model, at_ms).expect("priced");
+                assert_eq!(
+                    (price.input, price.cache_read, price.output),
+                    expected,
+                    "{model}"
+                );
+            }
+        }
+
+        // The 2.5 Flash endpoint switches to 3.5 Flash-Lite at the same rate.
         assert_eq!(
-            (before.input, before.cache_read, before.output),
-            (2.0, 0.1, 10.0)
+            resolve("gemini-2.5-flash", 1_796_083_200_000).unwrap().0,
+            "gemini-3.5-flash-lite"
         );
-        let after = price_for("gemini-4-argon", 1_796_083_200_000).expect("priced");
-        assert_eq!(
-            (after.input, after.cache_read, after.output),
-            (4.0, 0.2, 20.0)
-        );
-        // 限时分段只对生效时刻负责：8 月的老事件按当时的限时价。
-        let old = price_for("gemini-4-argon", ANY_TIME_MS).expect("priced");
-        assert_eq!(old.input, 2.0);
     }
 }
