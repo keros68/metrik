@@ -887,6 +887,7 @@ export function App() {
   const currentPeriod = useRef(period);
   const widgetAgentsRef = useRef(widgetAgents);
   const rebuildInFlight = useRef(false);
+  const lastQuotaCheckAt = useRef(0);
   currentPeriod.current = period;
   widgetAgentsRef.current = widgetAgents;
 
@@ -911,9 +912,11 @@ export function App() {
         activeLoadPeriod.current = periodToLoad;
         queuedLoadPeriod.current = null;
         const requestId = ++requestSequence.current;
-        setLoading(true);
         const quotaOnlyLoad = quotaOnly;
-        const next = quotaOnly
+        if (!quotaOnlyLoad) {
+          setLoading(true);
+        }
+        const next = quotaOnlyLoad
           ? await getQuotaSnapshot(periodToLoad)
           : await getUsageSnapshot(periodToLoad, {
               force: forceLoad,
@@ -922,6 +925,9 @@ export function App() {
             });
         forceLoad = false;
         quotaOnly = false;
+        if (!next.loadError) {
+          lastQuotaCheckAt.current = Date.now();
+        }
         // 仅额度的刷新失败时保留现有快照：它只是聚焦时的加速通道，失败不该把
         // 已载入的本地统计和上一轮额度清成不可用。
         const keepCurrent = quotaOnlyLoad && next.loadError;
@@ -982,20 +988,30 @@ export function App() {
       }
     };
 
-    const refreshWhenVisible = () => {
-      schedule();
-      if (document.visibilityState === "visible") {
+    // 聚焦/切回可见时带 15 秒最小冷却：合并同一刻触发的 visibilitychange + focus，
+    // 且点击已在前台的小组件不重置 5 分钟全量日志扫描定时器，避免长期推迟本地扫描。
+    const FOCUS_QUOTA_COOLDOWN_MS = 15_000;
+    const maybeRefreshQuota = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastQuotaCheckAt.current >= FOCUS_QUOTA_COOLDOWN_MS
+      ) {
         loadSnapshot(period, { quotaOnly: true });
       }
     };
 
+    const handleVisibilityChange = () => {
+      schedule();
+      maybeRefreshQuota();
+    };
+
     schedule();
-    document.addEventListener("visibilitychange", refreshWhenVisible);
-    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", maybeRefreshQuota);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
-      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", maybeRefreshQuota);
     };
   }, [loadSnapshot, period, viewMode, indexing, trayBadgeEnabled]);
 

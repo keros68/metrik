@@ -12,9 +12,15 @@ struct MetrikWidgetAgent: Decodable, Identifiable {
     let id: String
     let label: String
     let tokens: Int64
+    let bindingWindowKey: String?
     let windows: [MetrikWidgetQuotaWindow]
 
     var bindingWindow: MetrikWidgetQuotaWindow? {
+        if let key = self.bindingWindowKey,
+           let matched = self.windows.first(where: { $0.key == key && $0.available && !$0.resetExpired })
+        {
+            return matched
+        }
         let live = self.windows.filter { $0.available && !$0.resetExpired }
         guard let shortest = live.first else { return nil }
         let low = live.filter { $0.remainingPercent <= 15 }
@@ -31,9 +37,15 @@ struct MetrikWidgetAgent: Decodable, Identifiable {
         case "antigravity": ("antigravity-app-icon", "png")
         case "workbuddy": ("workbuddy-app-icon", "png")
         case "qoder": ("qoder-app-icon", "png")
+        case "deepseek": ("deepseek-app-icon", "png")
+        case "dsh": ("dsh-app-icon", "png")
         case "grok": ("grok-app-icon", "png")
+        case "grokbot": ("grokbot-app-icon", "png")
+        case "hermes": ("hermes-app-icon", "png")
         case "pi": ("pi-app-icon", "png")
         case "qwen": ("qwen-app-icon", "png")
+        case "cursor": ("cursor-app-icon", "png")
+        case "minimax": ("minimax-app-icon", "png")
         default: nil
         }
     }
@@ -97,6 +109,7 @@ enum MetrikWidgetStore {
                 id: "codex",
                 label: "ChatGPT",
                 tokens: 30_400_000,
+                bindingWindowKey: "seven_day",
                 windows: [
                     MetrikWidgetQuotaWindow(
                         key: "seven_day",
@@ -112,26 +125,31 @@ enum MetrikWidgetStore {
                 id: "claude",
                 label: "Claude",
                 tokens: 9_700_000,
+                bindingWindowKey: nil,
                 windows: []),
             MetrikWidgetAgent(
                 id: "zcode",
                 label: "GLM",
                 tokens: 2_300_000,
+                bindingWindowKey: nil,
                 windows: []),
             MetrikWidgetAgent(
                 id: "opencode",
                 label: "OpenCode",
                 tokens: 900_000,
+                bindingWindowKey: nil,
                 windows: []),
             MetrikWidgetAgent(
                 id: "kimi",
                 label: "Kimi",
                 tokens: 620_000,
+                bindingWindowKey: nil,
                 windows: []),
             MetrikWidgetAgent(
                 id: "antigravity",
                 label: "Antigravity",
                 tokens: 410_000,
+                bindingWindowKey: nil,
                 windows: [])
         ])
 

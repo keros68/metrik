@@ -1,6 +1,6 @@
 //! Optional notifications from fresh quota snapshots. State is local and shared by all windows.
 use crate::{
-    domain::{is_balance_window, AgentQuotaView},
+    domain::{is_balance_window, AgentQuotaView, QUOTA_LOW_REMAINING_PERCENT},
     storage,
 };
 use anyhow::Result;
@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 
 pub const ENABLED_KEY: &str = "quota_alerts_enabled";
 const STATE_KEY: &str = "quota_alerts_state";
-const LOW_REMAINING: f64 = 15.0;
 const COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
 
 #[derive(Default, Deserialize, Serialize)]
@@ -60,7 +59,7 @@ pub fn check(
             .or_default();
         let low = current
             .iter()
-            .filter(|window| window.view.remaining_percent <= LOW_REMAINING)
+            .filter(|window| window.view.remaining_percent <= QUOTA_LOW_REMAINING_PERCENT)
             .min_by(|a, b| {
                 a.view
                     .remaining_percent
@@ -113,6 +112,7 @@ mod tests {
     fn quota(remaining: f64) -> AgentQuotaView {
         AgentQuotaView {
             agent: "codex".into(),
+            binding_window_key: Some("primary".into()),
             note: None,
             windows: vec![AgentQuotaWindow {
                 key: "primary".into(),

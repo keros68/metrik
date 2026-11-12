@@ -230,6 +230,7 @@ impl CodexAdapter {
             }
         };
         let track_skipped_lines = candidate.mtime_ns / 1_000_000 >= cutoff_ms;
+        let mut line = String::new();
         loop {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 *checkpoint = Some(Checkpoint {
@@ -247,22 +248,22 @@ impl CodexAdapter {
                 });
                 return Ok(None);
             }
-            let Some(line) = reader.by_ref().lines().next() else {
-                break;
-            };
-            let line = match line {
-                Ok(line) => line,
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
                 Err(_) => {
                     if track_skipped_lines {
                         diagnostics.unreadable_lines += 1;
                     }
                     continue;
                 }
-            };
-            if line.trim().is_empty() {
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            let Ok(record) = serde_json::from_str::<CodexRecord>(&line) else {
+            let Ok(record) = serde_json::from_str::<CodexRecord>(trimmed) else {
                 // Active JSONL files can end in a partial line. The next full scan will ingest it.
                 if track_skipped_lines {
                     diagnostics.malformed_lines += 1;

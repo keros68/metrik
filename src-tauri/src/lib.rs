@@ -55,6 +55,7 @@ static MIGRATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct AppState {
     database_path: PathBuf,
     scan_gate: Arc<Mutex<()>>,
+    quota_gate: Arc<Mutex<()>>,
     quota_cache: SharedQuotaCache,
     response_speed: Arc<response_speed::Collector>,
     #[cfg(target_os = "linux")]
@@ -438,16 +439,23 @@ async fn usage_snapshot(
 ) -> Result<UsageSnapshot, String> {
     let database_path = state.database_path.clone();
     let scan_gate = Arc::clone(&state.scan_gate);
+    let quota_gate = Arc::clone(&state.quota_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
 
     run_blocking(move || {
-        let _gate = lock_scan(&scan_gate)?;
-        let snapshot = engine::build_snapshot(
-            &database_path,
-            &period,
-            &quota_cache,
-            force.unwrap_or(false),
-        )?;
+        // 本地日志扫描与官方额度网络拉取各自持独立互斥锁：慢速远端配额端点
+        // 绝不阻塞本地日志扫描、设置读写或只读页面打开。
+        let report = {
+            let _gate = lock_scan(&scan_gate)?;
+            engine::scan_and_prune(&database_path)?
+        };
+        {
+            let _qgate = quota_gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("quota refresh lock poisoned"))?;
+            engine::refresh_quotas(&database_path, &quota_cache, force.unwrap_or(false))?;
+        }
+        let snapshot = engine::read_snapshot(&database_path, &period, report)?;
 
         if let Err(error) = storage::open_database(&database_path).and_then(|connection| {
             quota_alerts::check(
@@ -527,12 +535,17 @@ async fn quota_snapshot(
     state: State<'_, AppState>,
 ) -> Result<UsageSnapshot, String> {
     let database_path = state.database_path.clone();
-    let scan_gate = Arc::clone(&state.scan_gate);
+    let quota_gate = Arc::clone(&state.quota_gate);
     let quota_cache = Arc::clone(&state.quota_cache);
 
     run_blocking(move || {
-        let _gate = lock_scan(&scan_gate)?;
-        engine::refresh_quota_snapshot(&database_path, &period, &quota_cache)
+        {
+            let _qgate = quota_gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("quota refresh lock poisoned"))?;
+            engine::refresh_quotas(&database_path, &quota_cache, false)?;
+        }
+        engine::read_snapshot(&database_path, &period, Default::default())
     })
     .await
 }
@@ -540,7 +553,12 @@ async fn quota_snapshot(
 #[tauri::command]
 async fn quota_alert_settings(state: State<'_, AppState>) -> Result<bool, String> {
     let path = state.database_path.clone();
-    run_blocking(move || quota_alerts::enabled(&storage::open_database(&path)?)).await
+    run_blocking(move || {
+        let connection =
+            storage::open_database_read_only(&path).or_else(|_| storage::open_database(&path))?;
+        quota_alerts::enabled(&connection)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1998,10 +2016,10 @@ pub fn run() {
             // Antigravity 的项目归属在 URI 校验落定前只被开发构建写过，回填只填
             // 空值，脏标签无法靠解析器升级改写。启动时静默清一次，下一轮扫描按
             // 新校验重新归属；app_setting 保证每本账本最多执行一次。
-            match storage::open_database(&database_path)
-                .and_then(|mut connection| {
-                    storage::repair_antigravity_project_attribution(&mut connection)
-                }) {
+            match storage::open_database(&database_path).and_then(|mut connection| {
+                let _ = sync::device_identity(&connection);
+                storage::repair_antigravity_project_attribution(&mut connection)
+            }) {
                 Ok(true) => eprintln!("Metrik cleared Antigravity project labels for reattribution"),
                 Ok(false) => {}
                 Err(error) => eprintln!(
@@ -2016,6 +2034,7 @@ pub fn run() {
             app.manage(AppState {
                 database_path,
                 scan_gate: Arc::new(Mutex::new(())),
+                quota_gate: Arc::new(Mutex::new(())),
                 quota_cache: Arc::new(Mutex::new(HashMap::new())),
                 response_speed,
                 #[cfg(target_os = "linux")]

@@ -10,9 +10,9 @@ use crate::claude_oauth;
 use crate::detect;
 use crate::domain::ProjectReportRow;
 use crate::domain::{
-    AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage, IndexingView,
-    ModelSummary, ProjectSummary, QuotaView, SeriesPoint, SessionSummary, SourceView, SyncView,
-    UsageProjects, UsageReport, UsageSessions, UsageSnapshot, AGENT_IDS,
+    stable_hash, AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage,
+    IndexingView, ModelSummary, ProjectSummary, QuotaView, SeriesPoint, SessionSummary, SourceView,
+    SyncView, UsageProjects, UsageReport, UsageSessions, UsageSnapshot, AGENT_IDS,
 };
 use crate::i18n::{self, Lang};
 use crate::pricing;
@@ -46,7 +46,7 @@ const RETENTION_DAYS: i64 = REPORT_WINDOW_DAYS;
 const PARSE_BUDGET: StdDuration = StdDuration::from_millis(1500);
 
 #[derive(Default)]
-struct ScanReport {
+pub struct ScanReport {
     discovered: HashMap<String, usize>,
     refreshed: HashMap<String, usize>,
     errors: HashMap<String, usize>,
@@ -78,10 +78,23 @@ struct StoredEvent {
     response_duration_ms: Option<i64>,
 }
 
+/// 将模型名映射为 `(大小写无关分组键, 规范展示名)`。
+/// 价格表内已知模型统一使用官方拼写（如 `GLM-5.3` → `glm-5.3`、`minimax-m3.1-flash` →
+/// `MiniMax-M3.1-Flash`），未知模型在同一 Agent 内按 ASCII 小写合并并保留稳态拼写。
+fn canonical_model_key_and_label(raw: &str) -> (String, String) {
+    let key = raw.to_ascii_lowercase();
+    let label = pricing::canonical_model_spelling(raw)
+        .map(str::to_owned)
+        .unwrap_or_else(|| raw.to_owned());
+    (key, label)
+}
+
 /// 只在同一条请求记录同时带输出与有效耗时时计算响应速率。耗时包含等待、
 /// 预填充等响应生命周期，不是首末 token 之间的纯解码时间。
 #[derive(Default)]
 struct ModelAccrual {
+    display_model: String,
+    has_canonical_label: bool,
     tokens: i64,
     response_output: f64,
     response_duration_ms: f64,
@@ -89,7 +102,22 @@ struct ModelAccrual {
 }
 
 impl ModelAccrual {
-    fn add(&mut self, event: &StoredEvent) {
+    fn observe_label(&mut self, raw: &str) {
+        if let Some(canonical) = pricing::canonical_model_spelling(raw) {
+            if !self.has_canonical_label {
+                self.display_model = canonical.to_owned();
+                self.has_canonical_label = true;
+            }
+        } else if self.display_model.is_empty() {
+            self.display_model = raw.to_owned();
+        } else if raw < self.display_model.as_str() && !self.has_canonical_label {
+            // 未知模型的纯大小写变体取字典序较小值，保证展示名与事件顺序无关。
+            self.display_model = raw.to_owned();
+        }
+    }
+
+    fn add(&mut self, raw_model: &str, event: &StoredEvent) {
+        self.observe_label(raw_model);
         self.tokens += event.tokens;
         let Some(duration) = event.response_duration_ms.filter(|duration| *duration > 0) else {
             return;
@@ -101,7 +129,12 @@ impl ModelAccrual {
         }
     }
 
-    fn into_summary(self, agent: String, model: String, total_tokens: i64) -> ModelSummary {
+    fn into_summary(self, agent: String, fallback_key: String, total_tokens: i64) -> ModelSummary {
+        let model = if self.display_model.is_empty() {
+            fallback_key
+        } else {
+            self.display_model
+        };
         ModelSummary {
             model,
             agent,
@@ -125,7 +158,9 @@ fn add_collected_model_timings(
     models: &mut HashMap<(String, String), ModelAccrual>,
 ) -> Result<()> {
     for timing in crate::speed_store::model_timings(connection, start_ms, end_ms)? {
-        let model = models.entry((timing.agent, timing.model)).or_default();
+        let (model_key, _) = canonical_model_key_and_label(&timing.model);
+        let model = models.entry((timing.agent, model_key)).or_default();
+        model.observe_label(&timing.model);
         // Pi can call the subscription API directly while being credited to
         // Codex. Its local request timings complement native client telemetry.
         model.response_output += timing.output_tokens;
@@ -174,7 +209,7 @@ struct SessionAgg {
     end_ms: i64,
     totals: TokenComponents,
     event_count: i64,
-    model_components: HashMap<String, TokenComponents>,
+    model_components: HashMap<String, (String, TokenComponents)>,
     project_tokens: HashMap<String, i64>,
     cost: CostAccrual,
 }
@@ -184,11 +219,44 @@ struct ProjectAgg {
     last_ms: i64,
     totals: TokenComponents,
     event_count: i64,
-    model_components: HashMap<String, TokenComponents>,
+    model_components: HashMap<String, (String, TokenComponents)>,
     agent_tokens: HashMap<String, i64>,
     sessions: HashSet<(String, String)>,
     pinned: bool,
     cost: CostAccrual,
+}
+
+fn record_model_components(
+    map: &mut HashMap<String, (String, TokenComponents)>,
+    raw: &str,
+    comps: &TokenComponents,
+) {
+    let key = raw.to_ascii_lowercase();
+    let canonical = pricing::canonical_model_spelling(raw);
+    let entry = map.entry(key).or_insert_with(|| {
+        (
+            canonical.unwrap_or(raw).to_owned(),
+            TokenComponents::default(),
+        )
+    });
+    if let Some(canonical) = canonical {
+        entry.0 = canonical.to_owned();
+    } else if raw < entry.0.as_str() && pricing::canonical_model_spelling(&entry.0).is_none() {
+        entry.0 = raw.to_owned();
+    }
+    entry.1.add(comps);
+}
+
+fn ranked_model_labels(map: &HashMap<String, (String, TokenComponents)>) -> Vec<String> {
+    let mut ranked: Vec<(&str, i64)> = map
+        .values()
+        .map(|(label, comps)| (label.as_str(), comps.processed()))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    ranked
+        .into_iter()
+        .map(|(label, _)| label.to_owned())
+        .collect()
 }
 
 /// 项目根路径的展示名：最后一段目录名。
@@ -243,37 +311,76 @@ impl CostAccrual {
     }
 }
 
+/// 在只读或读写连接上开启单个 DEFERRED 读事务，使同一份快照/报告内的多条 SELECT
+/// 固定在同一个 WAL MVCC 快照点，避免与后台扫描/同步并发时发生跨查询撕裂或重复/遗漏去重。
+fn with_read_snapshot<T>(
+    connection: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
+    if connection.is_autocommit() {
+        let transaction = connection.unchecked_transaction()?;
+        f(&transaction)
+    } else {
+        f(connection)
+    }
+}
+
+pub fn scan_and_prune(database_path: &Path) -> Result<ScanReport> {
+    let mut connection = storage::open_database(database_path)?;
+    let now = Utc::now().timestamp_millis();
+    let retention_cutoff = now - Duration::days(RETENTION_DAYS).num_milliseconds();
+    let report = ingest_sources(&mut connection, retention_cutoff)?;
+    storage::prune_missing_sources(&mut connection)?;
+    storage::prune_old_events(&connection, retention_cutoff)?;
+    // 预先落盘稳定设备标识，避免后续只读连接上的 sync_view 因首次写设置而失败。
+    let _ = sync::device_identity(&connection);
+    sync::run_sync(&mut connection, now);
+    Ok(report)
+}
+
+pub fn refresh_quotas(
+    database_path: &Path,
+    quota_cache: &quota::QuotaCache,
+    force: bool,
+) -> Result<()> {
+    let connection = storage::open_database(database_path)?;
+    // 同 scan_and_prune：只读快照在无扫描时也可能先于首次扫描执行。
+    let _ = sync::device_identity(&connection);
+    quota::refresh_all(&connection, quota_cache, force)
+}
+
+pub fn read_snapshot(
+    database_path: &Path,
+    period: &str,
+    report: ScanReport,
+) -> Result<UsageSnapshot> {
+    let connection = match storage::open_database_read_only(database_path) {
+        Ok(conn) if sync::has_device_identity(&conn) => conn,
+        Ok(conn) => match storage::open_database(database_path) {
+            Ok(rw) => {
+                let _ = sync::device_identity(&rw);
+                rw
+            }
+            Err(_) => conn,
+        },
+        Err(_) => {
+            let rw = storage::open_database(database_path)?;
+            let _ = sync::device_identity(&rw);
+            rw
+        }
+    };
+    query_snapshot(&connection, period, report)
+}
+
 pub fn build_snapshot(
     database_path: &Path,
     period: &str,
     quota_cache: &quota::QuotaCache,
     force: bool,
 ) -> Result<UsageSnapshot> {
-    let mut connection = storage::open_database(database_path)?;
-    let now = Utc::now().timestamp_millis();
-    let retention_cutoff = now - Duration::days(RETENTION_DAYS).num_milliseconds();
-    let report = ingest_sources(&mut connection, retention_cutoff)?;
-
-    // 各家官方额度的取数与落库统一在 quota 模块，见那里的落库语义说明。
-    quota::refresh_all(&connection, quota_cache, force)?;
-
-    storage::prune_missing_sources(&mut connection)?;
-    storage::prune_old_events(&connection, retention_cutoff)?;
-    sync::run_sync(&mut connection, now);
-    query_snapshot(&connection, period, report)
-}
-
-/// Refreshes quota sources without scanning agent logs. Floating forms call this
-/// when they become visible so a current local hook file does not wait behind the
-/// regular five-minute scan cadence.
-pub fn refresh_quota_snapshot(
-    database_path: &Path,
-    period: &str,
-    quota_cache: &quota::QuotaCache,
-) -> Result<UsageSnapshot> {
-    let connection = storage::open_database(database_path)?;
-    quota::refresh_all(&connection, quota_cache, false)?;
-    query_snapshot(&connection, period, ScanReport::default())
+    let report = scan_and_prune(database_path)?;
+    refresh_quotas(database_path, quota_cache, force)?;
+    read_snapshot(database_path, period, report)
 }
 
 /// Builds a display snapshot from the already-indexed ledger without scanning logs,
@@ -294,11 +401,21 @@ pub fn build_report(database_path: &Path) -> Result<UsageReport> {
 }
 
 fn report_at(connection: &Connection, local_now: chrono::DateTime<Local>) -> Result<UsageReport> {
+    with_read_snapshot(connection, |connection| {
+        report_at_inner(connection, local_now)
+    })
+}
+
+fn report_at_inner(
+    connection: &Connection,
+    local_now: chrono::DateTime<Local>,
+) -> Result<UsageReport> {
     let today = local_now.date_naive();
     let start_date = today - Duration::days(REPORT_WINDOW_DAYS - 1);
     let start_ms = local_midnight(start_date)?.timestamp_millis();
     let end_ms = local_now.timestamp_millis() + 1;
-    let events = load_events(connection, start_ms, end_ms)?;
+    let mut remote_dedup = RemoteDedupCache::default();
+    let events = load_events_with_cache(connection, start_ms, end_ms, &mut remote_dedup)?;
 
     let (first_event_ms, last_event_ms) = global_event_bounds(connection)?;
 
@@ -335,17 +452,17 @@ fn report_at(connection: &Connection, local_now: chrono::DateTime<Local>) -> Res
             .insert(date);
         total_tokens += event.tokens;
 
-        let model_key = event
+        let raw_model = event
             .model
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("unknown")
-            .to_owned();
+            .unwrap_or("unknown");
+        let (model_key, _) = canonical_model_key_and_label(raw_model);
         model_totals
             .entry(((*agent).to_owned(), model_key))
             .or_default()
-            .add(&event);
+            .add(raw_model, &event);
     }
 
     let streak_days = compute_streak(&day_totals);
@@ -488,7 +605,7 @@ const MAX_SESSIONS: usize = 300;
 /// `remote_usage_event` 没有会话维度，不计入。
 pub fn build_sessions(database_path: &Path, period: &str) -> Result<UsageSessions> {
     let connection = storage::open_database_read_only(database_path)?;
-    sessions_at(&connection, period, Local::now())
+    with_read_snapshot(&connection, |tx| sessions_at(tx, period, Local::now()))
 }
 
 fn sessions_at(
@@ -535,10 +652,7 @@ fn sessions_at(
         agg.cost
             .add(model, event.timestamp, &comps, event.request_input_tokens);
         if let Some(model) = model {
-            agg.model_components
-                .entry(model.to_owned())
-                .or_default()
-                .add(&comps);
+            record_model_components(&mut agg.model_components, model, &comps);
         }
         // 会话的项目归属走同一套分组规则；命中隐藏的事件不参与判定。
         if let Some(raw) = event
@@ -556,14 +670,8 @@ fn sessions_at(
     let mut sessions: Vec<SessionSummary> = aggregates
         .into_iter()
         .map(|((agent, session_id), agg)| {
-            let mut model_totals: Vec<(String, i64)> = agg
-                .model_components
-                .iter()
-                .map(|(model, comps)| (model.clone(), comps.processed()))
-                .collect();
-            model_totals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let model = model_totals.first().map(|(model, _)| model.clone());
-            let models = model_totals.into_iter().map(|(model, _)| model).collect();
+            let models = ranked_model_labels(&agg.model_components);
+            let model = models.first().cloned();
 
             let usd = agg.cost.usd();
             let project = ranked_keys(&agg.project_tokens).into_iter().next();
@@ -635,7 +743,7 @@ const MAX_PROJECTS: usize = 200;
 /// 同样只查本地账本，绝不触发日志扫描。
 pub fn build_projects(database_path: &Path, period: &str) -> Result<UsageProjects> {
     let connection = storage::open_database_read_only(database_path)?;
-    projects_at(&connection, period, Local::now())
+    with_read_snapshot(&connection, |tx| projects_at(tx, period, Local::now()))
 }
 
 fn projects_at(
@@ -694,10 +802,7 @@ fn projects_at(
         agg.cost
             .add(model, event.timestamp, &comps, event.request_input_tokens);
         if let Some(model) = model {
-            agg.model_components
-                .entry(model.to_owned())
-                .or_default()
-                .add(&comps);
+            record_model_components(&mut agg.model_components, model, &comps);
         }
     }
 
@@ -715,14 +820,9 @@ fn projects_at(
             event_count: agg.event_count,
             last_ms: agg.last_ms,
             agents: ranked_keys(&agg.agent_tokens),
-            model: ranked_keys(
-                &agg.model_components
-                    .iter()
-                    .map(|(model, comps)| (model.clone(), comps.processed()))
-                    .collect(),
-            )
-            .into_iter()
-            .next(),
+            model: ranked_model_labels(&agg.model_components)
+                .into_iter()
+                .next(),
             pinned: agg.pinned,
             path,
         })
@@ -802,12 +902,12 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
         Box::new(AicrossAdapter::detected()),
         Box::new(CursorAdapter::detected(cursor_enabled)),
     ];
+    let stored_states = storage::load_source_states(connection)?;
     let mut report = ScanReport::default();
     let mut queue: Vec<(usize, SourceCandidate)> = Vec::new();
 
     for (index, adapter) in adapters.iter().enumerate() {
         let candidates = adapter.discover(horizon_ms);
-        let stored_diagnostics = stored_adapter_scan_diagnostics(connection, adapter.id())?;
         let gaps = adapter.coverage_gaps();
         if !gaps.is_empty() {
             report.coverage_gaps.insert(adapter.id().into(), gaps);
@@ -816,17 +916,17 @@ fn ingest_sources(connection: &mut Connection, horizon_ms: i64) -> Result<ScanRe
             .discovered
             .insert(adapter.id().into(), candidates.len());
         for candidate in candidates {
-            if storage::source_is_current(
-                connection,
-                &candidate.source_id,
-                candidate.size,
-                candidate.mtime_ns,
-                horizon_ms,
-            )? {
-                if let Some(diagnostics) = stored_diagnostics.get(&candidate.source_id) {
-                    record_scan_diagnostics(&mut report, adapter.id(), diagnostics);
+            if let Some(state) = stored_states.get(&candidate.source_id) {
+                if state.is_current(candidate.size, candidate.mtime_ns, horizon_ms) {
+                    if let Some(diagnostics) = state
+                        .last_error
+                        .as_deref()
+                        .and_then(ScanDiagnostics::from_storage_marker)
+                    {
+                        record_scan_diagnostics(&mut report, adapter.id(), &diagnostics);
+                    }
+                    continue;
                 }
-                continue;
             }
             queue.push((index, candidate));
         }
@@ -893,27 +993,6 @@ fn ingest_candidate(
     Ok(())
 }
 
-fn stored_adapter_scan_diagnostics(
-    connection: &Connection,
-    adapter_id: &str,
-) -> Result<HashMap<String, ScanDiagnostics>> {
-    let mut statement = connection.prepare(
-        "SELECT source_id, last_error FROM scan_source
-         WHERE adapter_id = ?1 AND last_error IS NOT NULL",
-    )?;
-    let rows = statement.query_map([adapter_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut diagnostics = HashMap::new();
-    for row in rows {
-        let (source_id, marker) = row?;
-        if let Some(parsed) = ScanDiagnostics::from_storage_marker(&marker) {
-            diagnostics.insert(source_id, parsed);
-        }
-    }
-    Ok(diagnostics)
-}
-
 fn record_scan_diagnostics(
     report: &mut ScanReport,
     adapter_id: &str,
@@ -944,6 +1023,17 @@ fn query_snapshot_at(
     report: ScanReport,
     local_now: chrono::DateTime<Local>,
 ) -> Result<UsageSnapshot> {
+    with_read_snapshot(connection, |connection| {
+        query_snapshot_at_inner(connection, requested_period, report, local_now)
+    })
+}
+
+fn query_snapshot_at_inner(
+    connection: &Connection,
+    requested_period: &str,
+    report: ScanReport,
+    local_now: chrono::DateTime<Local>,
+) -> Result<UsageSnapshot> {
     // 一次快照只取一次界面语言，标签与说明不会在中途切换时混用两种语言。
     let lang = i18n::current();
     let today = local_now.date_naive();
@@ -952,7 +1042,8 @@ fn query_snapshot_at(
     let bucket_count = period_bucket_count(period, local_now.hour());
     let start_ms = local_midnight(start_date)?.timestamp_millis();
     let end_ms = local_now.timestamp_millis() + 1;
-    let events = load_events(connection, start_ms, end_ms)?;
+    let mut remote_dedup = RemoteDedupCache::default();
+    let events = load_events_with_cache(connection, start_ms, end_ms, &mut remote_dedup)?;
 
     let mut buckets: HashMap<&str, Vec<i64>> = AGENT_IDS
         .iter()
@@ -997,8 +1088,12 @@ fn query_snapshot_at(
             .map(str::trim)
             .filter(|value| !value.is_empty());
         // 模型分布里认不出名字的记成 "unknown"，计价一侧同样归入 unpriced。
-        let model_map_key = ((*agent).to_owned(), model.unwrap_or("unknown").to_owned());
-        model_totals.entry(model_map_key).or_default().add(&event);
+        let raw_model = model.unwrap_or("unknown");
+        let (model_key, _) = canonical_model_key_and_label(raw_model);
+        model_totals
+            .entry(((*agent).to_owned(), model_key))
+            .or_default()
+            .add(raw_model, &event);
         agent_cost.get_mut(agent).expect("registered agent").add(
             model,
             event.timestamp,
@@ -1027,7 +1122,7 @@ fn query_snapshot_at(
 
     let total_tokens: i64 = totals.values().sum();
     let denominator = if period == "today" {
-        average_prior_elapsed_windows(connection, &local_now, comparison_days)?
+        average_prior_elapsed_windows(connection, &local_now, comparison_days, &mut remote_dedup)?
     } else {
         let previous_start = start_date - Duration::days(comparison_days);
         let previous_final_date = start_date - Duration::days(1);
@@ -1039,10 +1134,11 @@ fn query_snapshot_at(
             .timestamp_millis()
             .saturating_add(1)
             .min(next_period_start.timestamp_millis());
-        let previous_total = sum_tokens_between(
+        let previous_total = sum_tokens_between_with_cache(
             connection,
             local_midnight(previous_start)?.timestamp_millis(),
             previous_end_ms,
+            &mut remote_dedup,
         )?;
         previous_total as f64
     };
@@ -1112,8 +1208,11 @@ fn query_snapshot_at(
                     } else {
                         None
                     };
+                    let binding_window_key = crate::domain::binding_quota_window(&windows)
+                        .map(|window| window.key.clone());
                     Ok(AgentQuotaView {
                         agent: (*agent).to_owned(),
+                        binding_window_key,
                         windows,
                         note,
                     })
@@ -1151,10 +1250,14 @@ fn average_prior_elapsed_windows(
     connection: &Connection,
     local_now: &chrono::DateTime<Local>,
     days: i64,
+    remote_dedup: &mut RemoteDedupCache,
 ) -> Result<f64> {
+    if days <= 0 {
+        return Ok(0.0);
+    }
     let today = local_now.date_naive();
     let elapsed = local_now.signed_duration_since(local_midnight(today)?);
-    let mut total = 0_i64;
+    let mut windows = Vec::with_capacity(days as usize);
     for offset in 1..=days {
         let date = today - Duration::days(offset);
         let start = local_midnight(date)?;
@@ -1164,7 +1267,41 @@ fn average_prior_elapsed_windows(
             .timestamp_millis()
             .saturating_add(1)
             .min(next_start.timestamp_millis());
-        total += sum_tokens_between(connection, start.timestamp_millis(), end_ms)?;
+        windows.push((start.timestamp_millis(), end_ms));
+    }
+    let Some(&(_, max_end)) = windows.first() else {
+        return Ok(0.0);
+    };
+    let min_start = windows.last().map(|&(start, _)| start).unwrap_or(max_end);
+
+    let in_any_window = |timestamp: i64| {
+        windows
+            .iter()
+            .any(|&(start, end)| timestamp >= start && timestamp < end)
+    };
+
+    let mut total = 0_i64;
+    let mut statement = connection.prepare(
+        "SELECT occurred_at_ms, processed_tokens FROM usage_event
+         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2",
+    )?;
+    let rows = statement
+        .query_map(params![min_start, max_end], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .context("failed to calculate comparison usage")?;
+    for row in rows {
+        let (timestamp, tokens) = row.context("failed to read comparison usage row")?;
+        if in_any_window(timestamp) {
+            total += tokens;
+        }
+    }
+    for (_, timestamp, tokens) in
+        load_deduped_remote_events(connection, min_start, max_end, remote_dedup)?
+    {
+        if in_any_window(timestamp) {
+            total += tokens;
+        }
     }
     Ok(total as f64 / days as f64)
 }
@@ -1177,35 +1314,108 @@ fn period_bucket_count(period: &str, current_hour: u32) -> usize {
     }
 }
 
+/// 同一份只读快照内按 Agent 缓存本机已有事件的身份哈希集合，
+/// 避免当前窗口与环比窗口在一次快照中重复全表哈希。
+#[derive(Default)]
+struct RemoteDedupCache {
+    local_hashes_by_adapter: HashMap<String, HashSet<String>>,
+}
+
+impl RemoteDedupCache {
+    fn local_hashes<'a>(
+        &'a mut self,
+        connection: &Connection,
+        adapter: &str,
+    ) -> Result<&'a HashSet<String>> {
+        if !self.local_hashes_by_adapter.contains_key(adapter) {
+            let mut query =
+                connection.prepare("SELECT event_key FROM usage_event WHERE adapter_id = ?1")?;
+            let keys = query.query_map([adapter], |row| row.get::<_, String>(0))?;
+            let mut hashes = HashSet::new();
+            for key in keys {
+                let key = key?;
+                hashes.insert(stable_hash(&format!("{adapter}|{key}")));
+            }
+            self.local_hashes_by_adapter
+                .insert(adapter.to_owned(), hashes);
+        }
+        Ok(self
+            .local_hashes_by_adapter
+            .get(adapter)
+            .expect("populated adapter entry"))
+    }
+}
+
 /// 事件标识由 Agent 与来源自带的事件键决定，跨设备一致。同一份 Agent 日志被
 /// 几台设备各自解析时（共享或迁移过的日志目录），远端行只在本机没有这条事件、
-/// 且所属设备是持有它的远端设备里标识最小的一台时计入。
-const REMOTE_EVENT_COUNTS_ONCE: &str = "NOT EXISTS (
-        SELECT 1 FROM usage_event AS local_event
-        WHERE local_event.event_id = remote_usage_event.event_id)
-    AND NOT EXISTS (
-        SELECT 1 FROM remote_usage_event AS other_device
-        WHERE other_device.event_id = remote_usage_event.event_id
-          AND other_device.device_id < remote_usage_event.device_id)";
+/// 且所属设备是持有它的远端设备里标识最小的一台时计入。未启用多机同步时直接快进返回。
+fn load_deduped_remote_events(
+    connection: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+    dedup_cache: &mut RemoteDedupCache,
+) -> Result<Vec<(String, i64, i64)>> {
+    let mut statement = connection.prepare(
+        "SELECT event_id, adapter_id, occurred_at_ms, processed_tokens
+         FROM remote_usage_event
+         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
+           AND NOT EXISTS (
+               SELECT 1 FROM remote_usage_event AS other_device
+               WHERE other_device.event_id = remote_usage_event.event_id
+                 AND other_device.device_id < remote_usage_event.device_id
+           )
+         ORDER BY occurred_at_ms",
+    )?;
+    let candidates = statement
+        .query_map(params![start_ms, end_ms], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
 
+    let mut deduped = Vec::with_capacity(candidates.len());
+    for (id, adapter, timestamp, tokens) in candidates {
+        if !dedup_cache
+            .local_hashes(connection, &adapter)?
+            .contains(&id)
+        {
+            deduped.push((adapter, timestamp, tokens));
+        }
+    }
+    Ok(deduped)
+}
+
+#[cfg(test)]
 fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Vec<StoredEvent>> {
-    // 远端同步事件只带处理量总数，不带模型或分量拆解（见架构约束：同步导出
-    // 只含派生统计字段）；模型列给哨兵值 "synced-remote"、分量记 0，让这些
-    // 事件在模型聚合里单列成"其他设备同步（无模型名）"，与本地确实缺模型名
-    // 的 "unknown" 区分开，而不是混在一起被误读成一个叫"未标注"的模型。
-    let mut statement = connection.prepare(&format!(
+    load_events_with_cache(
+        connection,
+        start_ms,
+        end_ms,
+        &mut RemoteDedupCache::default(),
+    )
+}
+
+fn load_events_with_cache(
+    connection: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+    remote_dedup: &mut RemoteDedupCache,
+) -> Result<Vec<StoredEvent>> {
+    let mut statement = connection.prepare(
         "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
                 request_input_tokens, response_duration_ms
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
-         UNION ALL
-         SELECT adapter_id, occurred_at_ms, processed_tokens, 'synced-remote' AS model,
-                0, 0, 0, 0, NULL, NULL
-         FROM remote_usage_event
-         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2 AND {REMOTE_EVENT_COUNTS_ONCE}
-         ORDER BY occurred_at_ms"
-    ))?;
+         ORDER BY occurred_at_ms",
+    )?;
     let rows = statement.query_map(params![start_ms, end_ms], |row| {
         Ok(StoredEvent {
             adapter: row.get(0)?,
@@ -1217,7 +1427,30 @@ fn load_events(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<Ve
             response_duration_ms: row.get(9)?,
         })
     })?;
-    Ok(rows.filter_map(Result::ok).collect())
+    let mut events: Vec<StoredEvent> = rows.filter_map(Result::ok).collect();
+
+    // 远端同步事件只带处理量总数，不带模型或分量拆解（见架构约束：同步导出
+    // 只含派生统计字段）；模型列给哨兵值 "synced-remote"、分量记 0，让这些
+    // 事件在模型聚合里单列成"其他设备同步（无模型名）"，与本地确实缺模型名
+    // 的 "unknown" 区分开，而不是混在一起被误读成一个叫"未标注"的模型。
+    let remote = load_deduped_remote_events(connection, start_ms, end_ms, remote_dedup)?;
+    if !remote.is_empty() {
+        events.extend(
+            remote
+                .into_iter()
+                .map(|(adapter, timestamp, tokens)| StoredEvent {
+                    adapter,
+                    timestamp,
+                    tokens,
+                    model: Some("synced-remote".to_owned()),
+                    comps: TokenComponents::default(),
+                    request_input_tokens: None,
+                    response_duration_ms: None,
+                }),
+        );
+        events.sort_by_key(|event| event.timestamp);
+    }
+    Ok(events)
 }
 
 /// 从 `first` 起依次读未缓存输入、缓存读、缓存写、输出四列。
@@ -1230,20 +1463,36 @@ fn token_components(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<T
     })
 }
 
+#[cfg(test)]
 fn sum_tokens_between(connection: &Connection, start_ms: i64, end_ms: i64) -> Result<i64> {
-    connection
+    sum_tokens_between_with_cache(
+        connection,
+        start_ms,
+        end_ms,
+        &mut RemoteDedupCache::default(),
+    )
+}
+
+fn sum_tokens_between_with_cache(
+    connection: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+    remote_dedup: &mut RemoteDedupCache,
+) -> Result<i64> {
+    let local_total: i64 = connection
         .query_row(
-            &format!(
-                "SELECT (SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
-                         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2)
-                      + (SELECT COALESCE(SUM(processed_tokens), 0) FROM remote_usage_event
-                         WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
-                           AND {REMOTE_EVENT_COUNTS_ONCE})"
-            ),
+            "SELECT COALESCE(SUM(processed_tokens), 0) FROM usage_event
+             WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2",
             params![start_ms, end_ms],
             |row| row.get(0),
         )
-        .context("failed to calculate comparison usage")
+        .context("failed to calculate comparison usage")?;
+    let remote_total: i64 = load_deduped_remote_events(connection, start_ms, end_ms, remote_dedup)
+        .context("failed to calculate comparison usage")?
+        .into_iter()
+        .map(|(_, _, tokens)| tokens)
+        .sum();
+    Ok(local_total + remote_total)
 }
 
 fn quota_window_rank(key: &str) -> (u8, String) {
@@ -1966,19 +2215,19 @@ mod tests {
 
     fn insert_test_usage(
         connection: &Connection,
-        event_id: &str,
+        event_key: &str,
         occurred_at_ms: i64,
         tokens: i64,
     ) {
         connection
             .execute(
                 "INSERT INTO usage_event (
-                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    adapter_id, event_key, occurred_at_ms, session_id,
                     model, input_uncached_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens,
-                    processed_tokens, quality, payload_hash
-                 ) VALUES (?1, 'codex', ?1, ?2, 'session', NULL, ?3, 0, 0, 0, 0, ?3, 'exact', ?1)",
-                params![event_id, occurred_at_ms, tokens],
+                    processed_tokens, quality
+                 ) VALUES ('codex', ?1, ?2, 'session', NULL, ?3, 0, 0, 0, 0, ?3, 'exact')",
+                params![event_key, occurred_at_ms, tokens],
             )
             .unwrap();
     }
@@ -1986,7 +2235,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn insert_test_usage_full(
         connection: &Connection,
-        event_id: &str,
+        event_key: &str,
         adapter_id: &str,
         occurred_at_ms: i64,
         model: Option<&str>,
@@ -1999,14 +2248,14 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO usage_event (
-                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    adapter_id, event_key, occurred_at_ms, session_id,
                     model, input_uncached_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens,
-                    processed_tokens, quality, payload_hash
-                 ) VALUES (?1, ?2, ?1, ?3, 'session', ?4, ?5, ?6, ?7, ?8, 0, ?9, 'exact', ?1)",
+                    processed_tokens, quality
+                 ) VALUES (?1, ?2, ?3, 'session', ?4, ?5, ?6, ?7, ?8, 0, ?9, 'exact')",
                 params![
-                    event_id,
                     adapter_id,
+                    event_key,
                     occurred_at_ms,
                     model,
                     input_uncached,
@@ -2021,7 +2270,7 @@ mod tests {
 
     fn insert_test_response_sample(
         connection: &Connection,
-        event_id: &str,
+        event_key: &str,
         adapter: &str,
         model: &str,
         timestamp: i64,
@@ -2031,7 +2280,7 @@ mod tests {
         // 输入远大于输出，确保速率分子不会误用 processed tokens。
         insert_test_usage_full(
             connection,
-            event_id,
+            event_key,
             adapter,
             timestamp,
             Some(model),
@@ -2042,8 +2291,9 @@ mod tests {
         );
         connection
             .execute(
-                "UPDATE usage_event SET response_duration_ms = ?1 WHERE event_id = ?2",
-                params![duration, event_id],
+                "UPDATE usage_event SET response_duration_ms = ?1
+                 WHERE adapter_id = ?2 AND event_key = ?3",
+                params![duration, adapter, event_key],
             )
             .unwrap();
     }
@@ -2051,7 +2301,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn insert_test_session_event(
         connection: &Connection,
-        event_id: &str,
+        event_key: &str,
         adapter_id: &str,
         session_id: &str,
         occurred_at_ms: i64,
@@ -2065,14 +2315,14 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO usage_event (
-                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    adapter_id, event_key, occurred_at_ms, session_id,
                     model, input_uncached_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens,
-                    processed_tokens, quality, payload_hash
-                 ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'exact', ?1)",
+                    processed_tokens, quality
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'exact')",
                 params![
-                    event_id,
                     adapter_id,
+                    event_key,
                     occurred_at_ms,
                     session_id,
                     model,
@@ -2089,7 +2339,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn insert_test_project_event(
         connection: &Connection,
-        event_id: &str,
+        event_key: &str,
         adapter_id: &str,
         session_id: &str,
         occurred_at_ms: i64,
@@ -2100,14 +2350,14 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO usage_event (
-                    event_id, adapter_id, event_key, occurred_at_ms, session_id,
+                    adapter_id, event_key, occurred_at_ms, session_id,
                     model, input_uncached_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens,
-                    processed_tokens, quality, payload_hash, project_path
-                 ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, 0, 0, 0, 0, ?6, 'exact', ?1, ?7)",
+                    processed_tokens, quality, project_path
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0, 0, ?6, 'exact', ?7)",
                 params![
-                    event_id,
                     adapter_id,
+                    event_key,
                     occurred_at_ms,
                     session_id,
                     model,
@@ -2905,13 +3155,7 @@ mod tests {
     fn persisted_diagnostics_survive_an_unchanged_source_scan() {
         let connection = Connection::open_in_memory().unwrap();
         connection
-            .execute_batch(
-                "CREATE TABLE scan_source (
-                    source_id TEXT PRIMARY KEY,
-                    adapter_id TEXT NOT NULL,
-                    last_error TEXT
-                );",
-            )
+            .execute_batch(include_str!("../migrations/001_init.sql"))
             .unwrap();
         let marker = ScanDiagnostics {
             malformed_lines: 3,
@@ -2922,17 +3166,24 @@ mod tests {
         .unwrap();
         connection
             .execute(
-                "INSERT INTO scan_source (source_id, adapter_id, last_error)
-                 VALUES ('source-a', 'codex', ?1)",
-                [marker],
+                "INSERT INTO scan_source (
+                    source_id, adapter_id, logical_key, locator, observed_size,
+                    mtime_ns, coverage_start_ms, parser_version, last_success_ms, last_error
+                ) VALUES ('source-a', 'codex', 'source-a', 'a.jsonl', 10, 1, 0, ?1, 0, ?2)",
+                params![storage::parser_version_for("codex"), marker],
             )
             .unwrap();
 
-        let stored = stored_adapter_scan_diagnostics(&connection, "codex").unwrap();
+        let stored = storage::load_source_states(&connection).unwrap();
+        let state = stored.get("source-a").unwrap();
+        assert!(state.is_current(10, 1, 0));
 
         assert_eq!(
-            stored.get("source-a"),
-            Some(&ScanDiagnostics {
+            state
+                .last_error
+                .as_deref()
+                .and_then(ScanDiagnostics::from_storage_marker),
+            Some(ScanDiagnostics {
                 malformed_lines: 3,
                 unreadable_lines: 1,
                 ..Default::default()
@@ -3343,8 +3594,8 @@ mod tests {
             request_input_tokens: None,
             response_duration_ms: Some(i64::MAX),
         };
-        accrual.add(&event);
-        accrual.add(&event);
+        accrual.add("model", &event);
+        accrual.add("model", &event);
         let summary = accrual.into_summary("zcode".into(), "model".into(), 20);
         assert_eq!(summary.response_sample_count, 2);
         assert_eq!(
@@ -4325,14 +4576,17 @@ mod tests {
         let local_now = test_local_time(today, 12);
         let at = test_local_time(today, 10).timestamp_millis();
 
-        // 同一份 Agent 日志被两台远端设备和本机各自解析：事件标识相同。
+        // 同一份 Agent 日志被两台远端设备和本机各自解析：事件标识为 stable_hash("{agent}|{event_key}")。
         insert_test_usage(&connection, "shared", at, 100);
+        let shared_id = stable_hash("codex|shared");
+        let remote_only_id = stable_hash("codex|remote-only");
+        let only_b_id = stable_hash("codex|only-b");
         for (device, event_id, tokens) in [
-            ("device-a", "shared", 100),
-            ("device-b", "shared", 100),
-            ("device-a", "remote-only", 40),
-            ("device-b", "remote-only", 40),
-            ("device-b", "only-b", 7),
+            ("device-a", shared_id.as_str(), 100),
+            ("device-b", shared_id.as_str(), 100),
+            ("device-a", remote_only_id.as_str(), 40),
+            ("device-b", remote_only_id.as_str(), 40),
+            ("device-b", only_b_id.as_str(), 7),
         ] {
             connection
                 .execute(
@@ -4374,5 +4628,202 @@ mod tests {
             .unwrap();
         assert_eq!(scan_source_rows, 0);
         assert_eq!(report.total_tokens, 10);
+    }
+
+    #[test]
+    fn mixed_case_model_variants_merge_under_official_spelling_and_price_correctly() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_init.sql"))
+            .unwrap();
+        let today = Local::now().date_naive();
+        let local_now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+
+        insert_test_usage_full(
+            &connection,
+            "glm-upper",
+            "zcode",
+            at,
+            Some("GLM-5.3"),
+            100_000,
+            0,
+            0,
+            50_000,
+        );
+        insert_test_usage_full(
+            &connection,
+            "glm-lower",
+            "zcode",
+            at,
+            Some("glm-5.3"),
+            200_000,
+            0,
+            0,
+            50_000,
+        );
+        insert_test_usage_full(
+            &connection,
+            "glm-flashx",
+            "zcode",
+            at,
+            Some("GLM-5.3-FlashX"),
+            1_000_000,
+            0,
+            0,
+            0,
+        );
+        insert_test_usage_full(
+            &connection,
+            "minimax-lower",
+            "opencode",
+            at,
+            Some("minimax-m3.1-flash"),
+            500_000,
+            0,
+            0,
+            0,
+        );
+        insert_test_usage_full(
+            &connection,
+            "minimax-mixed",
+            "opencode",
+            at,
+            Some("MiniMax-M3.1-Flash"),
+            500_000,
+            0,
+            0,
+            0,
+        );
+
+        let snapshot =
+            query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
+
+        let glm_models: Vec<_> = snapshot
+            .models
+            .iter()
+            .filter(|entry| entry.agent == "zcode" && entry.model.eq_ignore_ascii_case("glm-5.3"))
+            .collect();
+        assert_eq!(glm_models.len(), 1);
+        assert_eq!(glm_models[0].model, "glm-5.3");
+        assert_eq!(glm_models[0].tokens, 400_000);
+
+        let minimax_models: Vec<_> = snapshot
+            .models
+            .iter()
+            .filter(|entry| {
+                entry.agent == "opencode" && entry.model.eq_ignore_ascii_case("minimax-m3.1-flash")
+            })
+            .collect();
+        assert_eq!(minimax_models.len(), 1);
+        assert_eq!(minimax_models[0].model, "MiniMax-M3.1-Flash");
+        assert_eq!(minimax_models[0].tokens, 1_000_000);
+
+        assert_eq!(snapshot.cost.unpriced_tokens, 0);
+        assert!(snapshot.cost.total_usd > 0.0);
+    }
+
+    #[test]
+    fn read_snapshot_pins_consistent_wal_point_across_concurrent_local_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("wal-snapshot.sqlite3");
+        let writer = storage::open_database(&db_path).unwrap();
+        let _ = sync::device_identity(&writer);
+
+        let local_now = Local
+            .with_ymd_and_hms(2026, 3, 18, 12, 0, 0)
+            .single()
+            .unwrap();
+        let at = local_now.timestamp_millis() - 5_000;
+        let event_key = "shared-event-1";
+        let remote_id = stable_hash(&format!("codex|{event_key}"));
+
+        writer
+            .execute(
+                "INSERT INTO sync_device (device_id, label, exported_at_ms, last_import_ms)
+                 VALUES ('peer01', 'Peer', ?1, ?1)",
+                params![at],
+            )
+            .unwrap();
+        writer
+            .execute(
+                "INSERT INTO remote_usage_event (device_id, event_id, adapter_id, occurred_at_ms, processed_tokens)
+                 VALUES ('peer01', ?1, 'codex', ?2, 100)",
+                params![remote_id, at],
+            )
+            .unwrap();
+
+        let reader = storage::open_database_read_only(&db_path).unwrap();
+        let snapshot = with_read_snapshot(&reader, |tx| {
+            // 先触发一次 SELECT 锁定 WAL 读快照点，模拟 query_snapshot 第一步已开始读取本地表。
+            let initial_local: i64 = tx
+                .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(initial_local, 0);
+
+            // 模拟后台扫描线程在读快照已建立后提交两条本地事件（一条与远端同 key、一条全新本地事件）：
+            // 若 with_read_snapshot 未能固定 WAL MVCC 快照点，后续 query_snapshot_at 会读到新写入的 250，
+            // 使 total_tokens 变成 350 且 models 非空，从而立即抓出退化。
+            insert_test_usage_full(&writer, event_key, "codex", at, Some("gpt-5"), 100, 0, 0, 0);
+            insert_test_usage_full(
+                &writer,
+                "concurrent-local-2",
+                "codex",
+                at + 1,
+                Some("gpt-5"),
+                250,
+                0,
+                0,
+                0,
+            );
+
+            query_snapshot_at(tx, "today", ScanReport::default(), local_now)
+        })
+        .unwrap();
+
+        assert_eq!(snapshot.total_tokens, 100);
+        assert!(!snapshot.models.iter().any(|m| m.model == "gpt-5"));
+
+        // 释放旧快照后再次读取：同 key 的 100 去重只计一次，加上新本地 250 合计精确为 350（绝不翻倍成 450）。
+        let next_snapshot =
+            query_snapshot_at(&reader, "today", ScanReport::default(), local_now).unwrap();
+        assert_eq!(next_snapshot.total_tokens, 350);
+        assert_eq!(
+            next_snapshot
+                .models
+                .iter()
+                .find(|m| m.model == "gpt-5")
+                .map(|m| m.tokens),
+            Some(350)
+        );
+    }
+
+    #[test]
+    fn read_snapshot_persists_stable_device_id_without_prior_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("standalone-read-snapshot.sqlite3");
+
+        // 1) 未初始化设备标识的空库在只读连接或读事务中不会伪造未落盘的随机 ID，也不会报错崩溃。
+        let empty = storage::open_database(&db_path).unwrap();
+        drop(empty);
+        let ro_unseeded = storage::open_database_read_only(&db_path).unwrap();
+        assert!(!sync::has_device_identity(&ro_unseeded));
+        assert!(sync::sync_view(&ro_unseeded).is_err());
+        query_snapshot(&ro_unseeded, "today", ScanReport::default()).unwrap();
+        drop(ro_unseeded);
+
+        // 2) 直接调用 read_snapshot（无前置 scan_and_prune）会在进入读事务前落盘稳定设备 ID，
+        // 不会在 with_read_snapshot drop 时被静默回滚。
+        let first = read_snapshot(&db_path, "today", ScanReport::default()).unwrap();
+        let ro_after_first = storage::open_database_read_only(&db_path).unwrap();
+        assert!(sync::has_device_identity(&ro_after_first));
+        let id_after_first = sync::sync_view(&ro_after_first).unwrap().device_id;
+        drop(ro_after_first);
+
+        let second = read_snapshot(&db_path, "today", ScanReport::default()).unwrap();
+        let ro_after_second = storage::open_database_read_only(&db_path).unwrap();
+        let id_after_second = sync::sync_view(&ro_after_second).unwrap().device_id;
+        assert_eq!(id_after_first, id_after_second);
+        assert_eq!(first.total_tokens, second.total_tokens);
     }
 }

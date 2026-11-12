@@ -334,8 +334,14 @@ impl QuotaProvider for CursorQuota {
 }
 
 /// 取数并落库。engine 只调这一个。
+/// 先在单连接上读取一次设置与账号作用域，再并行发起到期的外部取数（锁不跨网络 I/O），
+/// 最后回到单连接校验作用域未变并批量落库。
 pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> Result<()> {
-    for provider in registry() {
+    let providers = registry();
+    let env = ProviderEnv::load(connection)?;
+    let mut prepared = Vec::with_capacity(providers.len());
+
+    for provider in &providers {
         let provider = provider.as_ref();
         let scope = account_scope(provider.adapter_id());
         let since = if matches!(provider.adapter_id(), "codex" | "claude") {
@@ -343,20 +349,48 @@ pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> 
         } else {
             0
         };
-        let env = ProviderEnv::load(connection)?;
-        connection.execute(
-            "DELETE FROM quota_snapshot WHERE adapter_id = ?1 AND collected_at_ms < ?2",
-            rusqlite::params![provider.adapter_id(), since],
-        )?;
-        let cache_scope = format!("{scope}:{}", provider.is_available(&env));
-        let outcome = if provider.is_available(&env) {
-            cached_fetch(cache, provider, force, &cache_scope)
-        } else {
-            QuotaOutcome {
-                samples: Vec::new(),
-                failure: None,
+        if since > 0 {
+            connection.execute(
+                "DELETE FROM quota_snapshot WHERE adapter_id = ?1 AND collected_at_ms < ?2",
+                rusqlite::params![provider.adapter_id(), since],
+            )?;
+        }
+        let available = provider.is_available(&env);
+        let cache_scope = format!("{scope}:{available}");
+        prepared.push((provider, scope, since, available, cache_scope));
+    }
+
+    let outcomes: Vec<QuotaOutcome> = std::thread::scope(|thread_scope| {
+        let mut handles = Vec::with_capacity(prepared.len());
+        for &(provider, _, _, available, ref cache_scope) in &prepared {
+            if available {
+                let cache_scope = cache_scope.as_str();
+                handles.push(Some(
+                    thread_scope.spawn(move || cached_fetch(cache, provider, force, cache_scope)),
+                ));
+            } else {
+                handles.push(None);
             }
-        };
+        }
+        handles
+            .into_iter()
+            .map(|handle| match handle {
+                Some(join) => join.join().unwrap_or(QuotaOutcome {
+                    samples: Vec::new(),
+                    failure: None,
+                }),
+                None => QuotaOutcome {
+                    samples: Vec::new(),
+                    failure: None,
+                },
+            })
+            .collect()
+    });
+
+    let post_env = ProviderEnv::load(connection)?;
+    let settings_changed = post_env.settings != env.settings;
+
+    for ((provider, scope, since, _, _), outcome) in prepared.into_iter().zip(outcomes) {
         let mut samples = outcome.samples;
         if samples.is_empty() {
             samples = provider.fallback();
@@ -364,7 +398,7 @@ pub fn refresh_all(connection: &Connection, cache: &QuotaCache, force: bool) -> 
         samples.retain(|sample| sample.collected_at_ms >= since);
         // Reject a request that outlived an account switch or settings edit.
         let current_scope = account_scope(provider.adapter_id());
-        if current_scope != scope || ProviderEnv::load(connection)?.settings != env.settings {
+        if current_scope != scope || settings_changed {
             if current_scope != scope {
                 accept_scope(connection, provider.adapter_id(), &current_scope)?;
             }
@@ -410,6 +444,7 @@ pub fn prune_unmanaged_quota_rows(connection: &Connection) -> Result<()> {
 
 /// 按 provider 的节奏取数并跨快照缓存。`force`（手动刷新）跳过新鲜缓存立即
 /// 重拉；失败路径与常规一致——写入空哨兵、保留库中旧行，绝不因强制刷新而删数据。
+/// 注意：缓存锁只在读写内存槽位时短暂持有，绝不跨 `provider.fetch()` 网络阻塞。
 fn cached_fetch(
     cache: &QuotaCache,
     provider: &dyn QuotaProvider,
@@ -417,15 +452,15 @@ fn cached_fetch(
     scope: &str,
 ) -> QuotaOutcome {
     let policy = provider.policy();
-    let Ok(mut guard) = cache.lock() else {
-        // 锁中毒只可能来自别处的 panic，此时当作"这次没数据"：保留库中旧行，
-        // 也不拿一句内部错误去污染用户能看到的失败记录。
-        return QuotaOutcome {
-            samples: Vec::new(),
-            failure: None,
-        };
-    };
     if !force {
+        let Ok(guard) = cache.lock() else {
+            // 锁中毒只可能来自别处的 panic，此时当作"这次没数据"：保留库中旧行，
+            // 也不拿一句内部错误去污染用户能看到的失败记录。
+            return QuotaOutcome {
+                samples: Vec::new(),
+                failure: None,
+            };
+        };
         if let Some((captured, cached_scope, cached)) = guard.get(provider.adapter_id()) {
             let ttl = if cached.is_empty() {
                 policy.empty_ttl
@@ -439,13 +474,21 @@ fn cached_fetch(
                 };
             }
         }
+    } else if cache.lock().is_err() {
+        return QuotaOutcome {
+            samples: Vec::new(),
+            failure: None,
+        };
     }
+
     match provider.fetch(policy.timeout) {
         Ok(samples) => {
-            guard.insert(
-                provider.adapter_id(),
-                (Instant::now(), scope.to_owned(), samples.clone()),
-            );
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(
+                    provider.adapter_id(),
+                    (Instant::now(), scope.to_owned(), samples.clone()),
+                );
+            }
             QuotaOutcome {
                 samples,
                 failure: None,
@@ -453,10 +496,12 @@ fn cached_fetch(
         }
         Err(error) => {
             // 来源不可用时不该让每次周期性刷新都付一次完整超时，空哨兵用更长的 TTL。
-            guard.insert(
-                provider.adapter_id(),
-                (Instant::now(), scope.to_owned(), Vec::new()),
-            );
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(
+                    provider.adapter_id(),
+                    (Instant::now(), scope.to_owned(), Vec::new()),
+                );
+            }
             QuotaOutcome {
                 samples: Vec::new(),
                 failure: Some(error.into()),
@@ -725,5 +770,45 @@ mod tests {
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         cached_fetch(&cache, &provider, false, "account-b");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn cached_fetch_releases_cache_lock_during_network_io() {
+        use std::sync::Barrier;
+
+        struct Blocking<'a> {
+            id: &'static str,
+            barrier: &'a Barrier,
+        }
+        impl QuotaProvider for Blocking<'_> {
+            fn adapter_id(&self) -> &'static str {
+                self.id
+            }
+            fn policy(&self) -> QuotaPolicy {
+                QuotaPolicy::new(60, 240, 4)
+            }
+            fn fetch(&self, _timeout: Duration) -> Result<Vec<QuotaSample>> {
+                // 若 cached_fetch 持锁调用 fetch，两个线程会在 barrier 处死锁。
+                self.barrier.wait();
+                Ok(Vec::new())
+            }
+        }
+
+        let cache: QuotaCache = Mutex::new(HashMap::new());
+        let barrier = Barrier::new(2);
+        let a = Blocking {
+            id: "codex",
+            barrier: &barrier,
+        };
+        let b = Blocking {
+            id: "claude",
+            barrier: &barrier,
+        };
+        std::thread::scope(|s| {
+            let ha = s.spawn(|| cached_fetch(&cache, &a, false, "s"));
+            let hb = s.spawn(|| cached_fetch(&cache, &b, false, "s"));
+            assert!(ha.join().unwrap().failure.is_none());
+            assert!(hb.join().unwrap().failure.is_none());
+        });
     }
 }

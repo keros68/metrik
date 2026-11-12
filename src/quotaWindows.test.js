@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { setLanguageSetting } from "./i18n.js";
-import { QUOTA_LOW_REMAINING, bindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
+import {
+  QUOTA_LOW_REMAINING,
+  bindingWindow,
+  entryBindingWindow,
+  formatReset,
+  isBalanceWindow,
+} from "./quotaWindows.js";
 
 /// 造一个窗口；顺序按后端的 quota_window_rank（five_hour → seven_day → 月度）。
 function windowOf(key, remainingPercent, { resetExpired = false, available = true } = {}) {
@@ -115,6 +121,26 @@ test("全部失效时返回 null，由调用方显示「已重置，等待刷新
   assert.equal(bindingWindow([windowOf("five_hour", 0, { resetExpired: true })]), null);
   assert.equal(bindingWindow([]), null);
   assert.equal(bindingWindow(undefined), null);
+});
+
+test("entryBindingWindow 优先采用后端统一的 bindingWindowKey，缺省或已失效时回退计算", () => {
+  // 后端若显式指定 five_hour（哪怕本地回退规则因 seven_day=10 告急会选 seven_day），前端也以其为准。
+  const windows = [windowOf("five_hour", 90), windowOf("seven_day", 10)];
+  assert.equal(
+    entryBindingWindow({ bindingWindowKey: "five_hour", windows }).key,
+    "five_hour",
+  );
+  assert.equal(entryBindingWindow({ windows }).key, "seven_day");
+
+  // 后端指定的窗口若已进入 resetExpired，则自动回退到其余有效窗口。
+  const expiredTarget = [
+    windowOf("five_hour", 0, { resetExpired: true }),
+    windowOf("seven_day", 45),
+  ];
+  assert.equal(
+    entryBindingWindow({ bindingWindowKey: "five_hour", windows: expiredTarget }).key,
+    "seven_day",
+  );
 });
 
 test("重置倒计时：小数分钟先取整再拆分，不出现 60 分", () => {

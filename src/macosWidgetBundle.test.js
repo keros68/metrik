@@ -54,7 +54,7 @@ test("widget 脚本的图标清单是真实存在的纯文件名且无重复", (
     ["preview", widgetPreviewScript],
   ]) {
     const assets = assetLoopEntries(script);
-    assert.ok(assets.length >= 11, `${name} 清单应覆盖全部 Agent 图标`);
+    assert.equal(assets.length, 17, `${name} 清单应覆盖全部 17 个 Agent 图标`);
     for (const asset of assets) {
       assert.match(
         asset,
@@ -74,12 +74,26 @@ test("widget 脚本的图标清单是真实存在的纯文件名且无重复", (
   }
 });
 
-test("Swift 的 asset 映射都被打包脚本覆盖", () => {
+test("Swift 的 asset 映射覆盖全部 Agent 且都被打包脚本覆盖", () => {
   const shipped = new Set(assetLoopEntries(widgetBuildScript));
-  const referenced = [
-    ...widgetModels.matchAll(/case "\w+": \("([\w.-]+)", "(png|jpg)"\)/g),
-  ].map(([, file, ext]) => `${file}.${ext}`);
-  assert.ok(referenced.length >= 7, "Swift 映射的 case 数量异常");
+  const cases = [
+    ...widgetModels.matchAll(/case "(\w+)": \("([\w.-]+)", "(png|jpg)"\)/g),
+  ];
+  const mappedAgents = new Set(cases.map(([, id]) => id));
+  const domainSource = fs.readFileSync("src-tauri/src/domain.rs", "utf8");
+  const agentListBlock = domainSource.match(/pub const AGENT_IDS[\s\S]*?=\s*\[([\s\S]*?)\];/);
+  assert.ok(agentListBlock, "应在 domain.rs 中找到 AGENT_IDS");
+  const allAgents = [...agentListBlock[1].matchAll(/"(\w+)"/g)].map(([, id]) => id);
+  assert.equal(allAgents.length, 17);
+  for (const agentId of allAgents) {
+    assert.ok(
+      mappedAgents.has(agentId),
+      `MetrikWidgetModels.swift 缺少 Agent "${agentId}" 的图标映射`,
+    );
+  }
+
+  const referenced = cases.map(([, , file, ext]) => `${file}.${ext}`);
+  assert.equal(referenced.length, 17, "Swift 映射的 case 数量应覆盖全部 17 个 Agent");
   for (const asset of referenced) {
     assert.ok(
       shipped.has(asset),

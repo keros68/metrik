@@ -1,11 +1,12 @@
 use super::{
-    discover_files, file_mtime_ns, has_extension, normalize_locator, AgentAdapter, ParsedScan,
-    ScanDiagnostics, SourceCandidate,
+    discover_files, has_extension, sqlite_candidate, AgentAdapter, ParsedScan, ScanDiagnostics,
+    SourceCandidate,
 };
-use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
+use crate::domain::{ParsedSource, TokenVector, UsageEvent};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// OpenCode 的两代存储都支持：
 ///
@@ -62,18 +63,22 @@ struct OpencodeCacheTokens {
     write: i64,
 }
 
+pub fn opencode_data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|value| value.is_absolute())
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join(".local")
+                .join("share")
+        })
+        .join("opencode")
+}
+
 impl OpencodeAdapter {
     pub fn detected() -> Self {
-        let data_home = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|value| value.is_absolute())
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".local")
-                    .join("share")
-            });
-        let data_dir = data_home.join("opencode");
+        let data_dir = opencode_data_dir();
         let storage = data_dir.join("storage");
         Self {
             roots: vec![
@@ -138,23 +143,11 @@ impl AgentAdapter for OpencodeAdapter {
 
     fn discover(&self, cutoff_ms: i64) -> Vec<SourceCandidate> {
         let mut found = Vec::new();
-        // SQLite 库整体是一个源：WAL 未 checkpoint 时主文件不变，size/mtime
-        // 要把 -wal 计入，否则新会话在 checkpoint 前扫不到。库不按 cutoff
+        // SQLite 库整体是一个源：走统一的 sqlite_candidate（忽略只读打开产生的
+        // 空 -wal，且把主库与非空 -wal 的大小/mtime 编进指纹）。库不按 cutoff
         // 过滤（历史行仍在其中，行级时间在 parse 里过滤）。
         for db_path in self.sqlite_stores() {
-            let Ok(metadata) = db_path.metadata() else {
-                continue;
-            };
-            let mut wal_path = db_path.as_os_str().to_os_string();
-            wal_path.push("-wal");
-            let wal = std::fs::metadata(wal_path).ok();
-            let normalized = normalize_locator(&db_path);
-            found.push(SourceCandidate {
-                source_id: stable_hash(&format!("opencode|{normalized}")),
-                size: metadata.len() + wal.as_ref().map_or(0, |meta| meta.len()),
-                mtime_ns: file_mtime_ns(&metadata).max(wal.as_ref().map_or(0, file_mtime_ns)),
-                path: db_path,
-            });
+            found.extend(sqlite_candidate(&db_path, self.id(), i64::MIN));
         }
         found.extend(discover_files(&self.roots, self.id(), cutoff_ms, |path| {
             has_extension(path, "json")
@@ -208,6 +201,7 @@ impl OpencodeAdapter {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .with_context(|| format!("failed to open {}", candidate.path.display()))?;
+        let _ = connection.busy_timeout(Duration::from_millis(500));
         // 项目归属只在 SQLite 形态里可得：`session.directory`。旧的纯 JSON 文件
         // 存储没有随消息落盘的工作目录，那批事件保持未归属。
         let session_directories = super::opencode_session_directories(&connection);

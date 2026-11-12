@@ -133,18 +133,15 @@ pub struct UsageEvent {
     pub model: Option<String>,
     pub tokens: TokenVector,
     pub quality: &'static str,
-    pub payload_hash: String,
     /// 事件所属项目的工作目录（各 Agent 的 cwd / session directory）。
     /// 拿不到就是 None——不从会话名或日志路径反推。
-    /// 刻意不参与 `payload_hash`：它是事件的附带归属，不是计量事实。若参与，
-    /// 现有账本在解析器升级后重扫时会对同一 event_id 算出不同的 hash，而
-    /// 非合并型 adapter（Codex/Kimi 等）遇到 hash 不一致就报身份冲突。
+    /// 刻意不参与账本身份冲突判定：它是事件的附带归属，不是计量事实。
     pub project_path: Option<String>,
     /// Validated single-request input size; never a session or period total.
     pub request_input_tokens: Option<i64>,
     /// Elapsed milliseconds for this completed response, including waiting,
     /// prefill, reasoning and any tools inside the recorded response interval.
-    /// Optional enrichment, not part of token identity or payload_hash.
+    /// Optional enrichment, not part of token identity or conflict payload.
     pub response_duration_ms: Option<i64>,
 }
 
@@ -158,17 +155,7 @@ impl UsageEvent {
         tokens: TokenVector,
         quality: &'static str,
     ) -> Self {
-        let payload = format!(
-            "{adapter_id}|{event_key}|{occurred_at_ms}|{}|{}|{}|{}|{}|{}",
-            session_id,
-            tokens.input_uncached,
-            tokens.cache_read,
-            tokens.cache_write,
-            tokens.output,
-            tokens.reasoning_output
-        );
         let event_id = stable_hash(&format!("{adapter_id}|{event_key}"));
-        let payload_hash = stable_hash(&payload);
         Self {
             event_id,
             adapter_id,
@@ -178,11 +165,19 @@ impl UsageEvent {
             model,
             tokens,
             quality,
-            payload_hash,
             project_path: None,
             request_input_tokens: None,
             response_duration_ms: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn same_measured_payload(&self, other: &Self) -> bool {
+        self.adapter_id == other.adapter_id
+            && self.event_key == other.event_key
+            && self.occurred_at_ms == other.occurred_at_ms
+            && self.session_id == other.session_id
+            && self.tokens == other.tokens
     }
 
     /// 附加项目归属；`None` 与空白路径都保持"未归属"。
@@ -261,9 +256,40 @@ pub fn sane_resets_at_ms(window_key: &str, resets_at_ms: i64, collected_at_ms: i
     plausible.then_some(resets_at_ms)
 }
 
+/// 额度"告急"的统一界线（剩余 <= 15%，即已用 >= 85%）：告警通知、桌面胶囊条/浮窗行首、
+/// macOS WidgetKit 小组件圆环统一以此决定是否把吃紧的长周期窗口顶到台面。
+pub const QUOTA_LOW_REMAINING_PERCENT: f64 = 15.0;
+
 /// 余额窗口（DeepSeek 的 balance_cny 等）存的是金额不是百分比。
 pub fn is_balance_window(window_key: &str) -> bool {
     window_key.starts_with("balance")
+}
+
+/// 从已按 `quota_window_rank` 排好序的窗口序列中挑出当前真正约束用量的窗口：
+/// 平时取第一个有效且未过重置点的短周期窗口；有非余额窗口进入告急区间（<= 15%）时，
+/// 改取剩余比例最低的窗口（并列保持短周期优先）。
+pub fn binding_quota_window<'a>(
+    windows: impl IntoIterator<Item = &'a AgentQuotaWindow>,
+) -> Option<&'a AgentQuotaWindow> {
+    let mut first_live = None;
+    let mut tightest_low: Option<&AgentQuotaWindow> = None;
+    for window in windows {
+        if !window.view.available || window.view.reset_expired {
+            continue;
+        }
+        if first_live.is_none() {
+            first_live = Some(window);
+        }
+        if !is_balance_window(&window.key)
+            && window.view.remaining_percent <= QUOTA_LOW_REMAINING_PERCENT
+            && tightest_low.is_none_or(|current| {
+                window.view.remaining_percent < current.view.remaining_percent
+            })
+        {
+            tightest_low = Some(window);
+        }
+    }
+    tightest_low.or(first_live)
 }
 
 /// Codex 的 primary/secondary 只是槽位，不是窗口语义：套餐不同，同一个槽位
@@ -351,6 +377,7 @@ pub struct SeriesPoint {
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuotaView {
     pub agent: String,
+    pub binding_window_key: Option<String>,
     pub windows: Vec<AgentQuotaWindow>,
     /// 没有窗口时的原因（目前只有 Claude 直连查询失败会填）。让"没有数字"
     /// 这件事可自查，而不是笼统地叫用户去开另一个来源。
@@ -600,7 +627,7 @@ mod tests {
         let timed = event.clone().with_response_timing(Some(1_000), Some(3_000));
         assert_eq!(timed.response_duration_ms, Some(2_000));
         assert_eq!(event.event_id, timed.event_id);
-        assert_eq!(event.payload_hash, timed.payload_hash);
+        assert!(event.same_measured_payload(&timed));
         assert_eq!(event.tokens, timed.tokens);
         for (start, end) in [
             (None, Some(3_000)),
@@ -628,5 +655,56 @@ mod tests {
             super::stable_hash("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn binding_quota_window_matches_shortest_unless_non_balance_window_is_low() {
+        let mk = |key: &str, remaining: f64, reset_expired: bool| super::AgentQuotaWindow {
+            key: key.into(),
+            label: key.into(),
+            view: super::QuotaView {
+                available: true,
+                remaining_percent: remaining,
+                resets_in_minutes: Some(60.0),
+                age_minutes: Some(0.0),
+                stale: false,
+                reset_expired,
+                source_label: "official".into(),
+                quality: "official_live".into(),
+            },
+        };
+
+        let normal = [mk("five_hour", 99.0, false), mk("seven_day", 50.0, false)];
+        assert_eq!(
+            super::binding_quota_window(&normal).map(|w| w.key.as_str()),
+            Some("five_hour")
+        );
+
+        let weekly_low = [mk("five_hour", 90.0, false), mk("seven_day", 12.0, false)];
+        assert_eq!(
+            super::binding_quota_window(&weekly_low).map(|w| w.key.as_str()),
+            Some("seven_day")
+        );
+
+        let tied_low = [mk("five_hour", 5.0, false), mk("seven_day", 5.0, false)];
+        assert_eq!(
+            super::binding_quota_window(&tied_low).map(|w| w.key.as_str()),
+            Some("five_hour")
+        );
+
+        let balance_small = [mk("seven_day", 80.0, false), mk("balance_cny", 8.4, false)];
+        assert_eq!(
+            super::binding_quota_window(&balance_small).map(|w| w.key.as_str()),
+            Some("seven_day")
+        );
+
+        let balance_only = [mk("balance_cny", 8.4, false)];
+        assert_eq!(
+            super::binding_quota_window(&balance_only).map(|w| w.key.as_str()),
+            Some("balance_cny")
+        );
+
+        let expired = [mk("five_hour", 0.0, true)];
+        assert!(super::binding_quota_window(&expired).is_none());
     }
 }

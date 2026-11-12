@@ -29,12 +29,17 @@ pub struct SpeedSample {
 #[derive(Clone, Default)]
 pub struct Decoder {
     spans: BTreeMap<SpanKey, CachedSpan>,
+    children_by_parent: BTreeMap<SpanKey, BTreeSet<SpanKey>>,
     span_order: VecDeque<SpanKey>,
     emitted: BTreeSet<String>,
     emitted_order: VecDeque<String>,
 }
 
 impl Decoder {
+    pub fn is_stateful_signal(agent: &str, signal: &str) -> bool {
+        matches!((agent, signal), ("codex", "traces"))
+    }
+
     pub fn decode(
         &mut self,
         agent: &str,
@@ -80,16 +85,36 @@ impl Decoder {
     }
 
     fn expire_spans_at(&mut self, now: Instant) {
-        while let Some(key) = self.span_order.front() {
-            let expired = self.spans.get(key).is_none_or(|entry| {
+        while let Some(&key) = self.span_order.front() {
+            let expired = self.spans.get(&key).is_none_or(|entry| {
                 now.saturating_duration_since(entry.inserted) >= PENDING_LIFETIME
             });
             if !expired {
                 break;
             }
-            self.spans.remove(key);
             self.span_order.pop_front();
+            self.remove_span_entry(&key);
         }
+    }
+
+    fn detach_parent(&mut self, parent: Option<SpanKey>, child: SpanKey) {
+        let Some(parent) = parent else {
+            return;
+        };
+        if let Some(children) = self.children_by_parent.get_mut(&parent) {
+            children.remove(&child);
+            if children.is_empty() {
+                self.children_by_parent.remove(&parent);
+            }
+        }
+    }
+
+    fn remove_span_entry(&mut self, key: &SpanKey) {
+        let parent = self
+            .spans
+            .remove(key)
+            .and_then(|entry| entry.value.and_then(|span| span.parent));
+        self.detach_parent(parent, *key);
     }
 
     fn cache_span(&mut self, span: TimingSpan) {
@@ -97,14 +122,22 @@ impl Decoder {
             if entry.value.as_ref() != Some(&span) {
                 // Poison conflicting identities instead of choosing whichever
                 // export arrived first. Only whitelisted fields are retained.
-                entry.value = None;
+                let old_parent = entry.value.take().and_then(|old| old.parent);
+                self.detach_parent(old_parent, span.key);
             }
             return;
         }
         while self.spans.len() >= MAX_PENDING_SPANS {
-            if let Some(oldest) = self.span_order.pop_front() {
-                self.spans.remove(&oldest);
-            }
+            let Some(oldest) = self.span_order.pop_front() else {
+                break;
+            };
+            self.remove_span_entry(&oldest);
+        }
+        if let Some(parent) = span.parent {
+            self.children_by_parent
+                .entry(parent)
+                .or_default()
+                .insert(span.key);
         }
         self.span_order.push_back(span.key);
         self.spans.insert(
@@ -118,6 +151,7 @@ impl Decoder {
 
     fn codex_samples(&mut self) -> Vec<SpeedSample> {
         let mut candidates = Vec::new();
+        let mut evicted_keys = BTreeSet::new();
         for sampling in self.spans.values().filter_map(|entry| entry.value.as_ref()) {
             if sampling.kind != SpanKind::Sampling || sampling.failed {
                 continue;
@@ -178,6 +212,7 @@ impl Decoder {
             if occurred_at_ms <= 0 {
                 continue;
             }
+            evicted_keys.extend([request_key, sampling.key, receiving.key, completed.key]);
             let id = sample_id(&[b"codex", &sampling.key.trace, &sampling.key.span]);
             if self.emitted.contains(&id) {
                 continue;
@@ -190,6 +225,12 @@ impl Decoder {
                 output_tokens,
                 duration_ms: (sampling.end_ns - sampling.start_ns) as f64 / 1_000_000.0,
             });
+        }
+        if !evicted_keys.is_empty() {
+            for key in &evicted_keys {
+                self.remove_span_entry(key);
+            }
+            self.span_order.retain(|key| !evicted_keys.contains(key));
         }
         for sample in &candidates {
             while self.emitted.len() >= MAX_EMITTED_IDS {
@@ -208,10 +249,11 @@ impl Decoder {
     }
 
     fn children(&self, parent: SpanKey) -> impl Iterator<Item = &TimingSpan> {
-        self.spans
-            .values()
-            .filter_map(|entry| entry.value.as_ref())
-            .filter(move |span| span.parent == Some(parent))
+        self.children_by_parent
+            .get(&parent)
+            .into_iter()
+            .flat_map(|keys| keys.iter())
+            .filter_map(|key| self.span(key))
     }
 }
 
@@ -872,7 +914,10 @@ mod tests {
         assert!(decode_spans(&mut decoder, vec![spans[1].clone()]).is_empty());
         let samples = decode_spans(&mut decoder, vec![spans[2].clone(), spans[0].clone()]);
         assert_eq!(samples.len(), 1);
+        assert!(decoder.spans.is_empty());
+        assert!(decoder.children_by_parent.is_empty());
         assert!(decode_spans(&mut decoder, spans.clone()).is_empty());
+        assert!(decoder.spans.is_empty());
         assert_eq!(
             decode_spans(&mut Decoder::default(), spans)[0].id,
             samples[0].id

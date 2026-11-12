@@ -228,7 +228,39 @@ fn ascii_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
 
 /// 从给定目录向上找最近的 `.git`（目录或 worktree 的 `.git` 文件）。
 /// 不做 canonicalize：账本里的路径形态就是展示形态，规避 UNC 前缀与大小写改写。
+/// 进程级带短 TTL 缓存，让展开页并发触发的 snapshot / sessions / projects 共享寻根结果。
 fn git_root(raw: &str) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const GIT_CACHE_TTL: Duration = Duration::from_secs(10);
+    const MAX_GIT_CACHE_ENTRIES: usize = 2048;
+    type GitCache = Mutex<Option<(Instant, HashMap<String, Option<String>>)>>;
+    static CACHE: OnceLock<GitCache> = OnceLock::new();
+
+    if let Ok(mut guard) = CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        let now = Instant::now();
+        if let Some((captured, map)) = guard.as_ref() {
+            if now.saturating_duration_since(*captured) < GIT_CACHE_TTL {
+                if let Some(cached) = map.get(raw) {
+                    return cached.clone();
+                }
+            } else {
+                *guard = None;
+            }
+        }
+        let resolved = git_root_uncached(raw);
+        let (_, map) = guard.get_or_insert_with(|| (now, HashMap::new()));
+        if map.len() >= MAX_GIT_CACHE_ENTRIES {
+            map.clear();
+        }
+        map.insert(raw.to_owned(), resolved.clone());
+        return resolved;
+    }
+    git_root_uncached(raw)
+}
+
+fn git_root_uncached(raw: &str) -> Option<String> {
     let start = PathBuf::from(raw);
     if !start.is_dir() {
         return None;

@@ -11,6 +11,7 @@ src-tauri/gen/schemas/
 .DS_Store
 Thumbs.db
 .dispatch/
+.aicross/
 .agents/
 .codex/
 .claude/
