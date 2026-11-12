@@ -64,11 +64,18 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - aicross: the record `id` aicross generates for each dispatch (`aicross:` event key). aicross runs Claude Code, Codex, and pi with session saving disabled, so those calls never reach the agents' own logs; it appends one line per model per dispatch to `<AICROSS_HOME>/usage/<year-month>.jsonl` (schema `aicross-usage/1`) holding four non-overlapping token components, the executing agent, the pi provider, the model, and the project directory, with no task or answer text. Usage is credited to the executing agent, and pi dispatches follow the same provider attribution as pi session logs. Kimi and Antigravity dispatches keep their own sessions and are not written to this file, so nothing is counted twice. Records with another schema version, an unknown agent, or a negative component are counted as unreadable rather than interpreted. Checked on one real dispatch each for Claude Code and Codex (2026-11): the four components sum to the CLI's reported input plus output; the pi path follows the components pi reports in its session logs and has not been checked on a real dispatch.
 - Source paths are observations, not event identity, so moving a session into an archive does not duplicate usage.
 
+The local scan covers the desktop app, standalone IDE, and CLI conversation
+databases under `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, and
+`~/.gemini/antigravity-cli`. CLI databases are indexed as new sources across
+the standard 182-day horizon and use the same model attribution and
+`responseId` deduplication as desktop and IDE sessions.
+
 Antigravity reads step timestamps and generation metadata in one read-only SQLite
-transaction, so an IDE write between the queries cannot mix two snapshots.
+transaction, so a write between the queries cannot mix two snapshots.
 Malformed nested protobuf messages and packed step indices mark the source as
 partial while readable retries retain their original positions and event
-identities. The output-split self-check treats omitted proto3 components as zero,
+identities. Missing step timestamps affect coverage only for attempts with
+token usage. The output-split self-check treats omitted proto3 components as zero,
 including generations with only thinking output.
 
 Local Antigravity source fingerprints also include the length and modification
@@ -269,7 +276,7 @@ missing or unreadable ledger is a stderr message with a non-zero exit code.
   the table is wholesale-replaced derived data, so only one stale quota round
   is lost.
 
-SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 8 to backfill request timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, and Antigravity using 10: 9 reconciled decoder diagnostics and output-split validation, and 10 rescans conversations parsed before project attribution so their history is backfilled. Version changes force retained-history reconciliation.
+SQLite runs in WAL mode under the operating system's local application-data directory. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 8 to backfill request timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, and Antigravity using 11 for step timestamp coverage checks. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of `payload_hash` — it is attribution, not a measured quantity, and hashing it would make the same event hash differently after a parser upgrade, which non-mergeable adapters reject as an identity collision. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 

@@ -92,6 +92,6 @@ metrik --quota-json <db-path>  # 显式指定账本路径
 
 1. 安装包未做数字签名，首次运行需手动放行；Windows 未预装 WebView2 时安装程序需联网获取运行时。
 2. Linux 仅在 Ubuntu 24.04 x86_64 上验证。安装包需要 glibc 2.35 或更高版本，其它发行版尚未验证；其它架构需自行构建。AppImage 若无法显示托盘，请确认桌面环境已启用 StatusNotifier/AppIndicator 支持。
-3. Antigravity 2.x 的用量读自本地会话库，应用没在运行也能读到；旧版 IDE（会话存为 `.pb`）仍需 IDE 处于运行状态才有数据。官方配额始终需要 IDE 或 Antigravity CLI 在运行。
+3. Antigravity 桌面版、IDE 和 CLI（`agy`）的本地会话库在应用退出后仍可读取。首次索引会回填最近 182 天内仍保留的 CLI 会话。旧版 IDE 的 `.pb` 会话需通过运行中的 IDE 读取。官方配额由运行中的 IDE 或 Antigravity CLI 刷新。
 4. 首次索引大体量日志会占用一段 CPU 与磁盘，界面可正常操作，未覆盖完整历史的数值会标注说明。
 5. macOS 桌面小组件仅有中文界面，不随界面语言切换。
