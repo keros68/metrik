@@ -423,7 +423,7 @@ impl Style {
 
     pub(crate) fn from_no_color(no_color: Option<&std::ffi::OsStr>) -> Self {
         Self {
-            ansi: !no_color.is_some_and(|value| !value.is_empty()),
+            ansi: no_color.is_none_or(|value| value.is_empty()),
         }
     }
 
