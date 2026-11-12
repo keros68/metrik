@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "metrik"
-version = "0.23.1"
+version = "0.23.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
