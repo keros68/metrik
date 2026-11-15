@@ -10,6 +10,8 @@ pub struct ModelTiming {
     pub output_tokens: f64,
     pub duration_ms: f64,
     pub sample_count: i64,
+    pub first_token_total_ms: f64,
+    pub first_token_sample_count: i64,
 }
 
 /// A retried OTLP batch observes the same request. Never add its tokens to the
@@ -50,17 +52,27 @@ pub fn store_samples_with_prune(
         {
             continue;
         }
+        let first_token = sample
+            .first_token_latency_ms
+            .filter(|ms| sample.agent == "claude" && *ms > 0.0 && *ms <= sample.duration_ms);
         transaction.execute(
-            "INSERT OR IGNORE INTO response_speed_sample
-             (sample_id, adapter_id, model, occurred_at_ms, output_tokens, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO response_speed_sample
+             (sample_id, adapter_id, model, occurred_at_ms, output_tokens, duration_ms, first_token_latency_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(sample_id) DO UPDATE SET first_token_latency_ms = excluded.first_token_latency_ms
+             WHERE response_speed_sample.first_token_latency_ms IS NULL
+               AND excluded.first_token_latency_ms IS NOT NULL
+               AND response_speed_sample.adapter_id = excluded.adapter_id
+               AND response_speed_sample.model = excluded.model
+               AND response_speed_sample.output_tokens = excluded.output_tokens",
             params![
                 sample.id,
                 sample.agent,
                 sample.model,
                 sample.occurred_at_ms,
                 sample.output_tokens,
-                sample.duration_ms
+                sample.duration_ms,
+                first_token,
             ],
         )?;
     }
@@ -80,7 +92,8 @@ pub fn model_timings(
     end_ms: i64,
 ) -> Result<Vec<ModelTiming>> {
     let mut statement = connection.prepare(
-        "SELECT adapter_id, model, SUM(CAST(output_tokens AS REAL)), SUM(duration_ms), COUNT(*)
+        "SELECT adapter_id, model, SUM(CAST(output_tokens AS REAL)), SUM(duration_ms), COUNT(*),
+                COALESCE(SUM(first_token_latency_ms), 0.0), COUNT(first_token_latency_ms)
          FROM response_speed_sample
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          GROUP BY adapter_id, model",
@@ -92,6 +105,8 @@ pub fn model_timings(
             output_tokens: row.get(2)?,
             duration_ms: row.get(3)?,
             sample_count: row.get(4)?,
+            first_token_total_ms: row.get(5)?,
+            first_token_sample_count: row.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -140,6 +155,7 @@ mod tests {
                     occurred_at_ms: now,
                     output_tokens: 10,
                     duration_ms,
+                    first_token_latency_ms: None,
                 }],
                 now,
             )
@@ -160,8 +176,23 @@ mod tests {
             occurred_at_ms: now,
             output_tokens: 20,
             duration_ms: 2000.0,
+            first_token_latency_ms: None,
         };
         store_samples(&mut connection, &[sample], now).unwrap();
+        store_samples(
+            &mut connection,
+            &[SpeedSample {
+                id: stable_hash("claude|request"),
+                agent: "claude".into(),
+                model: "model".into(),
+                occurred_at_ms: now + 1,
+                output_tokens: 20,
+                duration_ms: 2010.0,
+                first_token_latency_ms: Some(300.0),
+            }],
+            now,
+        )
+        .unwrap();
         let changed = SpeedSample {
             id: stable_hash("claude|request"),
             agent: "claude".into(),
@@ -169,6 +200,7 @@ mod tests {
             occurred_at_ms: now,
             output_tokens: 999,
             duration_ms: 1.0,
+            first_token_latency_ms: Some(0.5),
         };
         store_samples(&mut connection, &[changed], now).unwrap();
         let timings = model_timings(&connection, now, now + 1).unwrap();
@@ -176,6 +208,8 @@ mod tests {
         assert_eq!(timings[0].output_tokens, 20.0);
         assert_eq!(timings[0].duration_ms, 2000.0);
         assert_eq!(timings[0].sample_count, 1);
+        assert_eq!(timings[0].first_token_total_ms, 300.0);
+        assert_eq!(timings[0].first_token_sample_count, 1);
         let usage: i64 = connection
             .query_row("SELECT COUNT(*) FROM usage_event", [], |row| row.get(0))
             .unwrap();
@@ -202,6 +236,7 @@ mod tests {
                     occurred_at_ms: at,
                     output_tokens: 10,
                     duration_ms: 1000.0,
+                    first_token_latency_ms: None,
                 }],
                 now,
             )

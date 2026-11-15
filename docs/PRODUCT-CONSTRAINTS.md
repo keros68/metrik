@@ -382,6 +382,13 @@ change.
   measurement of that usage source, not a benchmark of a model across providers.
   Zcode, Kimi, and Pi have verified per-request timing; other sources require
   their own timing validation before reporting speed.
+- Kimi model statistics show mean first-token latency, duration-weighted
+  streaming output speed, and mean total request time, with an independent
+  sample count for each metric. A recorded zero-length stream can contribute
+  to latency and total time when valid and is excluded from streaming speed.
+- OpenCode V2 model statistics show the same three measures for completed
+  assistant requests. Total time ends at stream completion. OpenCode Go
+  usage sent through Pi can contribute to the separate response average.
 
 - Pinning belongs only to floating forms. Expanded mode is always a normal
   window.

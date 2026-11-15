@@ -2847,6 +2847,18 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
 .model-response-speed small { color: #85878b; font-size: 10px; }
 .model-response-speed--unavailable { color: #85878b; }
 
+.model-response-speed--metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px 10px;
+}
+
+.model-response-speed--metrics > div {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+
 .model-dot {
   width: 8px;
   height: 8px;

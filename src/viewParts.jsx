@@ -113,17 +113,50 @@ export function ModelResponseSpeedHelp() {
       onFocusCapture={() => setDismissed(false)}
     >
       <button type="button" className="model-speed-help-button" aria-describedby="model-speed-explanation">
-        {t("响应均速（含等待）")}
+        {t("响应计时")}
         <Info size={13} weight="regular" aria-hidden="true" />
       </button>
       <span id="model-speed-explanation" role="tooltip" className="model-speed-tooltip">
-        {t("历史响应均速：输出 token 总数 ÷ 总耗时（含等待和思考）。")}
+        {t("响应均速按包含等待的总耗时计算。首 token 延迟和请求总耗时取平均值，流式速度按流式阶段的总耗时计算。")}
       </span>
     </div>
   );
 }
 
+function formatRate(rate) {
+  return rate < 0.1 ? "<0.1" : formatNumber(rate, { maximumFractionDigits: 1 });
+}
+
+function formatDuration(ms) {
+  return ms < 1000
+    ? `${formatNumber(ms, { maximumFractionDigits: 1 })} ms`
+    : `${formatNumber(ms / 1000, { maximumFractionDigits: 2 })} s`;
+}
+
 export function ModelResponseSpeed({ entry }) {
+  const timing = entry.requestTiming;
+  if (timing) {
+    const formatSpeed = (value) => `${formatRate(value)} tokens/s`;
+    const showResponseAverage = entry.agent === "codex" || entry.agent === "claude" || (entry.agent === "opencode" && entry.responseSampleCount > 0);
+    const metrics = [
+      [t("响应均速（含等待）"), showResponseAverage && { value: entry.responseTokensPerSecond, sampleCount: entry.responseSampleCount }, formatSpeed],
+      [t("首 token 延迟"), timing.firstTokenLatencyMs, formatDuration],
+      [t("流式速度"), timing.streamTokensPerSecond, formatSpeed],
+      [t("请求总耗时"), timing.requestDurationMs, formatDuration],
+    ];
+    return (
+      <div className="model-response-speed model-response-speed--metrics">
+        {metrics.filter(([, metric]) => metric).map(([label, metric, format]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{Number.isFinite(metric.value) ? format(metric.value) : t("暂无计时")}</strong>
+            <small>{t("{count} 个有效样本", { count: formatNumber(metric.sampleCount ?? 0) })}</small>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const rate = entry.responseTokensPerSecond;
   const count = entry.responseSampleCount;
   const available = Number.isFinite(rate) && rate > 0 && Number.isInteger(count) && count > 0;
@@ -131,7 +164,7 @@ export function ModelResponseSpeed({ entry }) {
     <div className={`model-response-speed ${available ? "" : "model-response-speed--unavailable"}`}>
       {available ? (
         <>
-          <strong>{rate > 0 && rate < 0.1 ? "<0.1" : formatNumber(rate, { maximumFractionDigits: 1 })} <span>tokens/s</span></strong>
+          <strong>{formatRate(rate)} <span>tokens/s</span></strong>
           <small>{t("{count} 个有效样本", { count: formatNumber(count) })}</small>
         </>
       ) : <span>{t("暂无计时")}</span>}

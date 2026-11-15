@@ -143,6 +143,8 @@ pub struct UsageEvent {
     /// prefill, reasoning and any tools inside the recorded response interval.
     /// Optional enrichment, not part of token identity or conflict payload.
     pub response_duration_ms: Option<i64>,
+    pub first_token_latency_ms: Option<i64>,
+    pub stream_duration_ms: Option<i64>,
 }
 
 impl UsageEvent {
@@ -168,6 +170,8 @@ impl UsageEvent {
             project_path: None,
             request_input_tokens: None,
             response_duration_ms: None,
+            first_token_latency_ms: None,
+            stream_duration_ms: None,
         }
     }
 
@@ -202,6 +206,17 @@ impl UsageEvent {
     pub fn with_response_duration(mut self, duration_ms: Option<i64>) -> Self {
         self.response_duration_ms = duration_ms.filter(|duration| *duration > 0);
         self
+    }
+
+    /// Both phases must come from the same completed request to derive its total.
+    pub fn set_response_phases(&mut self, first_token_ms: Option<i64>, stream_ms: Option<i64>) {
+        self.first_token_latency_ms = first_token_ms.filter(|ms| *ms >= 0);
+        self.stream_duration_ms = stream_ms.filter(|ms| *ms >= 0);
+        self.response_duration_ms = self
+            .first_token_latency_ms
+            .zip(self.stream_duration_ms)
+            .and_then(|(first, stream)| first.checked_add(stream))
+            .filter(|ms| *ms > 0);
     }
 }
 
@@ -435,6 +450,35 @@ pub struct ModelSummary {
     /// only; includes waiting and is not a pure generation-speed measurement.
     pub response_tokens_per_second: Option<f64>,
     pub response_sample_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_timing: Option<ModelRequestTiming>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRequestTiming {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_token_latency_ms: Option<TimingMetric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_tokens_per_second: Option<TimingMetric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_duration_ms: Option<TimingMetric>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimingMetric {
+    pub value: Option<f64>,
+    pub sample_count: i64,
+}
+
+impl TimingMetric {
+    pub fn mean(total: f64, sample_count: i64) -> Self {
+        Self {
+            value: (sample_count > 0).then(|| total / sample_count as f64),
+            sample_count,
+        }
+    }
 }
 
 /// 只读的历史报告：182 天窗口内每日、按 Agent、按模型的 processed token 聚合，

@@ -15,7 +15,7 @@
 Codex JSONL ─────┐
 Claude JSONL ────┤
 ZCode SQLite ────┼─ adapter ─ normalized event ─ SQLite ledger ─ period query ─ UI
-OpenCode JSON ───┤
+OpenCode JSON/DB ┤
 Kimi wire.jsonl ─┤
 Grok updates ────┤
 Pi JSONL ────────┤
@@ -55,6 +55,7 @@ The user-reachable `rebuild_local_ledger(period)` command takes the same scan lo
 - Codex: session ID plus timestamp and cumulative-token fingerprint.
 - Claude Code: provider message ID only. Request ID and model are validation metadata; a conflict rejects that message and marks partial coverage without poisoning the rest of the source. Session ID remains metadata and does not prevent cross-session deduplication.
 - Kimi: new-format records use the session path plus timestamp and component fingerprint; legacy StatusUpdates use the provider `message_id`. Kimi Work (kimi-desktop) embeds the same kimi-code kernel and writes the same wire.jsonl under its daimon runtime home; its sessions reuse the CLI parser unchanged, with project attribution from `session_index.jsonl` (`sessionId` → `workDir`) instead of `workspaces.json`.
+- OpenCode uses the assistant message ID across legacy JSON and SQLite. V2 reads `session_message` and the directory from `session_v2`. When both SQL schemas contain the same ID, the V1 row owns the event's original timestamp and counts. Native V2 records report visible and reasoning output separately, so their sum is the generated output.
 - Pi: provider `responseId` only (unique across 849 local assistant rows; the one row without it is an aborted message that falls back to the entry ID). `/fork` and `/clone` copy entries verbatim into a new session file, so a copy observes the same event with a different session in its payload and merges component-wise like Claude. Compaction and branch-summary summary usage is counted as its own event; the directory name is a lossy encoding and project attribution comes only from the header `cwd`.
 - Hermes: the full route row — session id, model, billing provider, base URL, billing mode, and task — from the `session_model_usage` primary key. Rows are cumulative counters re-read on every scan, so observations merge component-wise like Antigravity (keyed by the `hermes:` event-key prefix); the timestamp is `last_seen`, so a long session's tokens land on its final active day. Forks and subagents only backfill metadata and never copy usage rows, so there is no replay risk. Every row stays under the Hermes agent regardless of its billing route; official plan quotas are independent observations.
 - MiniMax Code: the `local_runtime_token_usage` integer row id. Each row is one request (a delta, never merged); main sessions, sub-tasks, and scheduled sessions share the table, and project attribution comes from `local_runtime_sessions.workspace_dir`. The schema follows CC Switch's public reader and its fixtures and has not yet been checked against a real install.
@@ -140,15 +141,29 @@ record and carries identical usage: `llmFirstTokenLatencyMs` (request build
 plus server time to first token) plus `llmStreamDurationMs`. On 4,328 local
 records the two fields equal the sum of their sub-fields within 3 ms, and 4,328
 of 4,329 turn usage records pair; a `step.end` whose usage differs, or that has
-no timing, leaves the event untimed. The gap between the request and `step.end`
-timestamps is not used, because it includes later waiting. Pi reads
+no timing, leaves the event untimed. Kimi retains each recorded phase separately
+and derives total request time only when both phases are present. Explicit
+completion reasons must be `end_turn` or `tool_use`. Older `step.end` records
+without a reason can still pair by usage. Model summaries show mean first-token
+latency, streaming output tokens divided by summed positive stream durations,
+and mean total response time for timed requests with output. Each metric counts
+its own eligible samples. The gap between the request and `step.end`
+timestamps includes later waiting and is excluded. Pi reads
 `message.durationMs` on assistant messages that ended with `stop` or `toolUse`
 (237 of 237 local calls with usage); errored and aborted calls keep their usage
-but carry no timing. Kimi parser revision 8 and Pi revision 9 rescan retained
+but carry no timing. Kimi parser revision 10 and Pi revision 9 rescan retained
 sources to enrich old events. Hermes rows are cumulative counters, Claude Code
 and Codex logs record turn or output-item times rather than one request, and
 the Antigravity timing fields are unnamed, so those adapters report no timing.
 Other adapters do not guess timing from session duration or adjacent events.
+
+OpenCode 2.3.0 persists request start, first token, stream end and completion
+as `created`, `firstToken`, `streamed` and `completed` in one V2 assistant
+message. The first-token and stream durations use the corresponding ordered
+boundaries. Total request time requires the paired phases and ends at
+`streamed`, independently of later settlement. Explicitly completed, successful
+steps qualify. Each metric has its own sample count, and stream speed uses only
+positive stream duration and generated output. V1 has no request phase timing.
 
 Model summaries share one aggregation for snapshots and history reports:
 `sum(timed output tokens) * 1000 / sum(response_duration_ms)`, grouped by Agent
@@ -158,7 +173,7 @@ duration-weighted response average includes waiting, prefill and reasoning; it
 is neither pure generation speed nor live throughput. Imported sync events
 carry no timing and cannot dilute or inflate the measured rate. Timing stays
 local; the existing sync format is unchanged. Schema upgrades add a nullable
-column in place, preserving old usage. Same-payload rescans enrich timing;
+columns in place, preserving old usage. Same-payload rescans enrich timing;
 counter merges never pair an older duration with newly increased output.
 
 Claude Code and Codex have a separate, off-by-default path: an explicitly
@@ -167,7 +182,10 @@ writes `response_speed_sample`. The same period/model aggregation combines
 these paired timing samples with local-log timing without adding token-usage
 events or changing usage totals. Existing external exporters are preserved;
 only new requests after client restart can be measured. Samples stay local
-and use a 182-day retention window. See [Response speed collection](response-speed.md)
+and use a 182-day retention window. Claude's request trace enriches the same
+sample ID with first-token latency. Codex's mean request duration uses native
+sampling spans, keeping Pi timings confined to the existing response average.
+See [Response speed collection](response-speed.md)
 for setup, supported client formats, request correlation and privacy boundaries.
 
 ## Quota
@@ -276,7 +294,7 @@ missing or unreadable ledger is a stderr message with a non-zero exit code.
   the table is wholesale-replaced derived data, so only one stale quota round
   is lost.
 
-SQLite runs in WAL mode with `auto_vacuum = INCREMENTAL` under the operating system's local application-data directory; upgrading a v1 ledger compacts `event_observation`, `event_id`, and `payload_hash` in place and runs a one-time `VACUUM` to reclaim accumulated freelist pages, while daily retention pruning runs bounded `incremental_vacuum`. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 9 (8 backfilled request timing, 9 avoids false partial diagnostics on string-payload step interruption envelopes), Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, and Antigravity using 11 for step timestamp coverage checks. Version changes force retained-history reconciliation.
+SQLite runs in WAL mode with `auto_vacuum = INCREMENTAL` under the operating system's local application-data directory; upgrading a v1 ledger compacts `event_observation`, `event_id`, and `payload_hash` in place and runs a one-time `VACUUM` to reclaim accumulated freelist pages, while daily retention pruning runs bounded `incremental_vacuum`. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 10 to retain first-token and stream timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, OpenCode using 8 to read V2 request phases, and Antigravity using 11 for step timestamp coverage checks. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of the conflict-check payload — it is attribution, not a measured quantity, and comparing it would make the same event collide after a parser upgrade on non-mergeable adapters. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 

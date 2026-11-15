@@ -63,6 +63,7 @@ struct KimiRecord {
 struct LoopEvent {
     #[serde(rename = "type")]
     event_type: Option<String>,
+    finish_reason: Option<String>,
     usage: Option<NewUsage>,
     llm_first_token_latency_ms: Option<i64>,
     llm_stream_duration_ms: Option<i64>,
@@ -358,14 +359,16 @@ impl AgentAdapter for KimiAdapter {
                 if let (Some((index, usage)), Some(step_usage)) =
                     (awaiting_step_end.take(), event.usage)
                 {
-                    if usage == step_usage {
-                        let duration = event
-                            .llm_first_token_latency_ms
-                            .zip(event.llm_stream_duration_ms)
-                            .filter(|(first, stream)| *first >= 0 && *stream >= 0)
-                            .map(|(first, stream)| first + stream);
-                        let timed = events[index].clone().with_response_duration(duration);
-                        events[index] = timed;
+                    if usage == step_usage
+                        && matches!(
+                            event.finish_reason.as_deref(),
+                            None | Some("end_turn" | "tool_use")
+                        )
+                    {
+                        events[index].set_response_phases(
+                            event.llm_first_token_latency_ms,
+                            event.llm_stream_duration_ms,
+                        );
                     }
                 }
                 continue;
@@ -379,6 +382,7 @@ impl AgentAdapter for KimiAdapter {
                     }
                     continue;
                 }
+                awaiting_step_end = None;
                 let (Some(raw_usage), Some(timestamp)) = (record.usage, record.time) else {
                     continue;
                 };
@@ -396,7 +400,6 @@ impl AgentAdapter for KimiAdapter {
                     reasoning_output: 0,
                 };
                 if tokens.processed() == 0 || timestamp < cutoff_ms {
-                    awaiting_step_end = None;
                     continue;
                 }
                 awaiting_step_end = Some((events.len(), usage));
@@ -587,6 +590,14 @@ mod tests {
                 "\n",
                 r#"{"type":"context.append_loop_event","event":{"type":"step.end","finishReason":"error"},"time":1782113200001}"#,
                 "\n",
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":5,"output":4},"usageScope":"turn","time":1782113210000}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"step.end","finishReason":"tool_use","usage":{"inputOther":5,"output":4},"llmFirstTokenLatencyMs":700},"time":1782113210001}"#,
+                "\n",
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":8,"output":4},"usageScope":"turn","time":1782113220000}"#,
+                "\n",
+                r#"{"type":"context.append_loop_event","event":{"type":"step.end","finishReason":"interrupted","usage":{"inputOther":8,"output":4},"llmFirstTokenLatencyMs":700,"llmStreamDurationMs":500},"time":1782113220001}"#,
+                "\n",
             ),
         );
 
@@ -595,14 +606,28 @@ mod tests {
             .unwrap();
 
         // 用量对不上的 step.end 和没有耗时的 step.end 都不配对；用量照常入账。
-        let durations: Vec<_> = parsed
+        let timing: Vec<_> = parsed
             .source
             .events
             .iter()
-            .map(|event| event.response_duration_ms)
+            .map(|event| {
+                (
+                    event.first_token_latency_ms,
+                    event.stream_duration_ms,
+                    event.response_duration_ms,
+                )
+            })
             .collect();
-        assert_eq!(durations, [Some(3000), None, None]);
-        assert_eq!(parsed.source.events.len(), 3);
+        assert_eq!(
+            timing,
+            [
+                (Some(900), Some(2100), Some(3000)),
+                (None, None, None),
+                (None, None, None),
+                (Some(700), None, None),
+                (None, None, None),
+            ]
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

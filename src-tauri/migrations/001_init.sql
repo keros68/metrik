@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS usage_event (
     project_path          TEXT,
     request_input_tokens  INTEGER,
     response_duration_ms  INTEGER,
+    first_token_latency_ms INTEGER,
+    stream_duration_ms    INTEGER,
     source_seq            INTEGER REFERENCES scan_source(source_seq) ON DELETE SET NULL,
     UNIQUE(adapter_id, event_key)
 );
@@ -109,7 +111,8 @@ CREATE TABLE IF NOT EXISTS response_speed_sample (
     model           TEXT NOT NULL,
     occurred_at_ms  INTEGER NOT NULL,
     output_tokens   INTEGER NOT NULL CHECK (output_tokens > 0),
-    duration_ms     REAL NOT NULL CHECK (duration_ms > 0)
+    duration_ms     REAL NOT NULL CHECK (duration_ms > 0),
+    first_token_latency_ms REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_response_speed_sample_time

@@ -961,6 +961,15 @@ function ResponseSpeedCollectionCard({ onSnapshotRefresh }) {
                   )}
                 </p>
               )}
+              {id === "claude" && source?.enabled && source.configured && !source.conflict && !source.firstTokenConfigured && (
+                source.firstTokenConflict ? (
+                  <p className="settings-muted">{t("已有外部追踪配置，首 token 延迟未开启。")}</p>
+                ) : (
+                  <button type="button" className="ledger-button response-speed-refresh" disabled={loading || busy !== null || readFailed || status.demo} onClick={() => toggle(id, true)}>
+                    {t("启用首 token 采集")}
+                  </button>
+                )
+              )}
               {source?.error && <p className="settings-feedback settings-feedback--error" role="alert">{t(source.error)}</p>}
             </section>
           );
