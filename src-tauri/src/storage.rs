@@ -25,6 +25,7 @@ pub const PARSER_VERSION: i64 = 7;
 /// Antigravity 9 重扫旧来源，让嵌套解码失败与零响应输出的口径异常正确标为不完整；
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
 /// 11 跳过没有时间的零用量尝试，有用量却缺少时间的记录仍标为不完整。
+/// 12 回填 Antigravity 请求计时与已确认的 Orchestrator 模型。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
 /// OpenCode 8 reads V2 assistant requests and their recorded request phases.
 /// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时；
@@ -36,7 +37,7 @@ pub fn parser_version_for(adapter: &str) -> i64 {
         "codex" | "zcode" | "hermes" | "opencode" => 8,
         "pi" => 9,
         "kimi" => 10,
-        "antigravity" => 11,
+        "antigravity" => 12,
         _ => PARSER_VERSION,
     }
 }
@@ -548,7 +549,16 @@ fn insert_or_merge_usage_event(
             }
         }
     }
-    let fills_missing_model = mergeable && stored.model.is_none() && event.model.is_some();
+    let resolves_antigravity_route = mergeable_antigravity_response
+        && stored
+            .model
+            .as_deref()
+            .zip(event.model.as_deref())
+            .is_some_and(|(stored, model)| {
+                crate::adapters::is_resolved_antigravity_route(stored, model)
+            });
+    let updates_model = (mergeable && stored.model.is_none() && event.model.is_some())
+        || resolves_antigravity_route;
     // 项目归属不参与计量载荷比对，所以在这里单独补：
     // 解析器升级后重扫时，事件内容一模一样，只有这一列从 NULL 变成有值。
     // 已有值不覆盖——事件发生在哪个目录是既成事实，仓库改名不该改写历史。
@@ -562,7 +572,7 @@ fn insert_or_merge_usage_event(
     let same_payload = stored.occurred_at_ms == event.occurred_at_ms
         && stored.session_id == event.session_id
         && stored.tokens == event.tokens;
-    if same_payload && !fills_missing_model {
+    if same_payload && !updates_model {
         if event.request_input_tokens.is_some()
             || candidate_duration.is_some()
             || candidate_first_token.is_some()
@@ -600,7 +610,11 @@ fn insert_or_merge_usage_event(
     } else {
         event.session_id.clone()
     };
-    let model = stored.model.or_else(|| event.model.clone());
+    let model = if resolves_antigravity_route {
+        event.model.clone()
+    } else {
+        stored.model.or_else(|| event.model.clone())
+    };
     let primary_source = stored.source_seq.unwrap_or(source_seq);
     // Never pair timing with a different or synthetic token vector.
     let candidate_matches = merged_tokens == event.tokens;
@@ -854,6 +868,47 @@ mod tests {
                 (1, 40, event.event_key.clone(), Some(2_000))
             );
         }
+    }
+
+    #[test]
+    fn antigravity_rescan_fills_verified_model_and_timing_without_new_usage() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::schema::ensure_schema(&connection).unwrap();
+        let old = UsageEvent::new(
+            "antigravity",
+            "response:worker".into(),
+            3000,
+            "session".into(),
+            Some("gemini-flash-worker-agy".into()),
+            TokenVector {
+                output: 40,
+                ..Default::default()
+            },
+            "rpc_snapshot",
+        );
+        let mut resolved = old.clone();
+        resolved.model = Some("gemini-4-hydrogen".into());
+        resolved.set_response_phases(Some(500), Some(1500));
+        for candidate in [old.clone(), resolved.clone(), resolved, old.clone()] {
+            replace_source(
+                &mut connection,
+                &source("worker-db", "antigravity", vec![candidate]),
+                0,
+            )
+            .unwrap();
+        }
+        let stored: (i64, i64, String, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), SUM(processed_tokens), MIN(model), MIN(response_duration_ms)
+                 FROM usage_event",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            (1, old.tokens.processed(), "gemini-4-hydrogen".into(), 2000)
+        );
     }
 
     #[test]
