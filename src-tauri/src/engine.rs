@@ -11,8 +11,9 @@ use crate::detect;
 use crate::domain::ProjectReportRow;
 use crate::domain::{
     stable_hash, AgentCost, AgentQuotaView, AgentReportRow, AgentSummary, CostSummary, DayUsage,
-    IndexingView, ModelSummary, ProjectSummary, QuotaView, SeriesPoint, SessionSummary, SourceView,
-    SyncView, UsageProjects, UsageReport, UsageSessions, UsageSnapshot, AGENT_IDS,
+    IndexingView, ModelRequestTiming, ModelSummary, ProjectSummary, QuotaView, SeriesPoint,
+    SessionSummary, SourceView, SyncView, TimingMetric, UsageProjects, UsageReport, UsageSessions,
+    UsageSnapshot, AGENT_IDS,
 };
 use crate::i18n::{self, Lang};
 use crate::pricing;
@@ -76,6 +77,8 @@ struct StoredEvent {
     comps: TokenComponents,
     request_input_tokens: Option<i64>,
     response_duration_ms: Option<i64>,
+    first_token_latency_ms: Option<i64>,
+    stream_duration_ms: Option<i64>,
 }
 
 /// 将模型名映射为 `(大小写无关分组键, 规范展示名)`。
@@ -99,6 +102,13 @@ struct ModelAccrual {
     response_output: f64,
     response_duration_ms: f64,
     response_sample_count: i64,
+    first_token_total_ms: f64,
+    first_token_sample_count: i64,
+    stream_output: f64,
+    stream_duration_ms: f64,
+    stream_sample_count: i64,
+    request_total_ms: f64,
+    request_total_sample_count: i64,
 }
 
 impl ModelAccrual {
@@ -119,13 +129,26 @@ impl ModelAccrual {
     fn add(&mut self, raw_model: &str, event: &StoredEvent) {
         self.observe_label(raw_model);
         self.tokens += event.tokens;
-        let Some(duration) = event.response_duration_ms.filter(|duration| *duration > 0) else {
-            return;
-        };
+        if let Some(first_token) = event.first_token_latency_ms.filter(|ms| *ms >= 0) {
+            self.first_token_total_ms += first_token as f64;
+            self.first_token_sample_count += 1;
+        }
         if event.comps.output > 0 {
-            self.response_output += event.comps.output as f64;
-            self.response_duration_ms += duration as f64;
-            self.response_sample_count += 1;
+            if let Some(duration) = event.response_duration_ms.filter(|ms| *ms > 0) {
+                if event.adapter == "opencode" && event.stream_duration_ms.is_some() {
+                    self.request_total_ms += duration as f64;
+                    self.request_total_sample_count += 1;
+                } else {
+                    self.response_output += event.comps.output as f64;
+                    self.response_duration_ms += duration as f64;
+                    self.response_sample_count += 1;
+                }
+            }
+            if let Some(stream) = event.stream_duration_ms.filter(|ms| *ms > 0) {
+                self.stream_output += event.comps.output as f64;
+                self.stream_duration_ms += stream as f64;
+                self.stream_sample_count += 1;
+            }
         }
     }
 
@@ -135,6 +158,29 @@ impl ModelAccrual {
         } else {
             self.display_model
         };
+        let has_stream_timing = matches!(agent.as_str(), "kimi" | "opencode");
+        let request_timing = (has_stream_timing || matches!(agent.as_str(), "claude" | "codex"))
+            .then(|| ModelRequestTiming {
+                first_token_latency_ms: (has_stream_timing || agent == "claude").then(|| {
+                    TimingMetric::mean(self.first_token_total_ms, self.first_token_sample_count)
+                }),
+                stream_tokens_per_second: has_stream_timing.then(|| TimingMetric {
+                    value: (self.stream_sample_count > 0)
+                        .then(|| self.stream_output * 1000.0 / self.stream_duration_ms),
+                    sample_count: self.stream_sample_count,
+                }),
+                request_duration_ms: match agent.as_str() {
+                    "kimi" => Some(TimingMetric::mean(
+                        self.response_duration_ms,
+                        self.response_sample_count,
+                    )),
+                    "codex" | "opencode" => Some(TimingMetric::mean(
+                        self.request_total_ms,
+                        self.request_total_sample_count,
+                    )),
+                    _ => None,
+                },
+            });
         ModelSummary {
             model,
             agent,
@@ -147,6 +193,7 @@ impl ModelAccrual {
             response_tokens_per_second: (self.response_sample_count > 0)
                 .then(|| self.response_output * 1000.0 / self.response_duration_ms),
             response_sample_count: self.response_sample_count,
+            request_timing,
         }
     }
 }
@@ -159,6 +206,7 @@ fn add_collected_model_timings(
 ) -> Result<()> {
     for timing in crate::speed_store::model_timings(connection, start_ms, end_ms)? {
         let (model_key, _) = canonical_model_key_and_label(&timing.model);
+        let is_codex = timing.agent == "codex";
         let model = models.entry((timing.agent, model_key)).or_default();
         model.observe_label(&timing.model);
         // Pi can call the subscription API directly while being credited to
@@ -166,6 +214,12 @@ fn add_collected_model_timings(
         model.response_output += timing.output_tokens;
         model.response_duration_ms += timing.duration_ms;
         model.response_sample_count += timing.sample_count;
+        model.first_token_total_ms += timing.first_token_total_ms;
+        model.first_token_sample_count += timing.first_token_sample_count;
+        if is_codex {
+            model.request_total_ms += timing.duration_ms;
+            model.request_total_sample_count += timing.sample_count;
+        }
     }
     Ok(())
 }
@@ -1411,7 +1465,7 @@ fn load_events_with_cache(
     let mut statement = connection.prepare(
         "SELECT adapter_id, occurred_at_ms, processed_tokens, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
-                request_input_tokens, response_duration_ms
+                request_input_tokens, response_duration_ms, first_token_latency_ms, stream_duration_ms
          FROM usage_event
          WHERE occurred_at_ms >= ?1 AND occurred_at_ms < ?2
          ORDER BY occurred_at_ms",
@@ -1425,6 +1479,8 @@ fn load_events_with_cache(
             comps: token_components(row, 4)?,
             request_input_tokens: row.get(8)?,
             response_duration_ms: row.get(9)?,
+            first_token_latency_ms: row.get(10)?,
+            stream_duration_ms: row.get(11)?,
         })
     })?;
     let mut events: Vec<StoredEvent> = rows.filter_map(Result::ok).collect();
@@ -1446,6 +1502,8 @@ fn load_events_with_cache(
                     comps: TokenComponents::default(),
                     request_input_tokens: None,
                     response_duration_ms: None,
+                    first_token_latency_ms: None,
+                    stream_duration_ms: None,
                 }),
         );
         events.sort_by_key(|event| event.timestamp);
@@ -1854,8 +1912,8 @@ fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -
             ),
             i18n::tr_in!(
                 lang,
-                "读取消息 usage 字段并以消息标识去重；未安装 OpenCode 时保持为 0，不做推算。",
-                "Reads the message usage field and deduplicates by message ID; stays at 0 when OpenCode is not installed, with no estimate."
+                "按消息标识统计本机助手请求。V2 提供请求阶段计时，会话总量中的辅助调用不计入此处。",
+                "Counts local assistant requests by message ID. V2 provides request-phase timing. Auxiliary calls recorded only in session totals are excluded."
             ),
         ),
         local(
@@ -3431,9 +3489,18 @@ mod tests {
             ("other-agent", "claude", "shared-model", 7, Some(1000)),
             ("other-model", "zcode", "other-model", 60, Some(2000)),
             ("no-timing", "kimi", "untimed-model", 500, None),
+            ("pi-go", "opencode", "shared-model", 10, Some(1000)),
+            ("v2-native", "opencode", "shared-model", 80, Some(2000)),
         ] {
             insert_test_response_sample(&connection, id, agent, model, at, output, duration);
         }
+        connection
+            .execute(
+                "UPDATE usage_event SET first_token_latency_ms = 1000, stream_duration_ms = 1000
+             WHERE adapter_id = 'opencode' AND event_key = 'v2-native'",
+                [],
+            )
+            .unwrap();
 
         let snapshot =
             query_snapshot_at(&connection, "today", ScanReport::default(), local_now).unwrap();
@@ -3462,6 +3529,21 @@ mod tests {
             None
         );
         assert_eq!(selected("kimi", "untimed-model").response_sample_count, 0);
+        let opencode = selected("opencode", "shared-model");
+        assert_eq!(opencode.response_tokens_per_second, Some(10.0));
+        assert_eq!(opencode.response_sample_count, 1);
+        let native = opencode.request_timing.as_ref().unwrap();
+        assert_eq!(
+            native.first_token_latency_ms.as_ref().unwrap().value,
+            Some(1000.0)
+        );
+        assert_eq!(
+            native.stream_tokens_per_second.as_ref().unwrap().value,
+            Some(80.0)
+        );
+        let total = native.request_duration_ms.as_ref().unwrap();
+        assert_eq!(total.value, Some(2000.0));
+        assert_eq!(total.sample_count, 1);
 
         let report = report_at(&connection, local_now).unwrap();
         for model in &snapshot.models {
@@ -3478,6 +3560,66 @@ mod tests {
                 historical.response_sample_count,
                 model.response_sample_count
             );
+        }
+    }
+
+    #[test]
+    fn kimi_request_metrics_count_only_the_samples_each_metric_uses() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::schema::ensure_schema(&connection).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let now = test_local_time(today, 12);
+        let at = test_local_time(today, 10).timestamp_millis();
+        let mut source = crate::domain::ParsedSource {
+            source_id: "kimi-session".into(),
+            adapter_id: "kimi",
+            locator: "wire.jsonl".into(),
+            logical_key: "kimi-session".into(),
+            size: 1,
+            mtime_ns: 1,
+            events: Vec::new(),
+            quotas: Vec::new(),
+        };
+        for (key, output, first, stream) in [
+            ("a", 20, Some(1000), Some(2000)),
+            ("b", 40, Some(2000), Some(1000)),
+            ("c", 10, Some(3000), Some(0)),
+            ("d", 100, Some(4000), None),
+            ("e", 1000, None, None),
+        ] {
+            let mut event = crate::domain::UsageEvent::new(
+                "kimi",
+                key.into(),
+                at,
+                "session".into(),
+                Some("kimi-code/k3".into()),
+                crate::domain::TokenVector {
+                    output,
+                    ..Default::default()
+                },
+                "turn_delta",
+            );
+            event.set_response_phases(first, stream);
+            source.events.push(event);
+        }
+        for _ in 0..2 {
+            storage::replace_source(&mut connection, &source, 0).unwrap();
+        }
+
+        let snapshot = query_snapshot_at(&connection, "today", ScanReport::default(), now).unwrap();
+        let report = report_at(&connection, now).unwrap();
+        for model in [&snapshot.models[0], &report.top_models[0]] {
+            let timing = model.request_timing.as_ref().unwrap();
+            let first = timing.first_token_latency_ms.as_ref().unwrap();
+            let stream = timing.stream_tokens_per_second.as_ref().unwrap();
+            let total = timing.request_duration_ms.as_ref().unwrap();
+            assert_eq!(model.tokens, 1170);
+            assert_eq!(first.value, Some(2500.0));
+            assert_eq!(first.sample_count, 4);
+            assert_eq!(stream.value, Some(20.0));
+            assert_eq!(stream.sample_count, 2);
+            assert_eq!(total.value, Some(3000.0));
+            assert_eq!(total.sample_count, 3);
         }
     }
 
@@ -3593,6 +3735,8 @@ mod tests {
             },
             request_input_tokens: None,
             response_duration_ms: Some(i64::MAX),
+            first_token_latency_ms: None,
+            stream_duration_ms: None,
         };
         accrual.add("model", &event);
         accrual.add("model", &event);
@@ -3644,6 +3788,7 @@ mod tests {
                 occurred_at_ms: at,
                 output_tokens,
                 duration_ms,
+                first_token_latency_ms: (agent == "claude").then_some(390.0),
             },
         )
         .collect();
@@ -3679,6 +3824,18 @@ mod tests {
                 .unwrap();
             assert_eq!(historical.response_tokens_per_second, expected_rate);
             assert_eq!(historical.response_sample_count, expected_count);
+            if model == "gpt-5" {
+                for entry in [model_summary, historical] {
+                    let timing = entry.request_timing.as_ref().unwrap();
+                    let (metric, value) = if agent == "codex" {
+                        (timing.request_duration_ms.as_ref().unwrap(), 5000.0)
+                    } else {
+                        (timing.first_token_latency_ms.as_ref().unwrap(), 390.0)
+                    };
+                    assert_eq!(metric.value, Some(value));
+                    assert_eq!(metric.sample_count, 2);
+                }
+            }
         }
         let timing_only = after
             .models
@@ -3746,6 +3903,7 @@ mod tests {
                     occurred_at_ms,
                     output_tokens,
                     duration_ms,
+                    first_token_latency_ms: None,
                 });
             }
         }

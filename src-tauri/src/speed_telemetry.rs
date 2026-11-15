@@ -24,6 +24,7 @@ pub struct SpeedSample {
     pub occurred_at_ms: i64,
     pub output_tokens: i64,
     pub duration_ms: f64,
+    pub first_token_latency_ms: Option<f64>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +60,14 @@ impl Decoder {
                     claude_json(body)?
                 } else {
                     claude_protobuf(body)?
+                };
+                deduplicate_samples(samples)
+            }
+            ("claude", "traces") => {
+                let samples = if json {
+                    claude_trace_json(body)?
+                } else {
+                    claude_trace_protobuf(body)?
                 };
                 deduplicate_samples(samples)
             }
@@ -224,6 +233,7 @@ impl Decoder {
                 occurred_at_ms,
                 output_tokens,
                 duration_ms: (sampling.end_ns - sampling.start_ns) as f64 / 1_000_000.0,
+                first_token_latency_ms: None,
             });
         }
         if !evicted_keys.is_empty() {
@@ -297,6 +307,7 @@ enum Scalar {
     String(String),
     Integer(i64),
     Double(f64),
+    Bool(bool),
     Invalid,
 }
 
@@ -311,6 +322,8 @@ fn wanted_attribute(key: &str) -> bool {
             | "duration_ms"
             | "output_tokens"
             | "request_id"
+            | "ttft_ms"
+            | "success"
             | "otel.name"
             | "gen_ai.usage.output_tokens"
     )
@@ -391,6 +404,21 @@ fn claude_sample(
     {
         return None;
     }
+    let occurred_at_ms = if time_ns > 0 {
+        (time_ns / 1_000_000) as i64
+    } else {
+        chrono::DateTime::parse_from_rfc3339(string_attribute(attributes, "event.timestamp")?)
+            .ok()?
+            .timestamp_millis()
+    };
+    claude_request_sample(attributes, occurred_at_ms, None)
+}
+
+fn claude_request_sample(
+    attributes: &Attributes,
+    occurred_at_ms: i64,
+    first_token_latency_ms: Option<f64>,
+) -> Option<SpeedSample> {
     let model = string_attribute(attributes, "model")?;
     let request_id = string_attribute(attributes, "request_id")?;
     if !valid_model(model)
@@ -403,13 +431,9 @@ fn claude_sample(
     }
     let output_tokens = positive_integer(attributes.get("output_tokens")?)?;
     let duration_ms = positive_duration(attributes.get("duration_ms")?)?;
-    let occurred_at_ms = if time_ns > 0 {
-        (time_ns / 1_000_000) as i64
-    } else {
-        chrono::DateTime::parse_from_rfc3339(string_attribute(attributes, "event.timestamp")?)
-            .ok()?
-            .timestamp_millis()
-    };
+    if first_token_latency_ms.is_some_and(|ttft| ttft > duration_ms) {
+        return None;
+    }
     (occurred_at_ms > 0).then(|| SpeedSample {
         id: sample_id(&[b"claude", request_id.as_bytes()]),
         agent: "claude".into(),
@@ -417,7 +441,19 @@ fn claude_sample(
         occurred_at_ms,
         output_tokens,
         duration_ms,
+        first_token_latency_ms,
     })
+}
+
+fn claude_trace_sample(attributes: &Attributes, start_ns: u64, end_ns: u64) -> Option<SpeedSample> {
+    if start_ns == 0
+        || end_ns <= start_ns
+        || !matches!(attributes.get("success"), Some(Scalar::Bool(true)))
+    {
+        return None;
+    }
+    let ttft = positive_duration(attributes.get("ttft_ms")?)?;
+    claude_request_sample(attributes, (end_ns / 1_000_000) as i64, Some(ttft))
 }
 
 fn deduplicate_samples(samples: Vec<SpeedSample>) -> Result<Vec<SpeedSample>> {
@@ -511,6 +547,8 @@ fn json_scalar(value: &Value) -> Scalar {
             .unwrap_or(Scalar::Invalid)
     } else if let Some(value) = object.get("doubleValue").and_then(Value::as_f64) {
         Scalar::Double(value)
+    } else if let Some(value) = object.get("boolValue").and_then(Value::as_bool) {
+        Scalar::Bool(value)
     } else {
         Scalar::Invalid
     }
@@ -558,19 +596,43 @@ fn claude_json(body: &[u8]) -> Result<Vec<SpeedSample>> {
     Ok(samples)
 }
 
-fn codex_json(body: &[u8]) -> Result<Vec<TimingSpan>> {
+fn trace_json<T>(body: &[u8], decode_span: impl Fn(&Value) -> Option<T>) -> Result<Vec<T>> {
     let root = json_root(body)?;
     let mut spans = Vec::new();
     for resource in array_field(&root, "resourceSpans")? {
         for scope in array_field(resource, "scopeSpans")? {
             for record in array_field(scope, "spans")? {
-                if let Some(span) = json_timing_span(record) {
+                if let Some(span) = decode_span(record) {
                     spans.push(span);
                 }
             }
         }
     }
     Ok(spans)
+}
+
+fn codex_json(body: &[u8]) -> Result<Vec<TimingSpan>> {
+    trace_json(body, json_timing_span)
+}
+
+fn claude_trace_json(body: &[u8]) -> Result<Vec<SpeedSample>> {
+    trace_json(body, |record| {
+        if record.get("name")?.as_str()? != "claude_code.llm_request" || json_span_failed(record) {
+            return None;
+        }
+        claude_trace_sample(
+            &json_attributes(record)?,
+            json_nanos(record.get("startTimeUnixNano")?)?,
+            json_nanos(record.get("endTimeUnixNano")?)?,
+        )
+    })
+}
+
+fn json_span_failed(record: &Value) -> bool {
+    record
+        .get("status")
+        .and_then(|status| status.get("code"))
+        .is_some_and(|code| code.as_i64() == Some(2) || code.as_str() == Some("STATUS_CODE_ERROR"))
 }
 
 fn json_timing_span(record: &Value) -> Option<TimingSpan> {
@@ -595,12 +657,7 @@ fn json_timing_span(record: &Value) -> Option<TimingSpan> {
         parent,
         start_ns,
         end_ns,
-        failed: record
-            .get("status")
-            .and_then(|status| status.get("code"))
-            .is_some_and(|code| {
-                code.as_i64() == Some(2) || code.as_str() == Some("STATUS_CODE_ERROR")
-            }),
+        failed: json_span_failed(record),
         kind,
     })
 }
@@ -631,6 +688,7 @@ fn proto_attributes(values: Vec<proto::KeyValue>) -> Option<Attributes> {
             Some(proto::any_value::Value::String(value)) => Scalar::String(value),
             Some(proto::any_value::Value::Int(value)) => Scalar::Integer(value),
             Some(proto::any_value::Value::Double(value)) => Scalar::Double(value),
+            Some(proto::any_value::Value::Bool(value)) => Scalar::Bool(value),
             _ => Scalar::Invalid,
         };
         if attributes.insert(entry.key, value).is_some() {
@@ -667,19 +725,41 @@ fn claude_protobuf(body: &[u8]) -> Result<Vec<SpeedSample>> {
     Ok(samples)
 }
 
-fn codex_protobuf(body: &[u8]) -> Result<Vec<TimingSpan>> {
+fn trace_protobuf<T>(
+    body: &[u8],
+    decode_span: impl Fn(proto::Span) -> Option<T>,
+) -> Result<Vec<T>> {
     let request = proto::TracesRequest::decode(body).context("invalid OTLP protobuf traces")?;
     let mut spans = Vec::new();
     for resource in request.resource_spans {
         for scope in resource.scope_spans {
             for record in scope.spans {
-                if let Some(span) = proto_timing_span(record) {
+                if let Some(span) = decode_span(record) {
                     spans.push(span);
                 }
             }
         }
     }
     Ok(spans)
+}
+
+fn codex_protobuf(body: &[u8]) -> Result<Vec<TimingSpan>> {
+    trace_protobuf(body, proto_timing_span)
+}
+
+fn claude_trace_protobuf(body: &[u8]) -> Result<Vec<SpeedSample>> {
+    trace_protobuf(body, |record| {
+        if record.name != "claude_code.llm_request"
+            || record.status.is_some_and(|status| status.code == 2)
+        {
+            return None;
+        }
+        claude_trace_sample(
+            &proto_attributes(record.attributes)?,
+            record.start_time_unix_nano,
+            record.end_time_unix_nano,
+        )
+    })
 }
 
 fn proto_timing_span(record: proto::Span) -> Option<TimingSpan> {
@@ -1066,6 +1146,7 @@ mod tests {
             Scalar::String(value) => proto::any_value::Value::String(value),
             Scalar::Integer(value) => proto::any_value::Value::Int(value),
             Scalar::Double(value) => proto::any_value::Value::Double(value),
+            Scalar::Bool(value) => proto::any_value::Value::Bool(value),
             Scalar::Invalid => proto::any_value::Value::Bool(false),
         };
         proto::AnyValue { value: Some(value) }
@@ -1107,6 +1188,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(protobuf, decode_logs(vec![record]));
+    }
+
+    #[test]
+    fn claude_first_token_trace_matches_log_identity_and_requires_success() {
+        let log = claude_record();
+        let mut trace = span(1, None, "claude_code.llm_request", 0, 1600);
+        trace["attributes"] = log["attributes"].clone();
+        trace["attributes"].as_array_mut().unwrap().extend([
+            attribute("success", json!({"boolValue":true})),
+            attribute("ttft_ms", json!({"intValue":"420"})),
+        ]);
+        let mut failed = trace.clone();
+        failed["status"] = json!({"code":2});
+        let request = proto::TracesRequest {
+            resource_spans: vec![proto::ResourceSpans {
+                scope_spans: vec![proto::ScopeSpans {
+                    spans: vec![proto::Span {
+                        name: "claude_code.llm_request".into(),
+                        start_time_unix_nano: BASE,
+                        end_time_unix_nano: BASE + 1_600_000_000,
+                        attributes: proto_attrs(&trace),
+                        ..Default::default()
+                    }],
+                }],
+            }],
+        };
+        let mut decoder = Decoder::default();
+        let json = decoder
+            .decode(
+                "claude",
+                "traces",
+                "application/json",
+                &traces(vec![trace, failed]),
+            )
+            .unwrap();
+        let proto = decoder
+            .decode(
+                "claude",
+                "traces",
+                "application/x-protobuf",
+                &request.encode_to_vec(),
+            )
+            .unwrap();
+        assert_eq!(json, proto);
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0].first_token_latency_ms, Some(420.0));
+        assert_eq!(json[0].id, decode_logs(vec![log])[0].id);
     }
 
     #[test]

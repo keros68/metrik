@@ -40,6 +40,8 @@ pub struct SourceStatus {
     enabled: bool,
     configured: bool,
     conflict: bool,
+    first_token_configured: bool,
+    first_token_conflict: bool,
     sample_count: i64,
     last_sample_at_ms: Option<i64>,
     error: Option<String>,
@@ -106,22 +108,23 @@ impl Collector {
         let mut sources = Vec::new();
         for agent in SOURCES {
             let enabled = is_enabled(&connection, agent)?;
-            let (configured, conflict, mut error) =
-                match self.config.inspect(agent, &endpoint(agent)) {
-                    Ok(status) => (status.configured, status.conflict, None),
-                    Err(_) => (
-                        false,
-                        true,
-                        Some(
-                            crate::i18n::tr!(
-                                "客户端计时配置读取失败。",
-                                "Could not read the client timing configuration."
-                            )
-                            .to_owned(),
-                        ),
+            let (configuration, mut error) = match self.config.inspect(agent, &endpoint(agent)) {
+                Ok(status) => (status, None),
+                Err(_) => (
+                    crate::speed_config::ConfigStatus {
+                        conflict: true,
+                        ..Default::default()
+                    },
+                    Some(
+                        crate::i18n::tr!(
+                            "客户端计时配置读取失败。",
+                            "Could not read the client timing configuration."
+                        )
+                        .to_owned(),
                     ),
-                };
-            if enabled && configured && !conflict && !running {
+                ),
+            };
+            if enabled && configuration.configured && !configuration.conflict && !running {
                 error = Some(
                     crate::i18n::tr!(
                         "本机速度采集服务未运行，请关闭后重新开启。",
@@ -135,8 +138,10 @@ impl Collector {
             sources.push(SourceStatus {
                 id: agent.into(),
                 enabled,
-                configured,
-                conflict,
+                configured: configuration.configured,
+                conflict: configuration.conflict,
+                first_token_configured: configuration.first_token_configured,
+                first_token_conflict: configuration.first_token_conflict,
                 sample_count,
                 last_sample_at_ms,
                 error,
@@ -309,6 +314,7 @@ fn read_export(stream: &mut TcpStream, port: u16) -> std::result::Result<ExportR
     }
     let (agent, signal) = match request.path {
         Some("/claude/v1/logs") => ("claude", "logs"),
+        Some("/claude/v1/traces") => ("claude", "traces"),
         Some("/codex/v1/traces") => ("codex", "traces"),
         _ => return Err(404),
     };
@@ -451,7 +457,12 @@ fn handle_export(
     let status = config
         .inspect(request.agent, &endpoint(request.agent))
         .map_err(|_| 503_u16)?;
-    if !status.configured || status.conflict {
+    if !status.configured
+        || status.conflict
+        || (request.agent == "claude"
+            && request.signal == "traces"
+            && !status.first_token_configured)
+    {
         return Err(403);
     }
     // Decoding caches cross-batch spans and replay IDs for Codex traces.

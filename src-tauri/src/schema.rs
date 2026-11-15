@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::collections::HashSet;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 const REQUIRED_TABLES: [(&str, &[&str]); 4] = [
     (
@@ -154,6 +154,15 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         .context("failed to initialize usage database schema")?;
     rebuild_quota_snapshot_if_check_forbids_balances(connection)?;
     ensure_optional_columns(connection)?;
+    if !table_has_column(
+        connection,
+        "response_speed_sample",
+        "first_token_latency_ms",
+    )? {
+        connection.execute_batch(
+            "ALTER TABLE response_speed_sample ADD COLUMN first_token_latency_ms REAL",
+        )?;
+    }
 
     // 将既有库切换为 INCREMENTAL auto_vacuum 并一次性回收历史死页（如旧版 v1
     // event_observation 与未开启 auto_vacuum 积累的 freelist）。
@@ -245,6 +254,8 @@ fn migrate_v1_to_v2(connection: &Connection) -> Result<()> {
                  project_path          TEXT,
                  request_input_tokens  INTEGER,
                  response_duration_ms  INTEGER,
+                 first_token_latency_ms INTEGER,
+                 stream_duration_ms    INTEGER,
                  source_seq            INTEGER REFERENCES scan_source(source_seq) ON DELETE SET NULL,
                  UNIQUE(adapter_id, event_key)
              );
@@ -256,6 +267,7 @@ fn migrate_v1_to_v2(connection: &Connection) -> Result<()> {
                  input_uncached_tokens, cache_read_tokens, cache_write_tokens,
                  output_tokens, reasoning_tokens, processed_tokens, quality,
                  project_path, request_input_tokens, response_duration_ms,
+                 first_token_latency_ms, stream_duration_ms,
                  source_seq
              )
              SELECT
@@ -263,6 +275,7 @@ fn migrate_v1_to_v2(connection: &Connection) -> Result<()> {
                  u.input_uncached_tokens, u.cache_read_tokens, u.cache_write_tokens,
                  u.output_tokens, u.reasoning_tokens, u.processed_tokens, u.quality,
                  u.project_path, u.request_input_tokens, u.response_duration_ms,
+                 u.first_token_latency_ms, u.stream_duration_ms,
                  (
                      SELECT MIN(s.source_seq)
                      FROM event_observation AS eo
@@ -336,6 +349,8 @@ fn ensure_optional_columns(connection: &Connection) -> Result<()> {
         ("usage_event", "project_path", "TEXT"),
         ("usage_event", "request_input_tokens", "INTEGER"),
         ("usage_event", "response_duration_ms", "INTEGER"),
+        ("usage_event", "first_token_latency_ms", "INTEGER"),
+        ("usage_event", "stream_duration_ms", "INTEGER"),
     ] {
         if !table_has_column(connection, table, column)? {
             connection

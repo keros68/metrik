@@ -26,13 +26,16 @@ pub const PARSER_VERSION: i64 = 7;
 /// 10 再重扫一次本地会话库，给已入账的历史用量回填项目归属（只填空值）。
 /// 11 跳过没有时间的零用量尝试，有用量却缺少时间的记录仍标为不完整。
 /// Zcode 8 enriches completed responses with their recorded elapsed time.
+/// OpenCode 8 reads V2 assistant requests and their recorded request phases.
 /// Kimi 8 与 Pi 9 重扫各自来源，给已入账事件补上来源自己记录的单次请求耗时；
 /// Kimi 9 重扫历史会话，清掉旧版把 `turn.step.interrupted` 字符串 `message` 误判为脏行的陈旧标记。
+/// Kimi 10 从配对的请求记录补齐首 token 延迟和流式耗时。
 /// Hermes 8 重扫 Hermes 来源，让所有用量回到实际执行工具，不再按套餐路由拆卡。
 pub fn parser_version_for(adapter: &str) -> i64 {
     match adapter {
-        "codex" | "zcode" | "hermes" => 8,
-        "pi" | "kimi" => 9,
+        "codex" | "zcode" | "hermes" | "opencode" => 8,
+        "pi" => 9,
+        "kimi" => 10,
         "antigravity" => 11,
         _ => PARSER_VERSION,
     }
@@ -465,14 +468,18 @@ fn insert_or_merge_usage_event(
         )
         .optional()?;
 
+    let candidate_duration = event.response_duration_ms.filter(|ms| *ms > 0);
+    let candidate_first_token = event.first_token_latency_ms.filter(|ms| *ms >= 0);
+    let candidate_stream = event.stream_duration_ms.filter(|ms| *ms >= 0);
     let Some(stored) = stored else {
         transaction.execute(
             "INSERT INTO usage_event (
                 adapter_id, event_key, occurred_at_ms, session_id, model,
                 input_uncached_tokens, cache_read_tokens, cache_write_tokens,
                 output_tokens, reasoning_tokens, processed_tokens, quality,
-                project_path, request_input_tokens, response_duration_ms, source_seq
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                project_path, request_input_tokens, response_duration_ms,
+                first_token_latency_ms, stream_duration_ms, source_seq
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 event.adapter_id,
                 event.event_key,
@@ -488,7 +495,9 @@ fn insert_or_merge_usage_event(
                 event.quality,
                 event.project_path,
                 event.request_input_tokens,
-                event.response_duration_ms.filter(|duration| *duration > 0),
+                candidate_duration,
+                candidate_first_token,
+                candidate_stream,
                 source_seq,
             ],
         )?;
@@ -553,13 +562,24 @@ fn insert_or_merge_usage_event(
     let same_payload = stored.occurred_at_ms == event.occurred_at_ms
         && stored.session_id == event.session_id
         && stored.tokens == event.tokens;
-    let candidate_duration = event.response_duration_ms.filter(|duration| *duration > 0);
     if same_payload && !fills_missing_model {
-        if event.request_input_tokens.is_some() || candidate_duration.is_some() {
+        if event.request_input_tokens.is_some()
+            || candidate_duration.is_some()
+            || candidate_first_token.is_some()
+            || candidate_stream.is_some()
+        {
             transaction.execute(
                 "UPDATE usage_event SET request_input_tokens = COALESCE(?2, request_input_tokens),
-                     response_duration_ms = COALESCE(?3, response_duration_ms) WHERE id = ?1",
-                params![stored.id, event.request_input_tokens, candidate_duration],
+                     response_duration_ms = COALESCE(?3, response_duration_ms),
+                     first_token_latency_ms = COALESCE(?4, first_token_latency_ms),
+                     stream_duration_ms = COALESCE(?5, stream_duration_ms) WHERE id = ?1",
+                params![
+                    stored.id,
+                    event.request_input_tokens,
+                    candidate_duration,
+                    candidate_first_token,
+                    candidate_stream
+                ],
             )?;
         }
         attach_source_observation(transaction, stored.id, stored.source_seq, source_seq)?;
@@ -582,6 +602,8 @@ fn insert_or_merge_usage_event(
     };
     let model = stored.model.or_else(|| event.model.clone());
     let primary_source = stored.source_seq.unwrap_or(source_seq);
+    // Never pair timing with a different or synthetic token vector.
+    let candidate_matches = merged_tokens == event.tokens;
 
     transaction.execute(
         "UPDATE usage_event SET
@@ -596,7 +618,9 @@ fn insert_or_merge_usage_event(
             processed_tokens = ?10,
             quality = ?11,
             response_duration_ms = ?12,
-            source_seq = ?13
+            first_token_latency_ms = ?13,
+            stream_duration_ms = ?14,
+            source_seq = ?15
          WHERE id = ?1",
         params![
             stored.id,
@@ -610,8 +634,9 @@ fn insert_or_merge_usage_event(
             merged_tokens.reasoning_output,
             merged_tokens.processed(),
             event.quality,
-            // Never pair an earlier sample's duration with merged counters.
-            candidate_duration.filter(|_| merged_tokens == event.tokens),
+            candidate_duration.filter(|_| candidate_matches),
+            candidate_first_token.filter(|_| candidate_matches),
+            candidate_stream.filter(|_| candidate_matches),
             primary_source,
         ],
     )?;
@@ -888,7 +913,7 @@ mod tests {
             )
             .unwrap();
         assert!(!source_is_current(&connection, "zcode-old", 10, 1, 0).unwrap());
-        assert_eq!(parser_version_for("opencode"), PARSER_VERSION);
+        assert_eq!(parser_version_for("opencode"), 8);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// OpenCode 的两代存储都支持：
+/// OpenCode 的本地用量来源：
 ///
 /// - 旧版 JSON 文件：`<data>/storage/message/<sessionID>/<messageID>.json`
 ///   （或更旧的 `storage/session/message/...`）。assistant 消息带 `tokens`；
@@ -18,7 +18,10 @@ use std::time::Duration;
 ///   消息体（tokens/modelID/time；id 与 sessionID 只在表列里）。库常驻 WAL，
 ///   变更检测要把 `-wal` 的 mtime/size 一并计入，否则 checkpoint 前扫不到新行。
 ///
-/// 两代的事件身份同为 `message:<id>`，历史从 JSON 迁到库也不会重复计数。
+/// - V2 SQLite：`session_message` 投影保存每次生成的四个实测时间点，
+///   `session_v2` 保存工作目录。迁移留下同 ID 的 V1 行时沿用原行。
+///
+/// 事件身份统一为 `message:<id>`。
 pub struct OpencodeAdapter {
     roots: Vec<PathBuf>,
     /// `<data>/opencode` 数据根，用于发现 SQLite 库；测试可为 None。
@@ -40,6 +43,25 @@ struct OpencodeMessage {
 #[derive(Deserialize, Default)]
 struct OpencodeTime {
     created: Option<i64>,
+    completed: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpencodeV2Message {
+    model_id: Option<String>,
+    time: Option<OpencodeV2Time>,
+    tokens: Option<OpencodeTokens>,
+    finish: Option<String>,
+    unsuccessful: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpencodeV2Time {
+    created: i64,
+    first_token: Option<i64>,
+    streamed: Option<i64>,
     completed: Option<i64>,
 }
 
@@ -193,8 +215,6 @@ impl AgentAdapter for OpencodeAdapter {
 }
 
 impl OpencodeAdapter {
-    /// 1.2+ SQLite：`message` 表逐行读 `data` JSON；id 与 session 在表列里
-    /// （data 里没有）。行内消息体与旧 JSON 文件同构，走同一套语义。
     fn parse_sqlite(&self, candidate: &SourceCandidate, cutoff_ms: i64) -> Result<ParsedScan> {
         let connection = rusqlite::Connection::open_with_flags(
             &candidate.path,
@@ -202,37 +222,27 @@ impl OpencodeAdapter {
         )
         .with_context(|| format!("failed to open {}", candidate.path.display()))?;
         let _ = connection.busy_timeout(Duration::from_millis(500));
-        // 项目归属只在 SQLite 形态里可得：`session.directory`。旧的纯 JSON 文件
-        // 存储没有随消息落盘的工作目录，那批事件保持未归属。
-        let session_directories = super::opencode_session_directories(&connection);
-        let mut statement = connection
-            .prepare("SELECT id, session_id, data FROM message")
-            .context("opencode.db 缺少预期的 message 表")?;
-        let mut rows = statement
-            .query([])
-            .context("读取 opencode.db message 表失败")?;
-
+        let transaction = connection.unchecked_transaction()?;
+        let (v1, v2): (bool, bool) = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='message'),
+                    EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_message')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        anyhow::ensure!(v1 || v2, "OpenCode database has no supported message table");
         let mut diagnostics = ScanDiagnostics::default();
         let mut events = Vec::new();
-        while let Some(row) = rows.next().context("遍历 opencode.db 行失败")? {
-            let (message_id, session_id, raw): (String, Option<String>, String) =
-                match (row.get(0), row.get(1), row.get(2)) {
-                    (Ok(id), Ok(session), Ok(data)) => (id, session, data),
-                    _ => {
-                        diagnostics.unreadable_lines += 1;
-                        continue;
-                    }
-                };
-            let Ok(mut message) = serde_json::from_str::<OpencodeMessage>(&raw) else {
-                diagnostics.malformed_lines += 1;
-                continue;
-            };
-            message.id = Some(message_id);
-            message.session_id = message.session_id.take().or(session_id);
-            if let Some(event) = usage_event(&candidate.path, message, cutoff_ms) {
-                let project = session_directories.get(&event.session_id).cloned();
-                events.push(event.with_project(project));
-            }
+        if v1 {
+            Self::read_v1_messages(
+                &transaction,
+                candidate,
+                cutoff_ms,
+                &mut diagnostics,
+                &mut events,
+            )?;
+        }
+        if v2 {
+            Self::read_v2_messages(&transaction, cutoff_ms, v1, &mut diagnostics, &mut events)?;
         }
         events.sort_by_key(|event| event.occurred_at_ms);
 
@@ -256,6 +266,160 @@ impl OpencodeAdapter {
             diagnostics,
         })
     }
+
+    fn read_v1_messages(
+        connection: &rusqlite::Connection,
+        candidate: &SourceCandidate,
+        cutoff_ms: i64,
+        diagnostics: &mut ScanDiagnostics,
+        events: &mut Vec<UsageEvent>,
+    ) -> Result<()> {
+        let session_directories = super::opencode_session_directories(connection);
+        let mut statement = connection
+            .prepare("SELECT id, session_id, data FROM message")
+            .context("opencode.db 缺少预期的 message 表")?;
+        let mut rows = statement
+            .query([])
+            .context("读取 opencode.db message 表失败")?;
+
+        while let Some(row) = rows.next().context("遍历 opencode.db 行失败")? {
+            let (message_id, session_id, raw): (String, Option<String>, String) =
+                match (row.get(0), row.get(1), row.get(2)) {
+                    (Ok(id), Ok(session), Ok(data)) => (id, session, data),
+                    _ => {
+                        diagnostics.unreadable_lines += 1;
+                        continue;
+                    }
+                };
+            let Ok(mut message) = serde_json::from_str::<OpencodeMessage>(&raw) else {
+                diagnostics.malformed_lines += 1;
+                continue;
+            };
+            message.id = Some(message_id);
+            message.session_id = message.session_id.take().or(session_id);
+            if let Some(event) = usage_event(&candidate.path, message, cutoff_ms) {
+                let project = session_directories.get(&event.session_id).cloned();
+                events.push(event.with_project(project));
+            }
+        }
+        Ok(())
+    }
+
+    fn read_v2_messages(
+        connection: &rusqlite::Connection,
+        cutoff_ms: i64,
+        has_v1: bool,
+        diagnostics: &mut ScanDiagnostics,
+        events: &mut Vec<UsageEvent>,
+    ) -> Result<()> {
+        // V1 migration copies message IDs and token fields but writes different
+        // timestamps. Read the original row when both are present in the DB.
+        let exclude_mirrors = if has_v1 {
+            "AND NOT EXISTS (SELECT 1 FROM message AS legacy WHERE legacy.id=m.id)"
+        } else {
+            ""
+        };
+        // Project only accounting metadata. V2 stores response content in this same JSON.
+        let mut statement = connection.prepare(&format!(
+            "SELECT m.id, m.session_id, s.directory,
+                 CASE WHEN json_valid(m.data) THEN json_object(
+                     'modelId', json_extract(m.data, '$.model.id'),
+                     'time', json_extract(m.data, '$.time'),
+                     'tokens', json_extract(m.data, '$.tokens'),
+                     'finish', json_extract(m.data, '$.finish'),
+                     'unsuccessful', json(CASE WHEN json_extract(m.data, '$.error') IS NOT NULL
+                         OR json_extract(m.data, '$.retry') IS NOT NULL THEN 'true' ELSE 'false' END)
+                 ) END
+             FROM session_message AS m LEFT JOIN session_v2 AS s ON s.id=m.session_id
+             WHERE m.type='assistant' {exclude_mirrors}"
+        ))?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let (Ok(id), Ok(session), Ok(project), Ok(raw)) = (
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                row.get::<_, Option<String>>(2),
+                row.get::<_, Option<String>>(3),
+            ) else {
+                diagnostics.unreadable_lines += 1;
+                continue;
+            };
+            let Some(message) =
+                raw.and_then(|raw| serde_json::from_str::<OpencodeV2Message>(&raw).ok())
+            else {
+                diagnostics.malformed_lines += 1;
+                continue;
+            };
+            if let Some(event) = usage_event_v2(id, session, message, cutoff_ms) {
+                events.push(event.with_project(project));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn usage_event_v2(
+    id: String,
+    session: String,
+    message: OpencodeV2Message,
+    cutoff_ms: i64,
+) -> Option<UsageEvent> {
+    let time = message.time?;
+    let timestamp = time.completed.unwrap_or(time.created);
+    if timestamp < cutoff_ms {
+        return None;
+    }
+    let tokens = message.tokens?;
+    // V2's output is visible output. Reasoning is a separate part of the
+    // generated output and is included once in the ledger and stream rate.
+    let vector = TokenVector {
+        input_uncached: tokens.input.max(0),
+        cache_read: tokens.cache.read.max(0),
+        cache_write: tokens.cache.write.max(0),
+        output: tokens.output.max(0).checked_add(tokens.reasoning.max(0))?,
+        reasoning_output: tokens.reasoning.max(0),
+    };
+    let processed = vector
+        .input_uncached
+        .checked_add(vector.cache_read)?
+        .checked_add(vector.cache_write)?
+        .checked_add(vector.output)?;
+    if processed == 0 {
+        return None;
+    }
+    let mut event = UsageEvent::new(
+        "opencode",
+        format!("message:{id}"),
+        timestamp,
+        session,
+        message.model_id,
+        vector,
+        "exact",
+    );
+    let Some(completed) = time.completed.filter(|end| *end > time.created) else {
+        return Some(event);
+    };
+    if time.created <= 0
+        || message.unsuccessful
+        || !matches!(
+            message.finish.as_deref(),
+            Some("stop" | "length" | "tool-calls")
+        )
+        || time
+            .streamed
+            .is_some_and(|end| !(time.created..=completed).contains(&end))
+    {
+        return Some(event);
+    }
+    let stream_end = time.streamed;
+    let first = time
+        .first_token
+        .filter(|first| (time.created..=stream_end.unwrap_or(completed)).contains(first));
+    event.set_response_phases(
+        first.map(|first| first - time.created),
+        first.zip(stream_end).map(|(first, end)| end - first),
+    );
+    Some(event)
 }
 
 fn usage_event(
@@ -336,6 +500,97 @@ mod tests {
         let path = session.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn v2_sqlite_keeps_native_timing_separate_from_legacy_mirrors_and_failed_requests() {
+        let test = TestDirectory::new("sqlite-v2");
+        let db_path = test.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);
+             CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT);
+             CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, data TEXT);
+             INSERT INTO session_v2 VALUES ('session-v2','/tmp/project');",
+        ).unwrap();
+        connection.execute("INSERT INTO message VALUES ('legacy','session-v1',?1)", [
+            r#"{"role":"assistant","modelID":"model","time":{"created":1000,"completed":2000},"tokens":{"input":100,"output":10,"reasoning":3}}"#,
+        ]).unwrap();
+        let body = serde_json::json!({
+            "model": {"id":"model"}, "finish":"stop",
+            "time":{"created":1000,"firstToken":1300,"streamed":1800,"completed":9000},
+            "tokens":{"input":100,"output":10,"reasoning":3},
+            "content":[{"type":"text","text":"irrelevant"}]
+        });
+        let mut failed = body.clone();
+        failed["error"] = serde_json::json!({"type":"provider-error"});
+        let mut unfinished = body.clone();
+        unfinished["time"]["completed"] = serde_json::Value::Null;
+        let mut invalid = body.clone();
+        invalid["time"]["firstToken"] = serde_json::json!(800);
+        let mut zero_stream = body.clone();
+        zero_stream["time"]["streamed"] = serde_json::json!(1300);
+        for (id, data) in [
+            ("legacy", &body),
+            ("complete", &body),
+            ("failed", &failed),
+            ("unfinished", &unfinished),
+            ("invalid", &invalid),
+            ("zero-stream", &zero_stream),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO session_message VALUES (?1,'session-v2','assistant',?2)",
+                    rusqlite::params![id, data.to_string()],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO session_message VALUES ('broken','session-v2','assistant','{')",
+                [],
+            )
+            .unwrap();
+        let scan = scan(
+            &OpencodeAdapter::with_data_dir(test.path().to_path_buf()),
+            i64::MIN,
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(scan.diagnostics.malformed_lines, 1);
+        assert_eq!(scan.source.events.len(), 6);
+        for (id, output, first, stream, total) in [
+            ("legacy", 10, None, None, None),
+            ("complete", 13, Some(300), Some(500), Some(800)),
+            ("failed", 13, None, None, None),
+            ("unfinished", 13, None, None, None),
+            ("invalid", 13, None, None, None),
+            ("zero-stream", 13, Some(300), Some(0), Some(300)),
+        ] {
+            let event = scan
+                .source
+                .events
+                .iter()
+                .find(|event| event.event_key == format!("message:{id}"))
+                .unwrap();
+            assert_eq!(event.tokens.output, output);
+            assert_eq!(
+                (
+                    event.first_token_latency_ms,
+                    event.stream_duration_ms,
+                    event.response_duration_ms
+                ),
+                (first, stream, total)
+            );
+        }
+        let complete = scan
+            .source
+            .events
+            .iter()
+            .find(|event| event.event_key == "message:complete")
+            .unwrap();
+        assert_eq!(complete.project_path.as_deref(), Some("/tmp/project"));
+        assert_eq!(complete.occurred_at_ms, 9000);
     }
 
     #[test]

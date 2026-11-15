@@ -17,18 +17,28 @@ use std::time::{Duration, SystemTime};
 use toml_edit::{Document, Item, Table};
 
 const CLAUDE_ENDPOINT: &str = "http://127.0.0.1:46319/claude/v1/logs";
+const CLAUDE_TRACE_ENDPOINT: &str = "http://127.0.0.1:46319/claude/v1/traces";
 const CODEX_ENDPOINT: &str = "http://127.0.0.1:46319/codex/v1/traces";
 const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OWNERSHIP_BYTES: usize = 64 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigStatus {
     pub configured: bool,
     pub conflict: bool,
+    pub first_token_configured: bool,
+    pub first_token_conflict: bool,
 }
+
+const CLAUDE_TRACE_SETTINGS: [(&str, &str); 4] = [
+    ("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1"),
+    ("OTEL_TRACES_EXPORTER", "otlp"),
+    ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json"),
+    ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", CLAUDE_TRACE_ENDPOINT),
+];
 
 pub struct ConfigManager {
     state_dir: PathBuf,
@@ -275,9 +285,19 @@ impl ConfigManager {
                 })
         });
         let setting_conflict = loaded.settings.conflict(agent);
+        let first_token_conflict =
+            agent == Agent::Claude && loaded.settings.claude_trace_conflict();
         let status = ConfigStatus {
             configured: loaded.settings.configured(agent) && !setting_conflict,
             conflict: setting_conflict || ownership_conflict,
+            first_token_configured: agent == Agent::Claude
+                && CLAUDE_TRACE_SETTINGS.iter().all(|(key, value)| {
+                    loaded
+                        .settings
+                        .get(key)
+                        .is_some_and(|current| current.value == *value)
+                }),
+            first_token_conflict,
         };
         if config_stamp != FileStamp::Unstatable && ownership_stamp != FileStamp::Unstatable {
             if let Ok(mut cache) = self.inspect_cache.lock() {
@@ -307,30 +327,39 @@ impl ConfigManager {
         if loaded.settings.conflict(agent) {
             bail!("An existing timing exporter conflicts with the local collector");
         }
-        if let Some(ownership) = self.read_ownership(agent)? {
-            if ownership.config_path == loaded.path
-                && loaded.settings.configured(agent)
-                && ownership.changes.iter().all(|change| {
-                    same_value(
+        let journal_path = self.ownership_path(agent);
+        let previous_journal = read_optional(&journal_path, MAX_OWNERSHIP_BYTES)?;
+        let mut ownership = self
+            .parse_ownership(agent, previous_journal.as_deref())?
+            .unwrap_or_else(|| Ownership {
+                version: 1,
+                agent,
+                config_path: loaded.path.clone(),
+                original_missing: loaded.original.is_none(),
+                created_container: !loaded.settings.has_container(agent),
+                changes: Vec::new(),
+            });
+        if previous_journal.is_some()
+            && (ownership.config_path != loaded.path
+                || !loaded.settings.configured(agent)
+                || ownership.changes.iter().any(|change| {
+                    !same_value(
                         loaded.settings.get(&change.key).as_ref(),
                         Some(&change.installed),
                     )
-                })
-            {
-                return Ok(());
-            }
+                }))
+        {
             bail!("Timing settings changed; disable the previous installation before enabling");
         }
 
-        let mut ownership = Ownership {
-            version: 1,
-            agent,
-            config_path: loaded.path.clone(),
-            original_missing: loaded.original.is_none(),
-            created_container: !loaded.settings.has_container(agent),
-            changes: Vec::new(),
-        };
-        for (key, installed) in agent.desired() {
+        let mut desired = agent.desired();
+        if agent == Agent::Claude && !loaded.settings.claude_trace_conflict() {
+            desired.extend(
+                CLAUDE_TRACE_SETTINGS.map(|(key, value)| (key, SettingValue::json(json!(value)))),
+            );
+        }
+        let previous_count = ownership.changes.len();
+        for (key, installed) in desired {
             let previous = loaded.settings.get(key);
             if !same_value(previous.as_ref(), Some(&installed)) {
                 loaded.settings.set(key, Some(&installed))?;
@@ -341,7 +370,7 @@ impl ConfigManager {
                 });
             }
         }
-        if ownership.changes.is_empty() {
+        if ownership.changes.len() == previous_count {
             // A manually configured local exporter is not silently adopted.
             return Ok(());
         }
@@ -351,7 +380,7 @@ impl ConfigManager {
             .map_err(|_| anyhow!("Cannot create timing ownership directory"))?;
         let journal = serde_json::to_vec(&ownership)
             .map_err(|_| anyhow!("Cannot encode timing ownership"))?;
-        record_and_apply(&self.ownership_path(agent), &journal, || {
+        record_and_apply(&journal_path, &journal, previous_journal.as_deref(), || {
             loaded.replace(Some(&bytes))
         })
     }
@@ -417,7 +446,12 @@ impl ConfigManager {
         };
         let ownership: Ownership = serde_json::from_slice(bytes)
             .map_err(|_| anyhow!("Invalid timing ownership metadata"))?;
-        let desired = agent.desired();
+        let mut desired = agent.desired();
+        if agent == Agent::Claude {
+            desired.extend(
+                CLAUDE_TRACE_SETTINGS.map(|(key, value)| (key, SettingValue::json(json!(value)))),
+            );
+        }
         let mut keys = std::collections::HashSet::new();
         if ownership.version != 1
             || ownership.agent != agent
@@ -487,6 +521,28 @@ impl Settings {
             .desired()
             .into_iter()
             .all(|(key, value)| same_value(self.get(key).as_ref(), Some(&value)))
+    }
+
+    fn claude_trace_conflict(&self) -> bool {
+        if CLAUDE_TRACE_SETTINGS
+            .iter()
+            .any(|(key, _)| self.get(key).is_some_and(|v| !v.value.is_string()))
+        {
+            return true;
+        }
+        let endpoint = self.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+        if endpoint
+            .as_ref()
+            .is_some_and(|v| v.value != CLAUDE_TRACE_ENDPOINT)
+        {
+            return true;
+        }
+        let exporter = self.get("OTEL_TRACES_EXPORTER");
+        match exporter.as_ref().and_then(|v| v.value.as_str()) {
+            None | Some("" | "none") => false,
+            Some("otlp") => endpoint.is_none(),
+            _ => true,
+        }
     }
 
     fn conflict(&self, agent: Agent) -> bool {
@@ -894,13 +950,18 @@ fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> Result<()> {
 fn record_and_apply(
     journal_path: &Path,
     journal: &[u8],
+    previous_journal: Option<&[u8]>,
     apply: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     write_atomic(journal_path, journal, true)?;
     if let Err(error) = apply() {
         // A crash or a failed cleanup remains safe: disable compares every
         // installed value before restoring anything from this journal.
-        let _ = fs::remove_file(journal_path);
+        if let Some(previous) = previous_journal {
+            let _ = write_atomic(journal_path, previous, true);
+        } else {
+            let _ = fs::remove_file(journal_path);
+        }
         return Err(error);
     }
     Ok(())
@@ -998,6 +1059,57 @@ mod tests {
     }
 
     #[test]
+    fn claude_logs_only_install_can_add_traces_and_restore_original_settings() {
+        let fixture = Fixture::new();
+        let original = json!({"env":{"OTEL_LOGS_EXPORTER":"none"}, "existing":true});
+        let mut installed = original.clone();
+        let changes = Agent::Claude
+            .desired()
+            .into_iter()
+            .map(|(key, value)| {
+                let previous = installed["env"].get(key).cloned().map(SettingValue::json);
+                installed["env"][key] = value.value.clone();
+                Change {
+                    key: key.into(),
+                    previous,
+                    installed: value,
+                }
+            })
+            .collect();
+        fixture.write(Agent::Claude, &installed.to_string());
+        let journal = Ownership {
+            version: 1,
+            agent: Agent::Claude,
+            config_path: fs::canonicalize(fixture.path(Agent::Claude)).unwrap(),
+            original_missing: false,
+            created_container: false,
+            changes,
+        };
+        fs::create_dir_all(&fixture.manager.state_dir).unwrap();
+        fs::write(
+            fixture.manager.ownership_path(Agent::Claude),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+
+        let status = fixture.manager.inspect("claude", CLAUDE_ENDPOINT).unwrap();
+        assert!(status.configured && !status.first_token_configured);
+        fixture.manager.enable("claude", CLAUDE_ENDPOINT).unwrap();
+        assert!(
+            fixture
+                .manager
+                .inspect("claude", CLAUDE_ENDPOINT)
+                .unwrap()
+                .first_token_configured
+        );
+        fixture.manager.disable("claude").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&fixture.read(Agent::Claude)).unwrap(),
+            original
+        );
+    }
+
+    #[test]
     fn claude_global_opt_in_never_activates_dormant_other_signal_exporters() {
         for (key, exporter) in [
             ("OTEL_METRICS_EXPORTER", "otlp"),
@@ -1022,6 +1134,14 @@ mod tests {
                 if telemetry == Some("1") {
                     assert!(!status.conflict);
                     fixture.manager.enable("claude", CLAUDE_ENDPOINT).unwrap();
+                    if key == "OTEL_TRACES_EXPORTER" {
+                        let status = fixture.manager.inspect("claude", CLAUDE_ENDPOINT).unwrap();
+                        assert!(
+                            status.configured
+                                && status.first_token_conflict
+                                && !status.first_token_configured
+                        );
+                    }
                     fixture.manager.disable("claude").unwrap();
                     assert_eq!(
                         serde_json::from_str::<Value>(&fixture.read(Agent::Claude)).unwrap(),
@@ -1083,7 +1203,8 @@ mod tests {
                 fixture.manager.inspect("claude", CLAUDE_ENDPOINT).unwrap(),
                 ConfigStatus {
                     configured: false,
-                    conflict: true
+                    conflict: true,
+                    ..Default::default()
                 }
             );
             assert!(fixture.manager.enable("claude", CLAUDE_ENDPOINT).is_err());
@@ -1193,8 +1314,7 @@ mod tests {
             assert_eq!(
                 status,
                 ConfigStatus {
-                    configured: false,
-                    conflict: false
+                    ..Default::default()
                 }
             );
             assert!(!fixture.path(agent).exists());
@@ -1203,7 +1323,8 @@ mod tests {
                 fixture.manager.inspect(name, agent.endpoint()).unwrap(),
                 ConfigStatus {
                     configured: true,
-                    conflict: false
+                    first_token_configured: agent == Agent::Claude,
+                    ..Default::default()
                 }
             );
             fixture.manager.disable(name).unwrap();

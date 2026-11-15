@@ -9,7 +9,7 @@
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-11-12";
+pub const PRICING_AS_OF: &str = "2026-11-15";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -61,6 +61,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gemini-3.8-flash", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
     ("gemini-4-argon", Pricing { input: 2.0, cache_read: 0.1, cache_write: 0.0, output: 10.0 }),
     ("gemini-4-carbon", Pricing { input: 2.0, cache_read: 0.1, cache_write: 0.0, output: 10.0 }),
+    ("gemini-4-hydrogen", Pricing { input: 1.5, cache_read: 0.075, cache_write: 0.0, output: 7.5 }),
     ("gemini-flash-latest", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
     ("gemini-flash-lite-latest", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.0, output: 2.5 }),
     ("gemini-pro-latest", Pricing { input: 2.0, cache_read: 0.2, cache_write: 0.0, output: 12.0 }),
