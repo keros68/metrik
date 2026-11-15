@@ -315,18 +315,19 @@ fn normalize_generator_metadata(
             .unwrap_or(0);
 
         // retryInfos[].usage 是主路径；缺失时回退到 chatModel.usage（旧形态）。
-        let usages: Vec<(&Value, usize)> =
-            match chat_model.get("retryInfos").and_then(Value::as_array) {
-                Some(retries) => retries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, retry)| retry.get("usage").map(|usage| (usage, i)))
-                    .collect(),
-                None => chat_model
-                    .get("usage")
-                    .map(|usage| vec![(usage, 0usize)])
-                    .unwrap_or_default(),
-            };
+        let retries = chat_model.get("retryInfos").and_then(Value::as_array);
+        let completed_index = completed_attempt_index(chat_model);
+        let usages: Vec<(&Value, usize)> = match retries {
+            Some(retries) => retries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, retry)| retry.get("usage").map(|usage| (usage, i)))
+                .collect(),
+            None => chat_model
+                .get("usage")
+                .map(|usage| vec![(usage, 0usize)])
+                .unwrap_or_default(),
+        };
 
         for (usage, retry_index) in usages {
             let tokens = TokenVector {
@@ -352,9 +353,12 @@ fn normalize_generator_metadata(
                 continue;
             }
             // responseId 作 provider 身份；缺失时回退到位置身份（稳定但不跨版本）。
-            let response_id = first_string(usage, &["responseId"])
-                .unwrap_or_else(|| format!("{cascade_id}:{row_index}:{retry_index}"));
-            events.push(UsageEvent::new(
+            let response_id = first_string(usage, &["responseId"]);
+            let completed_request =
+                completed_index == Some(retry_index) && tokens.output > 0 && response_id.is_some();
+            let response_id =
+                response_id.unwrap_or_else(|| format!("{cascade_id}:{row_index}:{retry_index}"));
+            let mut event = UsageEvent::new(
                 "antigravity",
                 format!("response:{response_id}"),
                 occurred_at_ms,
@@ -362,10 +366,103 @@ fn normalize_generator_metadata(
                 model.clone(),
                 tokens,
                 "rpc_snapshot",
-            ));
+            );
+            if completed_request {
+                let label = chat_model.get("modelDisplayName").and_then(Value::as_str);
+                if let Some(&(_, _, canonical)) =
+                    ORCHESTRATOR_MODELS.iter().find(|&&(route, display, _)| {
+                        model.as_deref() == Some(route) && label == Some(display)
+                    })
+                {
+                    event.model = Some(canonical.to_owned());
+                }
+                event.set_response_phases(
+                    chat_model.get("timeToFirstToken").and_then(duration_ms),
+                    chat_model.get("streamingDuration").and_then(duration_ms),
+                );
+            }
+            events.push(event);
         }
     }
     events
+}
+
+fn completed_attempt_index(chat_model: &Value) -> Option<usize> {
+    let Some(retries) = chat_model.get("retryInfos") else {
+        return Some(0);
+    };
+    let retries = retries.as_array()?;
+    let (last, earlier) = retries.split_last()?;
+    if last
+        .get("error")
+        .is_some_and(|error| !error.is_null() && error.as_str() != Some(""))
+    {
+        return None;
+    }
+    if earlier.is_empty() {
+        return Some(0);
+    }
+    // ChatModelMetadata.usage identifies the completed response after a retry.
+    // Require the matching successful last attempt and no earlier output.
+    let response_id = chat_model.pointer("/usage/responseId")?.as_str()?;
+    (last.pointer("/usage/responseId").and_then(Value::as_str) == Some(response_id)
+        && earlier.iter().all(|retry| {
+            retry.pointer("/usage/responseId").and_then(Value::as_str) != Some(response_id)
+                && retry.get("usage").is_some_and(|usage| {
+                    first_i64(usage, &["outputTokens", "responseOutputTokens"]).unwrap_or(0) == 0
+                })
+        }))
+    .then_some(earlier.len())
+}
+
+// The same route ID can carry different labels over time. Only responses with
+// an explicit model label supported by Google's Orchestrator documentation
+// resolve to the corresponding API model.
+const ORCHESTRATOR_MODELS: &[(&str, &str, &str)] = &[
+    (
+        "gemini-flash-worker-agy",
+        "Gemini 4 Hydrogen (Orchestrator)",
+        "gemini-4-hydrogen",
+    ),
+    (
+        "gemini-pro-orchestrator",
+        "Orchestrator (Carbon)",
+        "gemini-4-carbon",
+    ),
+    (
+        "gemini-pro-orchestrator",
+        "Orchestrator (Argon)",
+        "gemini-4-argon",
+    ),
+];
+
+pub(crate) fn is_resolved_antigravity_route(route: &str, model: &str) -> bool {
+    ORCHESTRATOR_MODELS
+        .iter()
+        .any(|&(id, _, resolved)| route == id && model == resolved)
+}
+
+fn duration_ms(value: &Value) -> Option<i64> {
+    if let Some(ms) = value.as_i64() {
+        return (ms >= 0).then_some(ms);
+    }
+    // RPC protobuf JSON encodes Duration as decimal seconds followed by 's'.
+    let text = value.as_str()?.strip_suffix('s')?;
+    let (seconds, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if seconds.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 9
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let seconds = seconds.parse::<i64>().ok()?;
+    let millis = fraction
+        .bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(3)
+        .fold(0i64, |ms, digit| ms * 10 + i64::from(digit - b'0'));
+    seconds.checked_mul(1000)?.checked_add(millis)
 }
 
 /// 官方配额：两个 group（Gemini / Claude+GPT），各含 weekly + 5h 桶。
@@ -484,7 +581,9 @@ fn first_time_ms(value: &Value, keys: &[&str]) -> Option<i64> {
 //
 // 字段号是从真实会话库里对出来的（值与 RPC JSON 一一对应），只列用到的：
 //   GeneratorMetadata  1 chatModel  2 产出的 step 下标（packed）
-//   ChatModelMetadata  4 usage  17 retryInfos[]（2 usage）  19 responseModel
+//   ChatModelMetadata  4 usage  11 timeToFirstToken  12 streamingDuration
+//                      17 retryInfos[]（2 usage, 3 error）  19 responseModel
+//                      21 modelDisplayName
 //   ModelUsageStats    2 inputTokens  3 outputTokens  5 cacheReadTokens
 //                      9 thinkingOutputTokens  10 responseOutputTokens  11 responseId
 //   CortexStepMetadata 1 createdAt（Timestamp：1 秒  2 纳秒）
@@ -492,9 +591,13 @@ fn first_time_ms(value: &Value, keys: &[&str]) -> Option<i64> {
 const GENERATION_CHAT_MODEL: u64 = 1;
 const GENERATION_STEP_INDICES: u64 = 2;
 const CHAT_MODEL_USAGE: u64 = 4;
+const CHAT_MODEL_FIRST_TOKEN: u64 = 11;
+const CHAT_MODEL_STREAM_DURATION: u64 = 12;
 const CHAT_MODEL_RETRY_INFOS: u64 = 17;
 const CHAT_MODEL_RESPONSE_MODEL: u64 = 19;
+const CHAT_MODEL_DISPLAY_NAME: u64 = 21;
 const RETRY_INFO_USAGE: u64 = 2;
+const RETRY_INFO_ERROR: u64 = 3;
 const USAGE_OUTPUT: u64 = 3;
 const USAGE_THINKING_OUTPUT: u64 = 9;
 const USAGE_RESPONSE_OUTPUT: u64 = 10;
@@ -507,6 +610,22 @@ const USAGE_COUNTERS: [(u64, &str); 5] = [
     (USAGE_RESPONSE_OUTPUT, "responseOutputTokens"),
 ];
 const STEP_CREATED_AT: u64 = 1;
+
+fn proto_duration_ms(duration: ProtoMessage<'_>) -> Option<i64> {
+    let component = |field| match duration.varint(field) {
+        Some(value) => Some(value),
+        None if !duration.has_field(field) => Some(0),
+        _ => None,
+    };
+    let seconds = i64::try_from(component(1)?).ok()?;
+    let nanos = component(2)?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    seconds
+        .checked_mul(1000)?
+        .checked_add((nanos / 1_000_000) as i64)
+}
 
 /// protobuf 线格式的一个字段值。定长字段用不到，只跳过。
 enum Wire<'a> {
@@ -847,6 +966,17 @@ fn generation_json(
     if let Some(model) = chat_model.string(CHAT_MODEL_RESPONSE_MODEL) {
         row.insert("responseModel".into(), json!(model));
     }
+    if let Some(label) = chat_model.string(CHAT_MODEL_DISPLAY_NAME) {
+        row.insert("modelDisplayName".into(), json!(label));
+    }
+    for (field, key) in [
+        (CHAT_MODEL_FIRST_TOKEN, "timeToFirstToken"),
+        (CHAT_MODEL_STREAM_DURATION, "streamingDuration"),
+    ] {
+        if let Some(ms) = chat_model.message(field).and_then(proto_duration_ms) {
+            row.insert(key.into(), json!(ms));
+        }
+    }
     let retries: Vec<Value> = chat_model
         .all_fields(CHAT_MODEL_RETRY_INFOS)
         .map(|value| {
@@ -854,13 +984,22 @@ fn generation_json(
                 Wire::Bytes(data) => ProtoMessage::parse(data),
                 _ => None,
             };
-            let usage = retry.and_then(|retry| match retry.message(RETRY_INFO_USAGE) {
-                Some(usage) => Some(usage_json(&usage, &mut diagnostics.total_mismatches)),
-                None if !retry.has_field(RETRY_INFO_USAGE) => Some(json!({})),
-                _ => None,
+            let retry = retry.and_then(|retry| {
+                let usage = match retry.message(RETRY_INFO_USAGE) {
+                    Some(usage) => usage_json(&usage, &mut diagnostics.total_mismatches),
+                    None if !retry.has_field(RETRY_INFO_USAGE) => json!({}),
+                    _ => return None,
+                };
+                let mut json = json!({ "usage": usage });
+                if retry.has_field(RETRY_INFO_ERROR)
+                    && retry.all_bytes(RETRY_INFO_ERROR).next() != Some(&[])
+                {
+                    json["error"] = json!(true);
+                }
+                Some(json)
             });
-            match usage {
-                Some(usage) => json!({ "usage": usage }),
+            match retry {
+                Some(retry) => retry,
                 None => {
                     diagnostics.malformed_lines += 1;
                     Value::Null
@@ -878,6 +1017,12 @@ fn generation_json(
             return None;
         }
     } else {
+        if let Some(response_id) = chat_model
+            .message(CHAT_MODEL_USAGE)
+            .and_then(|usage| usage.string(USAGE_RESPONSE_ID))
+        {
+            row.insert("usage".into(), json!({ "responseId": response_id }));
+        }
         row.insert("retryInfos".into(), Value::Array(retries));
     }
     let Some(created_ms) = created_ms else {
@@ -1707,19 +1852,29 @@ mod tests {
     fn local_and_rpc_observations_of_a_generation_are_the_same_event() {
         let test = TestDirectory::new("parity");
         let path = test.0.join("cascade-parity.db");
-        write_conversation(
-            &path,
-            &[(1, step_blob(1_791_239_681, 0))],
-            &[generation_blob(
-                &[1],
-                "gemini-3.8-flash",
-                &[usage_blob(100, 900, 12, 28, "resp-same")],
-            )],
-        );
+        let generation = [
+            pb_bytes(
+                1,
+                &[
+                    pb_bytes(11, &[pb_varint(1, 1), pb_varint(2, 230_456_000)].concat()),
+                    pb_bytes(12, &pb_varint(1, 2)),
+                    pb_bytes(17, &pb_bytes(2, &usage_blob(100, 900, 12, 28, "resp-same"))),
+                    pb_bytes(19, b"gemini-flash-worker-agy"),
+                    pb_bytes(21, b"Gemini 4 Hydrogen (Orchestrator)"),
+                ]
+                .concat(),
+            ),
+            pb_bytes(2, &[1]),
+        ]
+        .concat();
+        write_conversation(&path, &[(1, step_blob(1_791_239_681, 0))], &[generation]);
         let (_, local, _) = parse_local_database(&path, 0).unwrap();
         let rpc = normalize_generator_metadata(
             &json!({ "generatorMetadata": [{ "chatModel": {
-                "responseModel": "gemini-3.8-flash",
+                "responseModel": "gemini-flash-worker-agy",
+                "modelDisplayName": "Gemini 4 Hydrogen (Orchestrator)",
+                "timeToFirstToken": "1.230456s",
+                "streamingDuration": "2s",
                 "chatStartMetadata": { "createdAt": "2026-10-05T22:34:41Z" },
                 "retryInfos": [{ "usage": {
                     "inputTokens": "100", "outputTokens": "40", "cacheReadTokens": "900",
@@ -1734,6 +1889,42 @@ mod tests {
         assert_eq!(rpc.len(), 1);
         assert_eq!(local[0].event_id, rpc[0].event_id);
         assert!(local[0].same_measured_payload(&rpc[0]));
+        for event in [&local[0], &rpc[0]] {
+            assert_eq!(event.model.as_deref(), Some("gemini-4-hydrogen"));
+            assert_eq!(event.first_token_latency_ms, Some(1230));
+            assert_eq!(event.stream_duration_ms, Some(2000));
+            assert_eq!(event.response_duration_ms, Some(3230));
+        }
+    }
+
+    #[test]
+    fn timing_is_not_repeated_across_retries_and_generic_flash_is_unpriced() {
+        let usage = json!({ "usage": { "outputTokens": 30, "responseId": "first" } });
+        let failed = json!({
+            "usage": { "inputTokens": 10, "responseId": "failed" },
+            "error": "retry"
+        });
+        for (attempts, primary_id, expected_timing) in [
+            (vec![usage.clone()], None, vec![Some(1250)]),
+            (vec![failed.clone(), usage.clone()], None, vec![None, None]),
+            (vec![failed, usage], Some("first"), vec![None, Some(1250)]),
+        ] {
+            let value = json!({ "generatorMetadata": [{ "chatModel": {
+                "responseModel": "gemini-flash-worker-agy",
+                "modelDisplayName": "Gemini Flash",
+                "chatStartMetadata": { "createdAt": 1000 },
+                "timeToFirstToken": "0.25s",
+                "streamingDuration": "1s",
+                "usage": {"responseId": primary_id},
+                "retryInfos": attempts
+            }}]});
+            let events = normalize_generator_metadata(&value, "cascade", 0);
+            assert_eq!(events.len(), expected_timing.len());
+            for (event, expected) in events.into_iter().zip(expected_timing) {
+                assert_eq!(event.model.as_deref(), Some("gemini-flash-worker-agy"));
+                assert_eq!(event.response_duration_ms, expected);
+            }
+        }
     }
 
     #[test]

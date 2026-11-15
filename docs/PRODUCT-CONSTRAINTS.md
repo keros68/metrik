@@ -389,6 +389,10 @@ change.
 - OpenCode V2 model statistics show the same three measures for completed
   assistant requests. Total time ends at stream completion. OpenCode Go
   usage sent through Pi can contribute to the separate response average.
+- Antigravity model statistics show the same three measures using recorded
+  first-token and stream durations paired to the successful model attempt.
+  Orchestrator requests with an explicit Gemini API model identification can
+  contribute to the cost estimate.
 
 - Pinning belongs only to floating forms. Expanded mode is always a normal
   window.

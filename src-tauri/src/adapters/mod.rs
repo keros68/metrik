@@ -15,6 +15,7 @@ mod workbuddy;
 mod zcode;
 
 pub use aicross::AicrossAdapter;
+pub(crate) use antigravity::is_resolved_antigravity_route;
 pub use antigravity::{antigravity_data_dirs, AntigravityAdapter};
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;

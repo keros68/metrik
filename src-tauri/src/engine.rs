@@ -135,7 +135,9 @@ impl ModelAccrual {
         }
         if event.comps.output > 0 {
             if let Some(duration) = event.response_duration_ms.filter(|ms| *ms > 0) {
-                if event.adapter == "opencode" && event.stream_duration_ms.is_some() {
+                if matches!(event.adapter.as_str(), "opencode" | "antigravity")
+                    && event.stream_duration_ms.is_some()
+                {
                     self.request_total_ms += duration as f64;
                     self.request_total_sample_count += 1;
                 } else {
@@ -158,7 +160,7 @@ impl ModelAccrual {
         } else {
             self.display_model
         };
-        let has_stream_timing = matches!(agent.as_str(), "kimi" | "opencode");
+        let has_stream_timing = matches!(agent.as_str(), "kimi" | "opencode" | "antigravity");
         let request_timing = (has_stream_timing || matches!(agent.as_str(), "claude" | "codex"))
             .then(|| ModelRequestTiming {
                 first_token_latency_ms: (has_stream_timing || agent == "claude").then(|| {
@@ -174,7 +176,7 @@ impl ModelAccrual {
                         self.response_duration_ms,
                         self.response_sample_count,
                     )),
-                    "codex" | "opencode" => Some(TimingMetric::mean(
+                    "codex" | "opencode" | "antigravity" => Some(TimingMetric::mean(
                         self.request_total_ms,
                         self.request_total_sample_count,
                     )),

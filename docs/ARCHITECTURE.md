@@ -152,9 +152,9 @@ timestamps includes later waiting and is excluded. Pi reads
 `message.durationMs` on assistant messages that ended with `stop` or `toolUse`
 (237 of 237 local calls with usage); errored and aborted calls keep their usage
 but carry no timing. Kimi parser revision 10 and Pi revision 9 rescan retained
-sources to enrich old events. Hermes rows are cumulative counters, Claude Code
-and Codex logs record turn or output-item times rather than one request, and
-the Antigravity timing fields are unnamed, so those adapters report no timing.
+sources to enrich old events. Hermes rows are cumulative counters. Claude Code
+and Codex conversation logs record turn or output-item times rather than one
+request.
 Other adapters do not guess timing from session duration or adjacent events.
 
 OpenCode 2.3.0 persists request start, first token, stream end and completion
@@ -164,6 +164,17 @@ boundaries. Total request time requires the paired phases and ends at
 `streamed`, independently of later settlement. Explicitly completed, successful
 steps qualify. Each metric has its own sample count, and stream speed uses only
 positive stream duration and generated output. V1 has no request phase timing.
+
+Antigravity records `timeToFirstToken` and `streamingDuration` in
+`ChatModelMetadata`. Local CLI records confirmed the phases against the
+corresponding step's creation, visibility, and generation-end timestamps.
+Timing is attached to the successful attempt with a response ID and output.
+After a retry, the final attempt must match the generation's response ID and
+earlier attempts must have no output. A total requires both phases.
+Exact combinations of response model and model display name identify the Carbon
+or Argon planner and Hydrogen worker
+for API cost estimation. Generic Gemini Flash worker records retain the route
+ID and stay unpriced. Parser revision 12 reconciles retained sources.
 
 Model summaries share one aggregation for snapshots and history reports:
 `sum(timed output tokens) * 1000 / sum(response_duration_ms)`, grouped by Agent
@@ -294,7 +305,7 @@ missing or unreadable ledger is a stderr message with a non-zero exit code.
   the table is wholesale-replaced derived data, so only one stale quota round
   is lost.
 
-SQLite runs in WAL mode with `auto_vacuum = INCREMENTAL` under the operating system's local application-data directory; upgrading a v1 ledger compacts `event_observation`, `event_id`, and `payload_hash` in place and runs a one-time `VACUUM` to reclaim accumulated freelist pages, while daily retention pruning runs bounded `incremental_vacuum`. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 10 to retain first-token and stream timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, OpenCode using 8 to read V2 request phases, and Antigravity using 11 for step timestamp coverage checks. Version changes force retained-history reconciliation.
+SQLite runs in WAL mode with `auto_vacuum = INCREMENTAL` under the operating system's local application-data directory; upgrading a v1 ledger compacts `event_observation`, `event_id`, and `payload_hash` in place and runs a one-time `VACUUM` to reclaim accumulated freelist pages, while daily retention pruning runs bounded `incremental_vacuum`. Source replacement and observation updates are transactional. The shared `PARSER_VERSION` is currently 7, with Codex using parser version 8 while request-level pricing metadata is enriched, Pi using 9 (8 moved Kimi Code and ChatGPT subscription usage to their own cards, 9 backfills request timing), Kimi using 10 to retain first-token and stream timing, Hermes using 8 so all of its usage returns to the executing agent rather than its billing-route cards, Zcode using 8 to backfill completed-response timing, OpenCode using 8 to read V2 request phases, and Antigravity using 12 to read recorded phases and identify documented Orchestrator models. Version changes force retained-history reconciliation.
 
 `usage_event.project_path` records the working directory an event happened in, so usage can be grouped by project as well as by session. Optional columns like it are added with `ALTER TABLE` and stay out of the required-column check: listing one there would classify every existing ledger as incompatible and rebuild it, when the column simply reads NULL until the next scan. The path is deliberately **not** part of the conflict-check payload — it is attribution, not a measured quantity, and comparing it would make the same event collide after a parser upgrade on non-mergeable adapters. Backfill is therefore its own write: a rescan fills the column when it is NULL and never overwrites a value already there, because where usage happened is settled fact.
 
