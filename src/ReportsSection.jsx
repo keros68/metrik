@@ -1,10 +1,9 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp } from "@phosphor-icons/react";
-import { modelDisplayName } from "./modelNames.js";
 import { compactTokens } from "./tokenFormat.js";
 import { formatDate, t } from "./i18n.js";
 import { AGENT_META, AGENT_ORDER, chartColor } from "./agentMeta.jsx";
-import { ModelResponseSpeed, ModelResponseSpeedHelp } from "./viewParts.jsx";
+import { ModelResponseSpeedHelp, ModelSpeedTable } from "./viewParts.jsx";
 import { PROJECT_COLOR_COUNT, ShareDonut } from "./UsageSection.jsx";
 
 function dateKey(date) {
@@ -445,15 +444,14 @@ export function ReportsSection({ report }) {
         </div>
       </section>
 
-      <div className="report-grid">
-        <section className="report-card" aria-label={t("Agent 排行")}>
-          <h2>{t("Agent 排行")}</h2>
-          <ul className="model-list">
-            {/* 后端按注册表顺序返回，之前直接渲染——一个叫"排行"的列表其实没排过序。 */}
-            {data.agents
-              .filter((agent) => agent.tokens > 0)
-              .sort((left, right) => right.tokens - left.tokens)
-              .map((agent) => {
+      <section className="report-card" aria-label={t("Agent 排行")}>
+        <h2>{t("Agent 排行")}</h2>
+        <ul className="model-list model-list--agent-rank">
+          {/* 后端按注册表顺序返回，之前直接渲染——一个叫"排行"的列表其实没排过序。 */}
+          {data.agents
+            .filter((agent) => agent.tokens > 0)
+            .sort((left, right) => right.tokens - left.tokens)
+            .map((agent) => {
               const meta = AGENT_META[agent.id];
               const max = Math.max(...data.agents.map((entry) => entry.tokens), 1);
               return (
@@ -467,30 +465,20 @@ export function ReportsSection({ report }) {
                 </li>
               );
             })}
-          </ul>
-        </section>
+        </ul>
+      </section>
 
-        <section className="report-card" aria-label={t("模型排行")}>
+      <section className="report-card model-speed-board" aria-label={t("模型排行")}>
+        <div className="report-card-head">
           <h2>{t("模型排行")}</h2>
-          <ModelResponseSpeedHelp />
-          <ul className="model-list model-list--response-speed">
-            {(data.topModels || []).slice(0, 8).map((entry) => {
-              const max = data.topModels[0]?.tokens || 1;
-              return (
-                <li key={`${entry.agent}-${entry.model}`}>
-                  <i className="model-dot" style={{ backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} aria-hidden="true" />
-                  <span className="model-name">{modelDisplayName(entry.model)}</span>
-                  <span className="model-track" aria-hidden="true">
-                    <i style={{ transform: `scaleX(${entry.tokens / max})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
-                  </span>
-                  <em>{compactTokens(entry.tokens)}</em>
-                  <ModelResponseSpeed entry={entry} />
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      </div>
+          <ModelResponseSpeedHelp align="end" />
+        </div>
+        <ModelSpeedTable
+          entries={data.topModels || []}
+          ariaLabel={t("模型排行")}
+          emptyText={t("所选时间段内暂无已索引的用量。")}
+        />
+      </section>
 
     </main>
   );

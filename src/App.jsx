@@ -105,8 +105,6 @@ import {
 } from "./quotaView.jsx";
 import {
   formatUsd,
-  ModelResponseSpeed,
-  ModelResponseSpeedHelp,
   PeriodControl,
   PERIODS,
   sourceStatusCopy,
@@ -253,7 +251,7 @@ const TOKEN_COMPONENTS = [
 const MODEL_PREVIEW_COUNT = 6;
 
 // Token 构成 + 模型分布：都来自本地账本的精确解析（processed 口径，非账单）。
-function BreakdownSection({ snapshot, selectedAgent }) {
+function BreakdownSection({ snapshot, selectedAgent, onOpenModelSpeed }) {
   const scopedAgents = selectedAgent === "all"
     ? snapshot.agents
     : snapshot.agents.filter((agent) => agent.id === selectedAgent);
@@ -265,7 +263,10 @@ function BreakdownSection({ snapshot, selectedAgent }) {
   const [showAllModels, setShowAllModels] = useState(false);
   const scopedModels = (snapshot.models || [])
     .filter((entry) => selectedAgent === "all" || entry.agent === selectedAgent);
-  const models = showAllModels ? scopedModels : scopedModels.slice(0, MODEL_PREVIEW_COUNT);
+  const volumeModels = [...scopedModels]
+    .filter((entry) => entry.tokens > 0)
+    .sort((left, right) => right.tokens - left.tokens);
+  const models = showAllModels ? volumeModels : volumeModels.slice(0, MODEL_PREVIEW_COUNT);
   const modelMax = models[0]?.tokens || 1;
 
   const cost = snapshot.cost;
@@ -277,85 +278,103 @@ function BreakdownSection({ snapshot, selectedAgent }) {
   const scopedUsd = costRows.reduce((sum, row) => sum + row.usd, 0);
   const scopedUnpriced = costRows.reduce((sum, row) => sum + row.unpricedTokens, 0);
 
-  if (!componentTotal && !models.length && !costRows.length) return null;
+  if (!componentTotal && !scopedModels.length && !costRows.length) return null;
 
   return (
-    <section className="breakdown-grid" aria-label={t("Token 构成、模型分布与成本估算")}>
-      {componentTotal > 0 && (
-        <article className="breakdown-card">
-          <h2>{t("Token 构成")}</h2>
-          <div className="comp-bar" role="img" aria-label={t("按处理类型的 token 构成比例")}>
-            {components.filter((component) => component.value > 0).map((component) => (
-              <i
-                key={component.key}
-                style={{
-                  width: `${(component.value / componentTotal) * 100}%`,
-                  backgroundColor: component.color,
-                }}
-              />
-            ))}
+    <section className="breakdown-stack" aria-label={t("Token 构成、模型分布与成本估算")}>
+      {(componentTotal > 0 || costRows.length > 0) && (
+        <div className="breakdown-grid">
+          {componentTotal > 0 && (
+            <article className="breakdown-card">
+              <h2>{t("Token 构成")}</h2>
+              <div className="comp-bar" role="img" aria-label={t("按处理类型的 token 构成比例")}>
+                {components.filter((component) => component.value > 0).map((component) => (
+                  <i
+                    key={component.key}
+                    style={{
+                      width: `${(component.value / componentTotal) * 100}%`,
+                      backgroundColor: component.color,
+                    }}
+                  />
+                ))}
+              </div>
+              <ul className="comp-legend">
+                {components.map((component) => (
+                  <li key={component.key}>
+                    <i style={{ backgroundColor: component.color }} aria-hidden="true" />
+                    <span>{t(component.label)}</span>
+                    <em>{compactTokens(component.value)} · {((component.value / componentTotal) * 100).toFixed(1)}%</em>
+                  </li>
+                ))}
+              </ul>
+            </article>
+          )}
+          {costRows.length > 0 && (
+            <article className="breakdown-card">
+              <h2>{t("成本估算")}</h2>
+              <p className="cost-total">
+                <strong>
+                  <span className="cost-currency">$</span>
+                  {formatUsd(scopedUsd).slice(1)}
+                </strong>
+                <span>{t("本周期 · API 等价")}</span>
+              </p>
+              <ul className="comp-legend">
+                {costRows.map((row) => (
+                  <li key={row.agent}>
+                    <i style={{ backgroundColor: AGENT_META[row.agent]?.accent || "#74767a", borderRadius: "50%" }} aria-hidden="true" />
+                    <span>{AGENT_META[row.agent]?.label || row.agent}</span>
+                    <em>{row.usd > 0 ? formatUsd(row.usd) : t("未计价")}</em>
+                  </li>
+                ))}
+              </ul>
+              <p className="cost-note">
+                {t("按公开 API 价格（{date}）折算，非账单。", { date: cost.pricingAsOf })}
+                {scopedUnpriced > 0 ? t("另有 {tokens} tokens 因无可靠定价未计入。", { tokens: compactTokens(scopedUnpriced) }) : ""}
+              </p>
+            </article>
+          )}
+        </div>
+      )}
+      {scopedModels.length > 0 && (
+        <article className="breakdown-card breakdown-card--models">
+          <div className="breakdown-card-head">
+            <h2>{t("模型分布")}</h2>
+            <button type="button" className="breakdown-link" onClick={onOpenModelSpeed}>
+              <span>{t("速率明细")}</span>
+              <CaretRight size={12} weight="bold" aria-hidden="true" />
+            </button>
           </div>
-          <ul className="comp-legend">
-            {components.map((component) => (
-              <li key={component.key}>
-                <i style={{ backgroundColor: component.color }} aria-hidden="true" />
-                <span>{t(component.label)}</span>
-                <em>{compactTokens(component.value)} · {((component.value / componentTotal) * 100).toFixed(1)}%</em>
-              </li>
-            ))}
-          </ul>
-        </article>
-      )}
-      {costRows.length > 0 && (
-        <article className="breakdown-card">
-          <h2>{t("成本估算")}</h2>
-          <p className="cost-total">
-            <strong>
-              <span className="cost-currency">$</span>
-              {formatUsd(scopedUsd).slice(1)}
-            </strong>
-            <span>{t("本周期 · API 等价")}</span>
-          </p>
-          <ul className="comp-legend">
-            {costRows.map((row) => (
-              <li key={row.agent}>
-                <i style={{ backgroundColor: AGENT_META[row.agent]?.accent || "#74767a", borderRadius: "50%" }} aria-hidden="true" />
-                <span>{AGENT_META[row.agent]?.label || row.agent}</span>
-                <em>{row.usd > 0 ? formatUsd(row.usd) : t("未计价")}</em>
-              </li>
-            ))}
-          </ul>
-          <p className="cost-note">
-            {t("按公开 API 价格（{date}）折算，非账单。", { date: cost.pricingAsOf })}
-            {scopedUnpriced > 0 ? t("另有 {tokens} tokens 因无可靠定价未计入。", { tokens: compactTokens(scopedUnpriced) }) : ""}
-          </p>
-        </article>
-      )}
-      {models.length > 0 && (
-        <article className="breakdown-card">
-          <h2>{t("模型分布")}</h2>
-          <ModelResponseSpeedHelp />
-          <ul className="model-list">
-            {models.map((entry) => (
-              <li key={`${entry.agent}-${entry.model}`}>
-                <i
-                  className="model-dot"
-                  style={{ backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }}
-                  aria-hidden="true"
-                  title={AGENT_META[entry.agent]?.label || entry.agent}
-                />
-                <span className="model-name" title={modelDisplayName(entry.model)}>{modelDisplayName(entry.model)}</span>
-                <span className="model-track" aria-hidden="true">
-                  <i style={{ transform: `scaleX(${entry.tokens / modelMax})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
-                </span>
-                <em>{compactTokens(entry.tokens)} · {entry.share.toFixed(1)}%</em>
-                <ModelResponseSpeed entry={entry} />
-              </li>
-            ))}
-          </ul>
-          {scopedModels.length > MODEL_PREVIEW_COUNT && (
+          {models.length > 0 ? (
+            <ul className="model-list model-list--overview">
+              {models.map((entry) => {
+                const agentLabel = AGENT_META[entry.agent]?.label || entry.agent;
+                const displayName = modelDisplayName(entry.model);
+                return (
+                  <li key={`${entry.agent}-${entry.model}`}>
+                    <i
+                      className="model-dot"
+                      style={{ backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }}
+                      aria-hidden="true"
+                    />
+                    <span className="model-name" title={`${displayName} · ${agentLabel}`}>
+                      <span>{displayName}</span>
+                      <small className="model-agent-tag">{agentLabel}</small>
+                    </span>
+                    <span className="model-track" aria-hidden="true">
+                      <i style={{ transform: `scaleX(${entry.tokens / modelMax})`, backgroundColor: AGENT_META[entry.agent]?.accent || "#74767a" }} />
+                    </span>
+                    <em>{compactTokens(entry.tokens)} · {entry.share.toFixed(1)}%</em>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="cost-note">{t("当前周期仅有响应速度采样记录，点击右上角查看速率明细。")}</p>
+          )}
+          {volumeModels.length > MODEL_PREVIEW_COUNT && (
             <button type="button" className="project-expand" onClick={() => setShowAllModels((value) => !value)}>
-              {showAllModels ? t("收起") : t("显示全部 {count} 个模型", { count: scopedModels.length })}
+              {showAllModels ? t("收起") : t("显示全部 {count} 个模型", { count: volumeModels.length })}
             </button>
           )}
         </article>
@@ -679,6 +698,16 @@ export function App() {
     () => visibleAgentId(localStorage.getItem("metrik:quotaAgent") || "codex"),
   );
   const [activeNav, setActiveNav] = useState(initialNav);
+  const [usageView, setUsageView] = useState("projects");
+  const [usageJumpRequest, setUsageJumpRequest] = useState(null);
+  const handleOpenModelSpeed = useCallback(() => {
+    setUsageView("models");
+    setUsageJumpRequest((current) => ({
+      agent: selectedAgent,
+      nonce: (current?.nonce || 0) + 1,
+    }));
+    setActiveNav("usage");
+  }, [selectedAgent]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pinned, setPinned] = useState(() => localStorage.getItem("metrik:pinned") === "true");
   const [edgeAutoHide, setEdgeAutoHide] = useState(
@@ -1782,7 +1811,11 @@ export function App() {
               ) : (
                 <>
                   <UsageChart snapshot={snapshot} selectedAgent={selectedAgent} dark={darkTheme} />
-                  <BreakdownSection snapshot={snapshot} selectedAgent={selectedAgent} />
+                  <BreakdownSection
+                    snapshot={snapshot}
+                    selectedAgent={selectedAgent}
+                    onOpenModelSpeed={handleOpenModelSpeed}
+                  />
                 </>
               )}
             </main>
@@ -1839,9 +1872,13 @@ export function App() {
           <>
             <PeriodControl period={period} onChange={setPeriod} fullWidthArea />
             <UsageSection
+              snapshot={snapshot}
               projectsState={projectsState}
               sessionsState={sessionsState}
               period={period}
+              activeView={usageView}
+              onViewChange={setUsageView}
+              jumpRequest={usageJumpRequest}
               onRulesChanged={() => setUsageReloadNonce((value) => value + 1)}
             />
           </>

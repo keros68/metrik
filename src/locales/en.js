@@ -143,8 +143,16 @@ export default {
   "按公开 API 价格（{date}）折算，非账单。": "Converted at public API prices ({date}), not a bill.",
   "另有 {tokens} tokens 因无可靠定价未计入。": " Another {tokens} tokens are excluded because no reliable pricing exists.",
   "模型分布": "Models",
+  "速率明细": "Speed details",
+  "当前周期仅有响应速度采样记录，点击右上角查看速率明细。": "Only response-speed samples were recorded in this period. Open Speed details in the top right.",
   "响应计时": "Response timing",
   "响应均速（含等待）": "Response speed (incl. wait)",
+  "均速（含等待）": "Avg speed (wait)",
+  "用量占比": "Usage share",
+  "模型": "Model",
+  "模型用量与响应速率": "Model usage and response speed",
+  "当前筛选条件下暂无模型记录。": "No model records match the current filter.",
+  "{count} 样本": ({ count }) => `${count} ${count === "1" ? "sample" : "samples"}`,
   "已有外部追踪配置，首 token 延迟未开启。": "An external trace exporter is configured. First-token latency is off.",
   "启用首 token 采集": "Collect first-token latency",
   "响应均速按包含等待的总耗时计算。首 token 延迟和请求总耗时取平均值，流式速度按流式阶段的总耗时计算。": "Average response speed uses total request time, including waiting. First-token latency and request duration are averages. Streaming speed uses total streaming time.",
@@ -525,6 +533,15 @@ export default {
   "导出会话 CSV（{count}）": "Export sessions CSV ({count})",
   "本周期内暂无可显示的会话。": "No sessions to show in this period.",
   "项目": "Projects",
+  "模型与速率": "Models & speed",
+  "切换用量维度": "Usage view",
+  "{period}内 {agent} 共 {count} 个模型记录。速率为该来源的实测响应，非跨渠道基准。": ({ period, agent, count }) =>
+    `${period}: ${count} ${count === 1 ? "model record" : "model records"} for ${agent}. Speeds measure responses from that source, not a cross-provider benchmark.`,
+  "{period}内 {count} 个模型记录，按 Agent 与模型分别统计。速率为对应来源的实测响应，非跨渠道基准。": ({ period, count }) =>
+    `${period}: ${count} ${count === 1 ? "model record" : "model records"}, grouped by agent and model. Speeds measure responses from each source, not a cross-provider benchmark.`,
+  "来源 Agent": "Agent",
+  "按 Agent 筛选模型": "Filter models by agent",
+  "本周期内暂无已记录的模型用量。": "No model usage recorded in this period.",
   "{period}内 {count} 个包含 {agent} 用量的项目，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。": ({ period, count, agent }) =>
     `${period}: ${count} ${count === 1 ? "project" : "projects"} with ${agent} usage. Click a project to see its sessions. Costs are estimates at public API prices, not a bill.`,
   "{period}内 {projects} 个项目、{sessions} 个会话，点击项目查看会话明细。成本为按公开 API 价格的估算，非账单。": ({ period, projects, sessions }) =>

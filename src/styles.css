@@ -2552,6 +2552,7 @@ html:has(.strip-detail-popup) #root::after {
    hide/resize/center/show，内容再做 640–720ms 位移动画会叠出拖影和卡顿。 */
 .app-shell--native-resize .hero-copy,
 .app-shell--native-resize .chart-section,
+.app-shell--native-resize .breakdown-stack,
 .app-shell--native-resize .breakdown-grid,
 .app-shell--native-resize .inspector-zone {
   animation: none;
@@ -2738,12 +2739,17 @@ html:has(.strip-detail-popup) #root::after {
   gap: 3px;
 }
 
-.breakdown-grid {
+.breakdown-stack {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
   margin-top: 28px;
   animation: settle-in 700ms 140ms var(--motion) both;
+}
+
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
 }
 
 .breakdown-card {
@@ -2763,6 +2769,46 @@ html:has(.strip-detail-popup) #root::after {
   font-weight: 570;
   letter-spacing: -0.01em;
 }
+
+.breakdown-card-head,
+.report-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.breakdown-card-head h2,
+.report-card-head h2 {
+  margin: 0;
+}
+
+.breakdown-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  margin-right: -6px;
+  color: #66686d;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 510;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition-property: color, background-color, transform;
+  transition-duration: 200ms;
+  transition-timing-function: var(--motion);
+}
+
+.breakdown-link:hover {
+  color: #1f2022;
+  background: rgba(31, 33, 36, 0.05);
+}
+
+.breakdown-link:active { transform: scale(0.97); }
 
 .comp-bar {
   display: flex;
@@ -2827,59 +2873,84 @@ html:has(.strip-detail-popup) #root::after {
   font-size: 12px;
 }
 
-/* 概览的模型分布卡片在两列布局下只有约 360px，名称与进度条、数值同排会被
-   挤到只剩几个字符：改成两层，名称与数值一行，进度条在下方独占一行。轨道
-   起点都在名称列左缘，各行仍然对齐。 */
-.breakdown-card .model-list li {
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  grid-template-areas:
-    "dot name value"
-    ". track track"
-    ". speed speed";
-  column-gap: 9px;
-  row-gap: 5px;
+/* 概览的模型分布卡片独占整行：单行呈现「圆点 + 模型名(含来源副标) + 进度条 + 数值占比」，
+   多阶段速率详情交给用量页的全宽表格。窄视口下才把进度条折到第二行。 */
+.model-list--overview li {
+  grid-template-columns: 8px minmax(0, 1.35fr) minmax(72px, 1fr) 98px;
+  gap: 12px;
+  padding: 2px 0;
 }
 
-.breakdown-card .model-list li > .model-dot { grid-area: dot; }
-.breakdown-card .model-list li > .model-name { grid-area: name; }
-.breakdown-card .model-list li > .model-track { grid-area: track; }
-.breakdown-card .model-list li > em { grid-area: value; }
-
-.model-list--response-speed li {
-  grid-template-areas:
-    "dot name track value"
-    ". speed speed speed";
-  row-gap: 5px;
+.model-list--overview .model-name {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
 }
 
-.model-list--response-speed li > .model-dot { grid-area: dot; }
-.model-list--response-speed li > .model-name { grid-area: name; }
-.model-list--response-speed li > .model-track { grid-area: track; }
-.model-list--response-speed li > em { grid-area: value; }
+.model-list--overview .model-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-agent-tag {
+  flex: none;
+  color: #8b8d92;
+  font-size: 11px;
+  font-weight: 430;
+}
+
+@media (max-width: 980px) {
+  .model-list--overview li {
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "dot name value"
+      ". track track";
+    column-gap: 9px;
+    row-gap: 5px;
+  }
+  .model-list--overview li > .model-dot { grid-area: dot; }
+  .model-list--overview li > .model-name { grid-area: name; }
+  .model-list--overview li > .model-track { grid-area: track; }
+  .model-list--overview li > em { grid-area: value; }
+}
+
+.model-list--agent-rank li {
+  grid-template-columns: 8px minmax(96px, 160px) minmax(80px, 1fr) 108px;
+  gap: 14px;
+}
 
 .model-speed-help {
   position: relative;
   width: fit-content;
-  margin-top: -6px;
 }
 
 .model-speed-help-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 0;
+  padding: 4px 6px;
   color: #74767a;
-  font-size: 11px;
+  font: inherit;
+  font-size: 11.5px;
   background: transparent;
   border: 0;
+  border-radius: 7px;
   cursor: help;
+  transition: color 180ms var(--motion), background-color 180ms var(--motion);
+}
+
+.model-speed-help-button:hover {
+  color: #26282b;
+  background: rgba(31, 33, 36, 0.045);
 }
 
 .model-speed-tooltip {
   position: absolute;
-  bottom: 100%;
+  bottom: calc(100% + 6px);
   left: 0;
-  z-index: 4;
+  z-index: 12;
   width: 300px;
   max-width: calc(100vw - 48px);
   padding: 11px 13px;
@@ -2887,9 +2958,15 @@ html:has(.strip-detail-popup) #root::after {
   font-size: 12px;
   line-height: 1.55;
   background: rgba(29, 31, 34, 0.96);
-  border-radius: 9px;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
   visibility: hidden;
   pointer-events: none;
+}
+
+.model-speed-help--end .model-speed-tooltip {
+  left: auto;
+  right: 0;
 }
 
 .model-speed-help:not([data-dismissed="true"]):hover .model-speed-tooltip,
@@ -2898,33 +2975,194 @@ html:has(.strip-detail-popup) #root::after {
   pointer-events: auto;
 }
 
-.model-response-speed {
-  grid-area: speed;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 3px 10px;
-  color: #66696e;
-  font-size: 11px;
+/* 全宽模型用量与响应速率表（用量页二级视图与报告页模型排行共用）。 */
+/* 用量页工具栏控件统一 38px 高度（分段胶囊 34 + 上下各 2 内边距 = 38）。 */
+.usage-toolbar .report-view-toggle button {
+  min-height: 34px;
+}
+
+.usage-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-speed-board {
+  padding: 18px 22px 14px;
+}
+
+.model-table-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(31, 33, 36, 0.2) transparent;
+}
+
+.model-speed-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
 
-.model-response-speed strong { font-weight: 520; }
-.model-response-speed strong > span { font-size: 10px; font-weight: 400; }
-.model-response-speed small { color: #85878b; font-size: 10px; }
-.model-response-speed--unavailable { color: #85878b; }
-
-.model-response-speed--metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
-  gap: 6px 10px;
+.model-speed-table thead th {
+  padding: 0 10px 11px;
+  color: #74767a;
+  font-size: 11.5px;
+  font-weight: 520;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(31, 33, 36, 0.08);
 }
 
-.model-response-speed--metrics > div {
+.model-speed-table thead th:first-child,
+.model-speed-table tbody td:first-child {
+  padding-left: 2px;
+}
+
+.model-speed-table thead th:last-child,
+.model-speed-table tbody td:last-child {
+  padding-right: 2px;
+}
+
+.model-col-name {
+  width: 27%;
+  text-align: left;
+}
+
+.model-col-usage {
+  width: 19%;
+  text-align: left;
+}
+
+.model-col-metric {
+  width: 13.5%;
+  text-align: right;
+}
+
+.model-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: color 180ms var(--motion);
+}
+
+.model-col-metric .model-sort-button {
+  justify-content: flex-end;
+}
+
+.model-sort-button:hover,
+.model-sort-button.is-active {
+  color: #202124;
+}
+
+.model-sort-button.is-active {
+  font-weight: 580;
+}
+
+.model-speed-table tbody tr {
+  border-bottom: 1px solid rgba(31, 33, 36, 0.055);
+  transition: background-color 160ms var(--motion);
+}
+
+.model-speed-table tbody tr:last-child {
+  border-bottom: 0;
+}
+
+.model-speed-table tbody tr:hover {
+  background: rgba(31, 33, 36, 0.022);
+}
+
+.model-speed-table tbody td {
+  padding: 12px 10px;
+  vertical-align: middle;
+}
+
+.model-table-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-table-id .model-dot {
+  flex: none;
+}
+
+.model-table-names {
   display: grid;
-  align-content: start;
   gap: 2px;
+  min-width: 0;
+}
+
+.model-table-names strong {
+  overflow: hidden;
+  color: #26282b;
+  font-size: 12.5px;
+  font-weight: 540;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-table-names small {
+  color: #85878b;
+  font-size: 11px;
+}
+
+.model-table-usage {
+  display: grid;
+  gap: 6px;
+  max-width: 180px;
+}
+
+.model-table-usage-figures {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.model-table-usage-figures strong {
+  color: #2c2e32;
+  font-weight: 540;
+}
+
+.model-table-usage-figures small {
+  color: #7d8085;
+  font-size: 11px;
+}
+
+.model-col-metric strong {
+  display: block;
+  color: #26282b;
+  font-size: 12.5px;
+  font-weight: 540;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.model-metric-unit {
+  color: #74767a;
+  font-size: 10.5px;
+  font-weight: 430;
+}
+
+.model-col-metric small {
+  display: block;
+  margin-top: 2px;
+  color: #8a8d92;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.model-col-metric--empty {
+  color: #b0b3b8;
+  font-size: 12px;
 }
 
 .model-dot {
@@ -5173,15 +5411,39 @@ html:has(.strip-detail-popup) #root::after {
   box-shadow: var(--d-card-shadow);
 }
 :root[data-theme="dark"] .breakdown-card h2 { color: var(--d-ink-2); }
+:root[data-theme="dark"] .breakdown-link { color: var(--d-muted); }
+:root[data-theme="dark"] .breakdown-link:hover {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
 :root[data-theme="dark"] .comp-legend span { color: var(--d-ink-3); }
 :root[data-theme="dark"] .comp-legend em,
 :root[data-theme="dark"] .model-list em { color: var(--d-muted); }
 :root[data-theme="dark"] .model-name { color: var(--d-ink-3); }
-:root[data-theme="dark"] .model-speed-help-button,
-:root[data-theme="dark"] .model-response-speed { color: var(--d-muted); }
-:root[data-theme="dark"] .model-response-speed small,
-:root[data-theme="dark"] .model-response-speed--unavailable { color: var(--d-faint); }
+:root[data-theme="dark"] .model-agent-tag { color: var(--d-faint); }
+:root[data-theme="dark"] .model-speed-help-button { color: var(--d-muted); }
+:root[data-theme="dark"] .model-speed-help-button:hover {
+  color: var(--d-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
 :root[data-theme="dark"] .model-speed-tooltip { background: rgba(70, 72, 80, 0.98); }
+:root[data-theme="dark"] .model-table-scroll { scrollbar-color: rgba(255, 255, 255, 0.24) transparent; }
+:root[data-theme="dark"] .model-speed-table thead th {
+  color: var(--d-muted);
+  border-bottom-color: var(--d-hairline-2);
+}
+:root[data-theme="dark"] .model-sort-button:hover,
+:root[data-theme="dark"] .model-sort-button.is-active { color: var(--d-strong); }
+:root[data-theme="dark"] .model-speed-table tbody tr { border-bottom-color: var(--d-hairline); }
+:root[data-theme="dark"] .model-speed-table tbody tr:hover { background: rgba(255, 255, 255, 0.025); }
+:root[data-theme="dark"] .model-table-names strong,
+:root[data-theme="dark"] .model-table-usage-figures strong,
+:root[data-theme="dark"] .model-col-metric strong { color: var(--d-ink); }
+:root[data-theme="dark"] .model-table-names small,
+:root[data-theme="dark"] .model-table-usage-figures small,
+:root[data-theme="dark"] .model-metric-unit,
+:root[data-theme="dark"] .model-col-metric small { color: var(--d-muted); }
+:root[data-theme="dark"] .model-col-metric--empty { color: var(--d-faint); }
 :root[data-theme="dark"] .model-track { background: var(--d-sunken); }
 :root[data-theme="dark"] .cost-total strong { color: var(--d-strong); }
 :root[data-theme="dark"] .cost-total span { color: var(--d-muted); }
