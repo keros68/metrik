@@ -462,7 +462,7 @@ function SliderRow({ label, hint, min, max, step, percent, ariaLabel, onChange }
   );
 }
 
-function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
+function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
   return (
     <div className="settings-card">
       <h2>{t("外观与缩放")}</h2>
@@ -488,7 +488,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         <div className="settings-subsection">
           <h3>{t("组件外观")}</h3>
           <p className="settings-muted">
-            {t("深色是 HUD 玻璃；浅色是透亮白磨砂；透明会直接透出桌面与后方窗口，并叠加轻霜和边缘高光。")}
+            {t("深色是 HUD 玻璃；浅色是透亮白磨砂；透明是无模糊清透水晶框，直接透出桌面与后方窗口并勾勒细白高光边。")}
           </p>
           <div className="theme-toggle" role="group" aria-label={t("组件外观")}>
             {GLASS_TINT_OPTIONS.map((option) => (
@@ -509,7 +509,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
         <div className="settings-subsection">
           <h3>{t("透明档文字")}</h3>
           <p className="settings-muted">
-            {t("深色字配白霜，在浅色壁纸上更清晰；白色字配一层薄暗罩，接近桌面挂件常见的风格。")}
+            {t("白色字配柔和阴影，直接透出桌面壁纸与后方窗口；深色字配轻薄白底，在浅色壁纸上更清晰。")}
           </p>
           <div className="theme-toggle" role="group" aria-label={t("透明档文字")}>
             {GLASS_INK_OPTIONS.map((option) => (
@@ -561,6 +561,22 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
           ariaLabel={t("胶囊缩放百分比")}
           onChange={onStripScale}
         />
+      )}
+      {!IS_MAC && (
+        <div className="settings-subsection">
+          <h3>{t("贴边自动隐藏")}</h3>
+          <p className="settings-muted">
+            {t("开启后，未固定的卡片或胶囊靠近屏幕边缘时会自动收起，仅留极窄边缘，鼠标贴到屏幕边沿停顿后弹出。")}
+          </p>
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={edgeAutoHide}
+              onChange={(event) => onEdgeAutoHideChange(event.target.checked)}
+            />
+            <span>{t("靠边时自动收起")}</span>
+          </label>
+        </div>
       )}
       {IS_LINUX && (
         <div className="settings-subsection">
@@ -1119,7 +1135,7 @@ const SETTINGS_TABS = [
   },
 ];
 
-export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
+export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1223,6 +1239,8 @@ export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidge
               onUiScale={onUiScale}
               stripScale={stripScale}
               onStripScale={onStripScale}
+              edgeAutoHide={edgeAutoHide}
+              onEdgeAutoHideChange={onEdgeAutoHideChange}
               pinned={pinned}
               onPinnedChange={onPinnedChange}
               pinnedHoverMode={pinnedHoverMode}

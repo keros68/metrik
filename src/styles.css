@@ -1842,6 +1842,11 @@ html:has(.strip-shell--transparent:not(.strip-shell--mac):not(.strip-shell--glas
   border-radius: var(--glass-radius, 8px);
 }
 
+html:has(.strip-shell--transparent:not(.strip-shell--mac):not(.strip-shell--glass-css)) #root {
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
+}
+
 html:has(.widget-shell--glass-clear) #root,
 html:has(.strip-shell--glass-clear) #root {
   --glass-pointer-x: 50%;
@@ -1849,29 +1854,45 @@ html:has(.strip-shell--glass-clear) #root {
   --glass-edge-opacity: 0;
   position: relative;
   isolation: isolate;
-  /* 白霜的下限压着可读性：深色字在暗色背景上要有霜才读得出，实测 0.38 时
-     对比度 3.6:1，配上浅色光晕够用。上限留给"想更实"的用户。 */
+  /* 冰蓝式清透水晶框（深色字配轻薄白底）：取消背景模糊与高保底白霜，
+     保留浓度滑杆对极浅白底（0.04–0.44）的连续调节。 */
   background: rgb(
-    229 237 246 /
-      clamp(0.38, calc(0.3 + var(--shell-glass-alpha, 0.82) * 0.36), 0.72)
+    236 242 249 /
+      clamp(0.04, calc((var(--shell-glass-alpha, 0.82) - 0.05) * 0.44 + 0.04), 0.44)
   );
   overflow: hidden;
   box-shadow: none;
 }
 
-/* 胶囊面积小、多数时候压在深色内容上，卡片那条曲线搬过来就是一块灰白板。
-   单独压低上限，并且减轻模糊：模糊半径同样按 CSS px 写，会被胶囊缩放整体
-   放大，1.75 档下 24px 实际糊到 52 物理像素。 */
-html:has(.strip-shell--glass-clear) #root {
-  background: rgb(
-    229 237 246 /
-      clamp(0.34, calc(0.26 + var(--shell-glass-alpha, 0.82) * 0.32), 0.62)
-  );
+html:has(.widget-shell--glass-clear:not(.widget-shell--glass-css)) #root,
+html:has(.strip-shell--glass-clear:not(.strip-shell--glass-css)) #root {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
-html:has(.strip-shell--transparent:not(.strip-shell--mac):not(.strip-shell--glass-css)) #root {
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  backdrop-filter: blur(14px) saturate(150%);
+/* 冰蓝同款 1px 上亮下柔白渐变玻璃轮廓（不改变布局宽高，避免干扰 ResizeObserver）。 */
+html:has(.widget-shell--glass-clear:not(.widget-shell--glass-css)) #root::before,
+html:has(.strip-shell--glass-clear:not(.strip-shell--glass-css)) #root::before {
+  content: "";
+  position: absolute;
+  z-index: 19;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(255, 255, 255, 0.34) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
 }
 
 /* 浏览器没有原生窗口，补一层模拟外框；圆角两端共用 --glass-radius。 */
@@ -2002,14 +2023,14 @@ html:has(.strip-shell--glass-clear) #root::after {
   height: 4px;
 }
 
-/* ---- 透明档：白色字（--glass-ink-light） ----
-   桌面挂件常见的另一种风格：白字直接压在壁纸上，靠深色阴影而不是面板拉开
-   层次。白字不能配白霜（往白底加白不改对比度），所以这一档把罩层换成一层
-   薄暗 scrim；前景直接沿用深色档那套白字，不挂 --glass-light。 */
-html:has(.widget-shell--glass-ink-light) #root,
-html:has(.strip-shell--glass-ink-light) #root {
+/* ---- 透明档：白色字（--glass-ink-light，默认） ----
+   冰蓝同款清透水晶框：无模糊、极薄白底（0.015–0.22）+ 1px 亮白渐变描边 +
+   柔和暗影白字，直接把后方壁纸与窗口透出来，浓度滑杆越低越近乎无底板。 */
+html:has(.widget-shell--glass-ink-light:not(.widget-shell--glass-css)) #root,
+html:has(.strip-shell--glass-ink-light:not(.strip-shell--glass-css)) #root {
   background: rgb(
-    18 24 36 / clamp(0.14, calc(0.1 + var(--shell-glass-alpha, 0.82) * 0.34), 0.44)
+    255 255 255 /
+      clamp(0.015, calc((var(--shell-glass-alpha, 0.82) - 0.05) * 0.22 + 0.015), 0.22)
   );
 }
 
@@ -2017,7 +2038,7 @@ html:has(.strip-shell--glass-ink-light) #root {
 .strip-shell--transparent.strip-shell--glass-ink-light:not(.strip-shell--glass-css) {
   text-shadow:
     0 1px 3px rgba(6, 12, 22, 0.78),
-    0 0 2px rgba(6, 12, 22, 0.52);
+    0 0 2px rgba(6, 12, 22, 0.54);
 }
 
 .widget-shell--transparent.widget-shell--glass-ink-light:not(.widget-shell--glass-css) svg,
@@ -2056,7 +2077,7 @@ html:has(.strip-shell--glass-ink-light) #root {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
-/* 次级文字同样要比深色档亮一档：薄 scrim 下壁纸的亮处会顶上来。 */
+/* 次级文字同样要比深色档亮一档：薄罩下壁纸的亮处会顶上来。 */
 .widget-shell--transparent.widget-shell--glass-ink-light .widget-metric > span,
 .widget-shell--transparent.widget-shell--glass-ink-light .widget-quota > span,
 .widget-shell--transparent.widget-shell--glass-ink-light .widget-metric small,
@@ -2069,7 +2090,12 @@ html:has(.strip-shell--glass-ink-light) #root {
 .widget-shell--transparent.widget-shell--glass-ink-light .quota-bar-row small,
 .widget-shell--transparent.widget-shell--glass-ink-light .quota-bar-row > span,
 .widget-shell--transparent.widget-shell--glass-ink-light .period-control--compact button:not(.is-selected) {
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+.strip-shell--transparent.strip-shell--glass-ink-light .strip-cell--unavailable em {
+  color: rgba(255, 255, 255, 0.86);
   font-weight: 500;
 }
 
@@ -2100,8 +2126,8 @@ html:has(.strip-shell--glass-ink-light) #root {
   }
 }
 
-/* 清透档原本把霜层画在整个 #root 上；详情打开后根节点已经是透明承载区，
-   霜层只画在条身与气泡本身，避免出现一整块矩形玻璃。 */
+/* 清透档原本把材质画在整个 #root 上；详情打开后根节点已经是透明承载区，
+   边框与底色只画在条身与气泡本身，避免出现一整块矩形玻璃。 */
 html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   background: transparent;
   -webkit-backdrop-filter: none;
@@ -2110,32 +2136,74 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root {
   box-shadow: none;
 }
 
-/* 边环流光挂在 #root 上，详情打开时它描的是整个透明承载区的外框。 */
+/* 边环高光与流光挂在 #root 上，详情打开时它们描的是整个透明承载区的外框。 */
+html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::before,
 html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
   content: none;
 }
 
 .strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-ink-light):not(.strip-shell--glass-css) {
   --strip-detail-surface: rgb(
-    229 237 246 /
-      clamp(0.34, calc(0.26 + var(--shell-glass-alpha, 0.82) * 0.32), 0.62)
+    238 243 250 /
+      clamp(0.36, calc((var(--shell-glass-alpha, 0.82) - 0.05) * 0.36 + 0.36), 0.68)
   );
-  --strip-detail-background:
-    radial-gradient(120% 160% at 12% 0%, rgba(255, 255, 255, 0.42), transparent 55%),
-    var(--strip-detail-surface);
+  --strip-detail-background: var(--strip-detail-surface);
+  --strip-detail-muted: rgba(24, 26, 30, 0.74);
 }
 
 .strip-shell--detail-open.strip-shell--glass-clear.strip-shell--glass-ink-light:not(.strip-shell--glass-css) {
   --strip-detail-surface: rgb(
-    18 24 36 / clamp(0.14, calc(0.1 + var(--shell-glass-alpha, 0.82) * 0.34), 0.44)
+    18 26 38 /
+      clamp(0.28, calc((var(--shell-glass-alpha, 0.82) - 0.05) * 0.34 + 0.28), 0.58)
   );
-  --strip-detail-background:
-    radial-gradient(120% 160% at 12% 0%, rgba(178, 200, 255, 0.07), transparent 55%),
-    var(--strip-detail-surface);
+  --strip-detail-background: var(--strip-detail-surface);
+  --strip-detail-muted: rgba(255, 255, 255, 0.78);
 }
 
-.strip-shell--detail-open.strip-shell--glass-clear .strip-detail-card,
-.strip-shell--detail-open.strip-shell--glass-clear .strip-rail {
+.strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-css) .strip-detail-card,
+.strip-shell--detail-open.strip-shell--glass-clear:not(.strip-shell--glass-css) .strip-rail {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: rgba(255, 255, 255, 0.56);
+}
+
+/* Windows 独立鼠标穿透气泡窗（?view=strip-detail） */
+html[data-view="strip-detail"] #root,
+html:has(.strip-detail-popup) #root {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+html[data-view="strip-detail"] #root::before,
+html[data-view="strip-detail"] #root::after,
+html:has(.strip-detail-popup) #root::before,
+html:has(.strip-detail-popup) #root::after {
+  content: none !important;
+}
+
+.strip-detail-popup.strip-shell--vertical.strip-shell--detail-open {
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.strip-detail-popup .strip-detail-card {
+  max-width: calc(100vw - 28px);
+}
+
+.strip-detail-popup.strip-shell--detail-right .strip-detail-card {
+  right: 14px;
+}
+
+.strip-detail-popup.strip-shell--detail-left .strip-detail-card {
+  left: 14px;
+}
+
+.strip-detail-popup:not(.strip-shell--glass-clear) .strip-detail-card {
   -webkit-backdrop-filter: blur(18px) saturate(145%);
   backdrop-filter: blur(18px) saturate(145%);
 }
@@ -4855,6 +4923,8 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
     backdrop-filter: none;
   }
 
+  html:has(.widget-shell--glass-clear) #root::before,
+  html:has(.strip-shell--glass-clear) #root::before,
   html:has(.widget-shell--glass-clear) #root::after,
   html:has(.strip-shell--glass-clear) #root::after {
     display: none;
@@ -4904,6 +4974,10 @@ html:has(.strip-shell--detail-open.strip-shell--glass-clear) #root::after {
     backdrop-filter: none;
   }
 
+  html:has(.widget-shell--glass-clear) #root::before,
+  html:has(.strip-shell--glass-clear) #root::before,
+  html:has(.widget-shell--glass-clear) #root::before,
+  html:has(.strip-shell--glass-clear) #root::before,
   html:has(.widget-shell--glass-clear) #root::after,
   html:has(.strip-shell--glass-clear) #root::after {
     display: none;

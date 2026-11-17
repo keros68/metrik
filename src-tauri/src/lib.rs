@@ -26,6 +26,8 @@ mod speed_store;
 mod speed_telemetry;
 mod statusline;
 mod storage;
+#[cfg(windows)]
+mod strip_detail;
 mod sync;
 #[cfg(target_os = "macos")]
 mod widget_snapshot;
@@ -1141,7 +1143,7 @@ mod taskbar {
 /// 锯齿；而且它在变形与内容测量并发时会短暂沿用旧区域（见 WINDOWS-GLASS-IMPLEMENTATION
 /// 第 7 节）。pogget 用 region 是因为它是不透明窗口，没有 alpha 可用。
 #[cfg(windows)]
-fn disable_system_corner_rounding(hwnd: isize) {
+pub(crate) fn disable_system_corner_rounding(hwnd: isize) {
     use core::ffi::c_void;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Dwm::{
@@ -1779,6 +1781,8 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     let minimized = window.is_minimized().unwrap_or(false);
     let visible = window.is_visible().unwrap_or(false);
     if visible && !minimized {
+        #[cfg(windows)]
+        strip_detail::hide_internal(app);
         let _ = window.hide();
     } else {
         let _ = window.unminimize();
@@ -1964,6 +1968,9 @@ pub fn run() {
                 }
             }
 
+            #[cfg(windows)]
+            strip_detail::setup(app)?;
+
             #[cfg(target_os = "macos")]
             match engine::build_cached_snapshot(&database_path, "today") {
                 Ok(snapshot) => {
@@ -2040,6 +2047,8 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 pinned_hover_monitor: Arc::new(pinned_hover::Monitor::default()),
             });
+            #[cfg(windows)]
+            app.manage(strip_detail::StripDetailState::default());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2047,8 +2056,12 @@ pub fn run() {
             // macOS 的完整视图是独立窗口，红灯就该真的关掉它（关掉后 App 退回菜单栏）。
             #[cfg(desktop)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() != "expanded" {
+                if window.label() != "expanded" && window.label() != "strip-detail" {
                     api.prevent_close();
+                    #[cfg(windows)]
+                    if window.label() == "main" {
+                        strip_detail::hide_internal(window.app_handle());
+                    }
                     let _ = window.hide();
                 }
             }
@@ -2102,7 +2115,17 @@ pub fn run() {
             resize_macos_panel,
             set_macos_agent_selection,
             get_macos_agent_selection,
-            update_macos_status_items
+            update_macos_status_items,
+            #[cfg(windows)]
+            strip_detail::get_strip_detail_state,
+            #[cfg(windows)]
+            strip_detail::warm_strip_detail,
+            #[cfg(windows)]
+            strip_detail::request_strip_detail,
+            #[cfg(windows)]
+            strip_detail::present_strip_detail,
+            #[cfg(windows)]
+            strip_detail::hide_strip_detail
         ])
         .run(tauri::generate_context!())
         .expect("error while running Metrik");

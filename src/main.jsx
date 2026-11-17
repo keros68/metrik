@@ -3,16 +3,23 @@ import { createRoot } from "react-dom/client";
 import "./fonts.css";
 import "uplot/dist/uPlot.min.css";
 import { App } from "./App.jsx";
+import { StripDetailPopup } from "./StripDetailPopup.jsx";
 import { initLanguage, useLanguageState } from "./i18n.js";
 import { isDesktop } from "./platformDetection.js";
 import "./styles.css";
 
 document.documentElement.dataset.runtime = isDesktop() ? "desktop" : "browser";
+const isStripDetailPopup =
+  typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("view") === "strip-detail";
+if (isStripDetailPopup) {
+  document.documentElement.dataset.view = "strip-detail";
+}
 
 // 语言变化时从根部重渲染整棵树（不重新挂载，窗口与表单状态保留）。
 function Root() {
   useLanguageState();
-  return <App />;
+  return isStripDetailPopup ? <StripDetailPopup /> : <App />;
 }
 
 // 首帧之前先取到生效语言，任何窗口都不会先闪一下另一种语言。

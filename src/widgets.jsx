@@ -33,13 +33,16 @@ import {
   collapseStripControlsExpand,
   collapseVerticalStripHover,
   expandVerticalStripHover,
+  hideStripDetailPopup,
   isDesktop,
   minimizeWindow,
   onScaleFactorChanged,
+  onStripDetailClosed,
   reassertCompactSize,
   resizeCompactWindow,
   resizeMacosPanel,
   resizeStripWindow,
+  showStripDetailPopup,
   startWindowDragging,
   toggleMaximizeWindow,
 } from "./windowClient";
@@ -82,6 +85,8 @@ const STRIP_VERTICAL_WIDTH = 42;
 const STRIP_DETAIL_WINDOW_WIDTH = 312;
 const STRIP_DETAIL_CARD_MARGIN = 12;
 const STRIP_DETAIL_LEAVE_DELAY = 180;
+const STRIP_POPUP_OPEN_DELAY = 70;
+const STRIP_POPUP_LEAVE_DELAY = 50;
 const STRIP_VCELL_HEIGHT = 46;
 // 横条宽度的收缩迟滞。一格 54px，所以 6px 远低于「真的少了一个 Agent」，
 // 又高于 DPI/zoom 取整带来的亚像素噪声。
@@ -374,9 +379,10 @@ export function StripBar({
   pinned,
   loading,
   glassAlpha = 0.82,
+  rawGlassAlpha = null,
   glassMode = "css",
   glassTint = "dark",
-  glassInk = "dark",
+  glassInk = "light",
   orientation,
   onToggleOrientation,
   onTogglePinned,
@@ -397,10 +403,15 @@ export function StripBar({
   const railRef = useRef(null);
   const detailCardRef = useRef(null);
   const pointerLeaveTimerRef = useRef(null);
+  const hoverOpenTimerRef = useRef(null);
   const hoverTransitionRef = useRef(false);
+  const popupActiveRef = useRef(false);
   const OrientationIcon = vertical ? ArrowsLeftRight : ArrowsDownUp;
+  const usePopupWindow = isDesktop() && IS_WINDOWS;
   const detailEnabled = (IS_WINDOWS || IS_LINUX) && vertical && !(pinned && IS_LINUX);
   const [hoveredDetail, setHoveredDetail] = useState(null);
+  const hoveredDetailRef = useRef(hoveredDetail);
+  hoveredDetailRef.current = hoveredDetail;
   // 控制菜单与详情卡不能共用同一次临时扩窗：菜单需要按真实条身高度扩展，
   // 固定/切形态按钮也必须落在原生窗口的有效命中区内。
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -412,15 +423,19 @@ export function StripBar({
     ? cells.find(({ agentId }) => agentId === hoveredDetail.agentId) ?? null
     : null;
   const detailOpen = Boolean(detailCell);
-  // 原生窗口是否处于扩宽的透明画布态。它和 detailOpen 不同步：收起时详情卡
-  // 先消失，但画布布局要保持到原生窗口缩回之后，否则普通布局会先画进宽画布，
-  // 胶囊在屏幕上往左跳几帧（实测 47–76ms）。条身偏移也只在画布态生效。
+  // 原生窗口是否处于扩宽的透明画布态。Windows 走独立气泡窗，主窗口永远不扩窗；
+  // Linux/浏览器回落保持原画布态逻辑。
   const [canvasOpen, setCanvasOpen] = useState(false);
-  const canvasLayout = detailOpen || canvasOpen;
+  const canvasLayout = !usePopupWindow && (detailOpen || canvasOpen);
+  const cancelHoverOpen = useCallback(() => {
+    window.clearTimeout(hoverOpenTimerRef.current);
+    hoverOpenTimerRef.current = null;
+  }, []);
   // 控制按钮不再常驻：四个 26px 的槽在竖条上要吃掉 130px，比三个格子还高。
   // 改成按需就地展开——点状态灯位上浮出的 … 把它们放出来，条身随之变长，
   // 指针离开自动收回。窗口尺寸本来就跟着内容测量走，这里不用另外调窗。
   const closeStripControls = useCallback(() => {
+    cancelHoverOpen();
     setHoveredDetail(null);
     // 收起时先原生还原（单批事务）再收 DOM：按钮随窗口缩短被裁掉，
     // 不会出现"按钮已消失、空玻璃长条还在"的中间帧。不能走可丢弃的
@@ -430,9 +445,10 @@ export function StripBar({
       await collapseStripControlsExpand();
       setControlsOpen(false);
     });
-  }, []);
+  }, [cancelHoverOpen]);
   const toggleControls = useCallback(() => {
     latestWindowCorrection += 1;
+    cancelHoverOpen();
     setHoveredDetail(null);
     if (controlsOpen) {
       closeStripControls();
@@ -442,19 +458,35 @@ export function StripBar({
     // 读到的是收起态的稳定几何。
     runWindowAction(beginStripControlsExpand);
     setControlsOpen(true);
-  }, [controlsOpen, closeStripControls]);
+  }, [controlsOpen, closeStripControls, cancelHoverOpen]);
   // 一旦进入置顶只读态，立即丢弃胶囊的临时操作面板状态，只保留数据展示。
   useEffect(() => {
     if (pinned && IS_LINUX) closeStripControls();
   }, [pinned, closeStripControls]);
   useEffect(() => {
-    if (!detailEnabled || controlsOpen) setHoveredDetail(null);
-  }, [controlsOpen, detailEnabled]);
+    if (!detailEnabled || controlsOpen) {
+      cancelHoverOpen();
+      setHoveredDetail(null);
+    }
+  }, [controlsOpen, detailEnabled, cancelHoverOpen]);
   useEffect(() => {
     if (!isDesktop()) return undefined;
-    const stop = onScaleFactorChanged(() => setHoveredDetail(null));
-    return () => { stop.then((unlisten) => unlisten?.()); };
-  }, []);
+    const stopScale = onScaleFactorChanged(() => {
+      cancelHoverOpen();
+      setHoveredDetail(null);
+    });
+    const stopClosed = usePopupWindow
+      ? onStripDetailClosed(() => {
+          cancelHoverOpen();
+          popupActiveRef.current = false;
+          setHoveredDetail(null);
+        })
+      : null;
+    return () => {
+      stopScale.then((unlisten) => unlisten?.());
+      stopClosed?.then((unlisten) => unlisten?.());
+    };
+  }, [usePopupWindow, cancelHoverOpen]);
   const shellAppearance = glassShellAppearance("strip", {
     glassMode,
     glassTint,
@@ -464,6 +496,39 @@ export function StripBar({
     vertical,
   });
   useLayoutEffect(() => {
+    if (!usePopupWindow) return undefined;
+    if (!detailOpen || !detailCell) {
+      if (popupActiveRef.current) {
+        popupActiveRef.current = false;
+        runWindowAction(() => hideStripDetailPopup());
+      }
+      return undefined;
+    }
+    popupActiveRef.current = true;
+    runWindowAction(() =>
+      showStripDetailPopup({
+        agentId: detailCell.agentId,
+        cell: detailCell.cell,
+        anchorY: hoveredDetail.anchorY,
+        glassTint,
+        glassInk,
+        glassAlpha: rawGlassAlpha ?? glassAlpha,
+        shellGlassAlpha: glassAlpha,
+      }),
+    );
+    return undefined;
+  }, [
+    usePopupWindow,
+    detailOpen,
+    detailCell,
+    hoveredDetail?.anchorY,
+    glassTint,
+    glassInk,
+    glassAlpha,
+    rawGlassAlpha,
+  ]);
+  useLayoutEffect(() => {
+    if (usePopupWindow) return undefined;
     if (!detailOpen) {
       latestWindowCorrection += 1;
       if (isDesktop() && (IS_WINDOWS || IS_LINUX)) {
@@ -548,10 +613,12 @@ export function StripBar({
   }, [detailOpen, hoveredDetail?.agentId, hoveredDetail?.anchorY]);
   useEffect(() => () => {
     window.clearTimeout(pointerLeaveTimerRef.current);
+    window.clearTimeout(hoverOpenTimerRef.current);
     latestWindowCorrection += 1;
     cancelStripControlsExpand();
-    if (IS_WINDOWS || IS_LINUX) runWindowAction(collapseVerticalStripHover);
-  }, []);
+    if (usePopupWindow) runWindowAction(hideStripDetailPopup);
+    else if (IS_WINDOWS || IS_LINUX) runWindowAction(collapseVerticalStripHover);
+  }, [usePopupWindow]);
   // 窗口尺寸跟随真实内容（通用方案，替代手写常量）：每次渲染后与视口变化时
   // 复核目标尺寸，差 ≥1px 才调窗；量的是 CSS px，resizeStripWindow 内部统一
   // 乘缩放系数与 DPI。任何字体/DPI/缩放/更新点组合都收敛，不再裁按钮。
@@ -632,23 +699,26 @@ export function StripBar({
     window.clearTimeout(pointerLeaveTimerRef.current);
     pointerLeaveTimerRef.current = null;
   };
-  // Windows 扩宽并重定位原生窗口时，WebView 会短暂收到 pointerleave；立即收回
-  // 会与仍停在胶囊上的指针形成展开/收起循环。短缓冲只跨过这次原生事务，
-  // 真正离开整个透明承载区后仍会自动收回。
+  const leaveDelay = usePopupWindow ? STRIP_POPUP_LEAVE_DELAY : STRIP_DETAIL_LEAVE_DELAY;
+  // Windows 独立气泡窗与 Linux 透明画布均仅以 42px 条身 (.strip-rail) 作为详情悬停命中区；
+  // 离开条身后立刻取消待打开计时并迅速收回，杜绝空白透明区拦截鼠标或误留气泡。
   const handlePointerLeave = (event) => {
     glassProps.onPointerLeave?.(event);
+    cancelHoverOpen();
     cancelPointerLeave();
     const closeAfterTransition = () => {
-      if (hoverTransitionRef.current) {
-        pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, STRIP_DETAIL_LEAVE_DELAY);
+      if (!usePopupWindow && hoverTransitionRef.current) {
+        pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, leaveDelay);
         return;
       }
       pointerLeaveTimerRef.current = null;
-      if (shellRef.current?.matches(":hover")) return;
+      if (railRef.current?.matches(":hover")) return;
       setHoveredDetail(null);
-      closeStripControls();
+      if (!shellRef.current?.matches(":hover")) {
+        closeStripControls();
+      }
     };
-    pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, STRIP_DETAIL_LEAVE_DELAY);
+    pointerLeaveTimerRef.current = window.setTimeout(closeAfterTransition, leaveDelay);
   };
   const handleDragPointerDown = (event) => {
     if (
@@ -664,10 +734,12 @@ export function StripBar({
     // Windows 先进入系统拖动循环，详情卡随后才收回并用旧坐标覆盖拖动结果。
     event.preventDefault();
     event.stopPropagation();
+    cancelHoverOpen();
     cancelPointerLeave();
     latestWindowCorrection += 1;
     setHoveredDetail(null);
     runWindowAction(async () => {
+      await hideStripDetailPopup();
       await collapseVerticalStripHover();
       await startWindowDragging();
     });
@@ -679,10 +751,19 @@ export function StripBar({
     const railBounds = railRef.current?.getBoundingClientRect();
     const cellBounds = event.currentTarget.getBoundingClientRect();
     if (!railBounds) return;
-    setHoveredDetail({
+    const nextDetail = {
       agentId,
       anchorY: cellBounds.top - railBounds.top + cellBounds.height / 2,
-    });
+    };
+    cancelHoverOpen();
+    if (hoveredDetailRef.current) {
+      setHoveredDetail(nextDetail);
+      return;
+    }
+    hoverOpenTimerRef.current = window.setTimeout(() => {
+      hoverOpenTimerRef.current = null;
+      setHoveredDetail(nextDetail);
+    }, STRIP_POPUP_OPEN_DELAY);
   };
   const shellClassName = [
     shellAppearance.className,
@@ -711,7 +792,13 @@ export function StripBar({
       }}
     >
       <h1 className="sr-only">{t("Metrik 官方配额胶囊条")}</h1>
-      <div ref={railRef} className="strip-rail" {...dragProps}>
+      <div
+        ref={railRef}
+        className="strip-rail"
+        onPointerEnter={cancelPointerLeave}
+        onPointerLeave={handlePointerLeave}
+        {...dragProps}
+      >
       {cells.length ? (
         cells.map(({ agentId, cell }) => {
           const meta = AGENT_META[agentId];
@@ -769,7 +856,13 @@ export function StripBar({
           {t("配额不可用")}
         </span>
       )}
-      <div className={`strip-controls ${controlsOpen && !(pinned && IS_LINUX) ? "strip-controls--open" : ""}`}>
+      <div
+        className={`strip-controls ${controlsOpen && !(pinned && IS_LINUX) ? "strip-controls--open" : ""}`}
+        onPointerEnter={() => {
+          cancelHoverOpen();
+          setHoveredDetail(null);
+        }}
+      >
         {availableUpdate && (
           <span className="strip-control-slot">
             <button
@@ -853,7 +946,7 @@ export function StripBar({
         )}
       </div>
       </div>
-      {detailOpen && detailCell && (
+      {!usePopupWindow && detailOpen && detailCell && (
         <StripDetailCard
           agentId={detailCell.agentId}
           cell={detailCell.cell}
@@ -873,7 +966,7 @@ export function CompactWidget({
   pinned,
   glassMode = "css",
   glassTint = "dark",
-  glassInk = "dark",
+  glassInk = "light",
   onPeriodChange,
   onOpenSources,
   onTogglePinned,

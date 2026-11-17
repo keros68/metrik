@@ -20,12 +20,12 @@ export function normalizeGlassTint(value) {
   return GLASS_TINT_OPTIONS.some((option) => option.id === value) ? value : "dark";
 }
 
-// 透明档的文字颜色。桌面挂件常见的两种风格：深色字配白霜（Pogget 一路），
-// 或白色字直接压在壁纸上（Rainmeter 一路）。两者需要的底完全相反，所以
+// 透明档的文字颜色。桌面挂件常见的两种风格：白色字配柔和阴影直接透出壁纸（BingLan / Rainmeter 一路），
+// 或深色字配轻薄白底（Pogget 一路）。两者需要的底完全相反，所以
 // 选文字颜色实际上也在选罩层，见 glassAppearance.js。
 export const GLASS_INK_OPTIONS = [
-  { id: "dark", label: "深色字" },
   { id: "light", label: "白色字" },
+  { id: "dark", label: "深色字" },
 ];
 
 export const PINNED_HOVER_OPTIONS = [
@@ -37,7 +37,7 @@ export const PINNED_HOVER_OPTIONS = [
 export const PINNED_HIDDEN_OPACITY = 0;
 
 export function normalizeGlassInk(value) {
-  return GLASS_INK_OPTIONS.some((option) => option.id === value) ? value : "dark";
+  return GLASS_INK_OPTIONS.some((option) => option.id === value) ? value : "light";
 }
 
 export function normalizePinnedHoverMode(value) {

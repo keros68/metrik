@@ -189,12 +189,12 @@ change.
   simulate glass by lowering only Metrik's own background opacity, and do not
   switch DWM materials at runtime. See `WINDOWS-GLASS-IMPLEMENTATION.md`.
 - The compact and strip glass offers three user-selectable tints: a dark HUD
-  tint (default), a bright white frost with dark content, and a clear tint that
-  is as see-through as its foreground allows. The clear tint additionally lets
-  the user pick the text colour, because the two colours need opposite
-  backdrops: dark text rides on a white frost, white text on a thin dark scrim.
-  Pairing white text with a white frost is not offered — it cannot reach a
-  readable contrast on light wallpapers at any density.
+  tint (default), a bright white frost with dark content, and an unblurred
+  crystal clear tint with a fine `1px` top-bright-to-bottom-soft white edge
+  highlight. The clear tint additionally lets the user pick the text colour
+  (white text by default, riding on a near-clear white tint from `0.015` to
+  `0.22` with a soft contrast shadow; or dark text on a sheer light backing
+  from `0.04` to `0.44` for bright wallpapers).
   All tints honor the glass-density slider; the choice is a Windows-only setting
   because the macOS panel material follows the system.
 - Expanded mode remains opaque and owns its light/dark theme independently.
@@ -207,21 +207,23 @@ change.
   mode always drops always-on-top and provides no pin control.
 - Strip resizing preserves the screen edge it is flush to. Fully off-screen
   positions recover to the center and must never be persisted.
-- Unpinned compact and strip forms dock to any work-area edge, auto-hide after
-  pointer exit, and reveal from that edge's remaining visible sliver. Pinning
+- Edge auto-hide is opt-in (off by default). When enabled, unpinned compact and
+  strip forms dock to any work-area edge, auto-hide after pointer exit, and
+  reveal after a short dwell inside the outer `2 CSS px` edge band. Pinning
   immediately keeps the complete form visible. Horizontal and vertical strip
   placements are remembered independently.
-- On Windows and Linux, hovering an Agent in the unpinned vertical strip opens
-  its complete official-quota windows in a compact pointer-anchored detail
-  bubble that uses the strip's current glass surface. The temporary transparent
-  berth expands away from the nearest screen edge when global coordinates are
-  available, while the complete strip itself remains fixed and visible.
-  On Wayland it expands toward the window-local right and leaves placement to
-  the compositor. Transient boundary events caused by the native resize must
-  not collapse the bubble; leaving the settled berth restores the exact prior
-  window size and, when the platform exposes it, position. Linux pinned
-  read-only hover behavior remains authoritative and never opens the detail
-  bubble.
+- On Windows, hovering an Agent in the vertical strip opens its complete
+  official-quota windows in a dedicated non-activating, click-through
+  (`WS_EX_TRANSPARENT`) companion popup window (`strip-detail`) positioned
+  beside the strip inside the monitor work area. The vertical strip window
+  itself never resizes or moves on hover, so underlying windows stay uncovered
+  and clickable. On Linux, hovering an Agent in the unpinned vertical strip
+  opens the detail bubble inside a temporary transparent berth scoped to the
+  rail bounds; the berth expands away from the nearest screen edge under X11 or
+  toward the window-local right under Wayland, and leaving the settled rail
+  restores the exact prior window size and, when exposed, position. Linux
+  pinned read-only hover behavior remains authoritative and never opens the
+  detail bubble.
 - The horizontal strip stays glance-only. It shares the vertical strip's glass
   surface and compact grouping, but does not use a native multiline tooltip or
   grow into the vertical strip's detail-card berth.

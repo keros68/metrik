@@ -48,8 +48,9 @@ test("compact and strip clear glass share one true-alpha appearance", () => {
     assert.equal(appearance.edgeInteractive, true);
     assert.match(appearance.className, new RegExp(`${prefix}--transparent`));
     assert.match(appearance.className, new RegExp(`${prefix}--glass-clear`));
-    // 透明档共用浅色档的深色前景，只有材质层不同。
-    assert.match(appearance.className, new RegExp(`${prefix}--glass-light`));
+    // 透明档默认使用冰蓝式白色字配柔和阴影（不挂 --glass-light）。
+    assert.match(appearance.className, new RegExp(`${prefix}--glass-ink-light`));
+    assert.doesNotMatch(appearance.className, new RegExp(`${prefix}--glass-light`));
     assert.doesNotMatch(appearance.className, /--glass-css/);
     assert.deepEqual(appearance.style, {
       "--glass-alpha": 0.82,
@@ -101,15 +102,27 @@ test("the ink choice only applies to the clear tint", () => {
 });
 
 test("browser clear fallback keeps the edge interaction without claiming true alpha", () => {
-  const appearance = glassShellAppearance("widget", {
+  const lightInk = glassShellAppearance("widget", {
     glassMode: GLASS_MODES.css,
     glassTint: "clear",
   });
 
-  assert.equal(appearance.edgeInteractive, true);
-  assert.equal(appearance.trueAlpha, false);
-  assert.match(appearance.className, /widget-shell--glass-css/);
-  assert.match(appearance.className, /widget-shell--glass-light/);
+  assert.equal(lightInk.edgeInteractive, true);
+  assert.equal(lightInk.trueAlpha, false);
+  assert.match(lightInk.className, /widget-shell--glass-css/);
+  assert.match(lightInk.className, /widget-shell--glass-ink-light/);
+  assert.doesNotMatch(lightInk.className, /widget-shell--glass-light/);
+
+  const darkInk = glassShellAppearance("widget", {
+    glassMode: GLASS_MODES.css,
+    glassTint: "clear",
+    glassInk: "dark",
+  });
+
+  assert.equal(darkInk.edgeInteractive, true);
+  assert.equal(darkInk.trueAlpha, false);
+  assert.match(darkInk.className, /widget-shell--glass-css/);
+  assert.match(darkInk.className, /widget-shell--glass-light/);
 });
 
 test("macOS ignores a stored Windows clear tint", () => {

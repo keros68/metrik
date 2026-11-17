@@ -204,6 +204,111 @@ function verticalStripHoverLayout({ railPosition, railSize, workArea, targetSize
   };
 }
 
+/// Windows 独立气泡弹窗的物理坐标与气泡局部定位。主条保持原位与原尺寸不动，
+/// 气泡窗紧贴主条展开并钳在当前显示器工作区内；箭头始终对准主条内的目标格。
+function stripDetailPopupLayout({
+  railPosition,
+  railSize,
+  workArea,
+  popupSize,
+  cardHeight,
+  anchorY,
+  margin = 8,
+  pointerMargin = 22,
+}) {
+  const values = [
+    railPosition?.x,
+    railPosition?.y,
+    railSize?.width,
+    railSize?.height,
+    workArea?.x,
+    workArea?.y,
+    workArea?.width,
+    workArea?.height,
+    popupSize?.width,
+    popupSize?.height,
+    cardHeight,
+    anchorY,
+  ];
+  if (values.some((value) => !Number.isFinite(value))) return null;
+
+  const railCenterX = railPosition.x + railSize.width / 2;
+  const side = railCenterX < workArea.x + workArea.width / 2 ? "left" : "right";
+  const desiredX = side === "left"
+    ? railPosition.x + railSize.width
+    : railPosition.x - popupSize.width;
+  const x = Math.min(
+    Math.max(desiredX, workArea.x),
+    Math.max(workArea.x + workArea.width - popupSize.width, workArea.x),
+  );
+  const desiredY = railPosition.y + anchorY - popupSize.height / 2;
+  const y = Math.min(
+    Math.max(desiredY, workArea.y),
+    Math.max(workArea.y + workArea.height - popupSize.height, workArea.y),
+  );
+  const anchorInPopup = railPosition.y + anchorY - y;
+  const local = verticalStripHoverLocalLayout({
+    targetHeight: popupSize.height,
+    anchorY: anchorInPopup,
+    cardHeight,
+    margin,
+    pointerMargin,
+  });
+  if (!local) return null;
+
+  return {
+    side,
+    x: Math.round(x),
+    y: Math.round(y),
+    cardCenter: local.cardCenter,
+    pointerY: local.pointerY,
+  };
+}
+
+/// 贴边隐藏后仅在屏幕外缘极窄唤醒带（默认 2 CSS px）内触发弹出，
+/// 避免指针在屏幕边侧活动或点击滚动条时误触弹出。
+function isCursorInEdgeRevealZone(cursor, dock, edgePx = 2) {
+  if (!cursor || !dock || !Number.isFinite(cursor.x) || !Number.isFinite(cursor.y)) {
+    return false;
+  }
+  const coords = [dock.x, dock.y, dock.width, dock.height, dock.left, dock.top, dock.right, dock.bottom];
+  if (coords.some((value) => !Number.isFinite(value))) return false;
+  const scale = normalizedScale(dock.scale);
+  const band = Math.max(2, Math.round(edgePx * scale));
+  switch (dock.edge) {
+    case "bottom":
+      return (
+        cursor.x >= dock.x
+        && cursor.x <= dock.x + dock.width
+        && cursor.y >= dock.bottom - band
+        && cursor.y <= dock.bottom + band
+      );
+    case "left":
+      return (
+        cursor.y >= dock.y
+        && cursor.y <= dock.y + dock.height
+        && cursor.x >= dock.left - band
+        && cursor.x <= dock.left + band
+      );
+    case "right":
+      return (
+        cursor.y >= dock.y
+        && cursor.y <= dock.y + dock.height
+        && cursor.x >= dock.right - band
+        && cursor.x <= dock.right + band
+      );
+    case "top":
+      return (
+        cursor.x >= dock.x
+        && cursor.x <= dock.x + dock.width
+        && cursor.y >= dock.top - band
+        && cursor.y <= dock.top + band
+      );
+    default:
+      return false;
+  }
+}
+
 /// 记忆坐标是物理像素；用每台显示器自己的 DPI 推导候选窗口大小，再选与工作区
 /// 重叠最多的显示器。不能先读当前窗口 DPI——窗口随后可能恢复到另一台屏幕。
 function monitorForWindowPosition(
@@ -250,12 +355,14 @@ export {
   desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,
+  isCursorInEdgeRevealZone,
   isDockAnchorPosition,
   isStableFloatingMode,
   monitorArea,
   monitorForWindowPosition,
   overlapArea,
   physicalWindowSize,
+  stripDetailPopupLayout,
   verticalStripHoverLocalLayout,
   verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
