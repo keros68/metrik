@@ -1,23 +1,13 @@
-#[cfg(windows)]
 use std::sync::Mutex;
-use tauri::AppHandle;
-#[cfg(windows)]
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-#[cfg(windows)]
 const POPUP_LABEL: &str = "strip-detail";
-#[cfg(windows)]
 const DETAIL_EVENT: &str = "metrik://strip-detail";
-#[cfg(windows)]
 const DETAIL_CLOSED_EVENT: &str = "metrik://strip-detail-closed";
-#[cfg(windows)]
 const WARMUP_DELAY_MS: u64 = 120;
-#[cfg(windows)]
 const WATCHER_POLL_MS: u64 = 80;
-#[cfg(windows)]
 const CURSOR_NEAR_PAD_PX: i32 = 6;
 
-#[cfg(windows)]
 #[derive(Default)]
 struct Inner {
     generation: u64,
@@ -27,15 +17,9 @@ struct Inner {
     watcher_running: bool,
 }
 
-#[cfg(windows)]
 #[derive(Default)]
 pub struct StripDetailState(Mutex<Inner>);
 
-#[cfg(not(windows))]
-#[derive(Default)]
-pub struct StripDetailState;
-
-#[cfg(windows)]
 fn apply_popup_window_styles(hwnd: isize) {
     use core::ffi::c_void;
     use windows::Win32::Foundation::HWND;
@@ -74,7 +58,6 @@ fn apply_popup_window_styles(hwnd: isize) {
     }
 }
 
-#[cfg(windows)]
 fn hide_popup_hwnd(app: &AppHandle) {
     use core::ffi::c_void;
     use windows::Win32::Foundation::HWND;
@@ -108,7 +91,6 @@ fn hide_popup_hwnd(app: &AppHandle) {
     });
 }
 
-#[cfg(windows)]
 fn cursor_near_main_window(app: &AppHandle, pad: i32) -> bool {
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect, IsWindowVisible};
@@ -139,7 +121,6 @@ fn cursor_near_main_window(app: &AppHandle, pad: i32) -> bool {
     }
 }
 
-#[cfg(windows)]
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     if app.get_webview_window(POPUP_LABEL).is_some() {
         return Ok(());
@@ -175,7 +156,6 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 pub fn hide_internal(app: &AppHandle) {
     if let Some(state) = app.try_state::<StripDetailState>() {
         if let Ok(mut inner) = state.0.lock() {
@@ -188,23 +168,12 @@ pub fn hide_internal(app: &AppHandle) {
     let _ = app.emit_to(POPUP_LABEL, DETAIL_EVENT, serde_json::Value::Null);
 }
 
-#[cfg(not(windows))]
-pub fn hide_internal(_app: &AppHandle) {}
-
 #[tauri::command]
 pub fn get_strip_detail_state(
     state: tauri::State<'_, StripDetailState>,
 ) -> Result<Option<serde_json::Value>, String> {
-    #[cfg(windows)]
-    {
-        let inner = state.0.lock().map_err(|error| error.to_string())?;
-        Ok(inner.payload.clone())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = state;
-        Ok(None)
-    }
+    let inner = state.0.lock().map_err(|error| error.to_string())?;
+    Ok(inner.payload.clone())
 }
 
 #[tauri::command]
@@ -212,63 +181,51 @@ pub fn warm_strip_detail(
     app: AppHandle,
     state: tauri::State<'_, StripDetailState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
+    use core::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    };
+
     {
-        use core::ffi::c_void;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
-            SWP_SHOWWINDOW,
-        };
-
-        {
-            let mut inner = state.0.lock().map_err(|error| error.to_string())?;
-            if inner.warmed {
-                return Ok(());
-            }
-            inner.warmed = true;
-            if inner.visible {
-                return Ok(());
-            }
+        let mut inner = state.0.lock().map_err(|error| error.to_string())?;
+        if inner.warmed {
+            return Ok(());
         }
-
-        if let Some(popup) = app.get_webview_window(POPUP_LABEL) {
-            if let Ok(hwnd) = popup.hwnd() {
-                let hwnd_val = hwnd.0 as isize;
-                let _ = popup.run_on_main_thread(move || unsafe {
-                    let _ = SetWindowPos(
-                        HWND(hwnd_val as *mut c_void),
-                        None,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_SHOWWINDOW
-                            | SWP_NOACTIVATE
-                            | SWP_NOSIZE
-                            | SWP_NOZORDER
-                            | SWP_NOOWNERZORDER,
-                    );
-                });
-            }
+        inner.warmed = true;
+        if inner.visible {
+            return Ok(());
         }
+    }
 
-        let app_handle = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            std::thread::sleep(std::time::Duration::from_millis(WARMUP_DELAY_MS));
-            let should_hide = app_handle
-                .try_state::<StripDetailState>()
-                .and_then(|s| s.0.lock().ok().map(|inner| !inner.visible))
-                .unwrap_or(true);
-            if should_hide {
-                hide_popup_hwnd(&app_handle);
-            }
-        });
+    if let Some(popup) = app.get_webview_window(POPUP_LABEL) {
+        if let Ok(hwnd) = popup.hwnd() {
+            let hwnd_val = hwnd.0 as isize;
+            let _ = popup.run_on_main_thread(move || unsafe {
+                let _ = SetWindowPos(
+                    HWND(hwnd_val as *mut c_void),
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+                );
+            });
+        }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, state);
-    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(WARMUP_DELAY_MS));
+        let should_hide = app_handle
+            .try_state::<StripDetailState>()
+            .and_then(|s| s.0.lock().ok().map(|inner| !inner.visible))
+            .unwrap_or(true);
+        if should_hide {
+            hide_popup_hwnd(&app_handle);
+        }
+    });
     Ok(())
 }
 
@@ -276,29 +233,20 @@ pub fn warm_strip_detail(
 pub fn request_strip_detail(
     app: AppHandle,
     state: tauri::State<'_, StripDetailState>,
-    payload: serde_json::Value,
+    mut payload: serde_json::Value,
 ) -> Result<u64, String> {
-    #[cfg(windows)]
-    {
-        let mut payload = payload;
-        let generation = {
-            let mut inner = state.0.lock().map_err(|error| error.to_string())?;
-            inner.generation += 1;
-            let generation = inner.generation;
-            if let Some(map) = payload.as_object_mut() {
-                map.insert("generation".to_string(), serde_json::json!(generation));
-            }
-            inner.payload = Some(payload.clone());
-            generation
-        };
-        let _ = app.emit_to(POPUP_LABEL, DETAIL_EVENT, &payload);
-        Ok(generation)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, state, payload);
-        Ok(0)
-    }
+    let generation = {
+        let mut inner = state.0.lock().map_err(|error| error.to_string())?;
+        inner.generation += 1;
+        let generation = inner.generation;
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("generation".to_string(), serde_json::json!(generation));
+        }
+        inner.payload = Some(payload.clone());
+        generation
+    };
+    let _ = app.emit_to(POPUP_LABEL, DETAIL_EVENT, &payload);
+    Ok(generation)
 }
 
 #[tauri::command]
@@ -311,114 +259,106 @@ pub fn present_strip_detail(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    #[cfg(windows)]
+    use core::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW,
+    };
+
     {
-        use core::ffi::c_void;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW,
-        };
-
-        {
-            let inner = state.0.lock().map_err(|error| error.to_string())?;
-            if inner.generation != generation || inner.payload.is_none() {
-                return Ok(());
-            }
-        }
-
-        if !cursor_near_main_window(&app, CURSOR_NEAR_PAD_PX) {
-            hide_internal(&app);
-            let _ = app.emit_to("main", DETAIL_CLOSED_EVENT, ());
+        let inner = state.0.lock().map_err(|error| error.to_string())?;
+        if inner.generation != generation || inner.payload.is_none() {
             return Ok(());
         }
+    }
 
-        let spawn_watcher = {
-            let mut inner = state.0.lock().map_err(|error| error.to_string())?;
-            if inner.generation != generation || inner.payload.is_none() {
-                return Ok(());
-            }
-            inner.visible = true;
-            let should_spawn = !inner.watcher_running;
-            if should_spawn {
-                inner.watcher_running = true;
-            }
-            should_spawn
-        };
+    if !cursor_near_main_window(&app, CURSOR_NEAR_PAD_PX) {
+        hide_internal(&app);
+        let _ = app.emit_to("main", DETAIL_CLOSED_EVENT, ());
+        return Ok(());
+    }
 
-        if let Some(popup) = app.get_webview_window(POPUP_LABEL) {
-            if let Ok(hwnd) = popup.hwnd() {
-                let hwnd_val = hwnd.0 as isize;
-                let width_i32 = width.max(1) as i32;
-                let height_i32 = height.max(1) as i32;
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                popup
-                    .run_on_main_thread(move || {
-                        let result = unsafe {
-                            SetWindowPos(
-                                HWND(hwnd_val as *mut c_void),
-                                Some(HWND_TOPMOST),
-                                x,
-                                y,
-                                width_i32,
-                                height_i32,
-                                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
-                            )
-                        };
-                        let _ = sender.send(result.map_err(|error| error.to_string()));
-                    })
-                    .map_err(|error| error.to_string())?;
-                receiver
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .map_err(|error| error.to_string())??;
-            }
+    let spawn_watcher = {
+        let mut inner = state.0.lock().map_err(|error| error.to_string())?;
+        if inner.generation != generation || inner.payload.is_none() {
+            return Ok(());
         }
+        inner.visible = true;
+        let should_spawn = !inner.watcher_running;
+        if should_spawn {
+            inner.watcher_running = true;
+        }
+        should_spawn
+    };
 
-        if spawn_watcher {
-            let app_handle = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let mut outside_ticks = 0u8;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(WATCHER_POLL_MS));
-                    let near = cursor_near_main_window(&app_handle, CURSOR_NEAR_PAD_PX);
-                    let Some(state) = app_handle.try_state::<StripDetailState>() else {
-                        break;
+    if let Some(popup) = app.get_webview_window(POPUP_LABEL) {
+        if let Ok(hwnd) = popup.hwnd() {
+            let hwnd_val = hwnd.0 as isize;
+            let width_i32 = width.max(1) as i32;
+            let height_i32 = height.max(1) as i32;
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            popup
+                .run_on_main_thread(move || {
+                    let result = unsafe {
+                        SetWindowPos(
+                            HWND(hwnd_val as *mut c_void),
+                            Some(HWND_TOPMOST),
+                            x,
+                            y,
+                            width_i32,
+                            height_i32,
+                            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                        )
                     };
-                    let mut should_hide = false;
-                    {
-                        let Ok(mut inner) = state.0.lock() else {
-                            break;
-                        };
-                        if !inner.visible {
-                            inner.watcher_running = false;
-                            break;
-                        }
-                        if near {
-                            outside_ticks = 0;
-                            continue;
-                        }
-                        outside_ticks = outside_ticks.saturating_add(1);
-                        if outside_ticks >= 2 {
-                            inner.generation += 1;
-                            inner.visible = false;
-                            inner.payload = None;
-                            inner.watcher_running = false;
-                            should_hide = true;
-                        }
-                    }
-                    if should_hide {
-                        hide_popup_hwnd(&app_handle);
-                        let _ =
-                            app_handle.emit_to(POPUP_LABEL, DETAIL_EVENT, serde_json::Value::Null);
-                        let _ = app_handle.emit_to("main", DETAIL_CLOSED_EVENT, ());
-                        break;
-                    }
-                }
-            });
+                    let _ = sender.send(result.map_err(|error| error.to_string()));
+                })
+                .map_err(|error| error.to_string())?;
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .map_err(|error| error.to_string())??;
         }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, state, generation, x, y, width, height);
+
+    if spawn_watcher {
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut outside_ticks = 0u8;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(WATCHER_POLL_MS));
+                let near = cursor_near_main_window(&app_handle, CURSOR_NEAR_PAD_PX);
+                let Some(state) = app_handle.try_state::<StripDetailState>() else {
+                    break;
+                };
+                let mut should_hide = false;
+                {
+                    let Ok(mut inner) = state.0.lock() else {
+                        break;
+                    };
+                    if !inner.visible {
+                        inner.watcher_running = false;
+                        break;
+                    }
+                    if near {
+                        outside_ticks = 0;
+                        continue;
+                    }
+                    outside_ticks = outside_ticks.saturating_add(1);
+                    if outside_ticks >= 2 {
+                        inner.generation += 1;
+                        inner.visible = false;
+                        inner.payload = None;
+                        inner.watcher_running = false;
+                        should_hide = true;
+                    }
+                }
+                if should_hide {
+                    hide_popup_hwnd(&app_handle);
+                    let _ = app_handle.emit_to(POPUP_LABEL, DETAIL_EVENT, serde_json::Value::Null);
+                    let _ = app_handle.emit_to("main", DETAIL_CLOSED_EVENT, ());
+                    break;
+                }
+            }
+        });
     }
     Ok(())
 }

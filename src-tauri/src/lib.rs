@@ -26,6 +26,7 @@ mod speed_store;
 mod speed_telemetry;
 mod statusline;
 mod storage;
+#[cfg(windows)]
 mod strip_detail;
 mod sync;
 #[cfg(target_os = "macos")]
@@ -2046,6 +2047,7 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 pinned_hover_monitor: Arc::new(pinned_hover::Monitor::default()),
             });
+            #[cfg(windows)]
             app.manage(strip_detail::StripDetailState::default());
             Ok(())
         })
@@ -2114,10 +2116,15 @@ pub fn run() {
             set_macos_agent_selection,
             get_macos_agent_selection,
             update_macos_status_items,
+            #[cfg(windows)]
             strip_detail::get_strip_detail_state,
+            #[cfg(windows)]
             strip_detail::warm_strip_detail,
+            #[cfg(windows)]
             strip_detail::request_strip_detail,
+            #[cfg(windows)]
             strip_detail::present_strip_detail,
+            #[cfg(windows)]
             strip_detail::hide_strip_detail
         ])
         .run(tauri::generate_context!())
