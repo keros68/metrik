@@ -22,7 +22,7 @@ export function glassShellAppearance(
   {
     glassMode = GLASS_MODES.css,
     glassTint = "dark",
-    glassInk = "dark",
+    glassInk = "light",
     glassAlpha = 0.82,
     isMac = false,
     vertical = false,

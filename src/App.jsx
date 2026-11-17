@@ -67,6 +67,7 @@ import {
   startEdgeDock,
   startPositionMemory,
   stripContentSize,
+  syncEdgeDock,
   syncLinuxTrayPinned,
   updateMacStatusItems,
   updateTrayQuotaBadge,
@@ -680,6 +681,14 @@ export function App() {
   const [activeNav, setActiveNav] = useState(initialNav);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pinned, setPinned] = useState(() => localStorage.getItem("metrik:pinned") === "true");
+  const [edgeAutoHide, setEdgeAutoHide] = useState(
+    () => localStorage.getItem("metrik:edgeAutoHide") === "true",
+  );
+  const handleEdgeAutoHideChange = useCallback((next) => {
+    const value = Boolean(next);
+    setEdgeAutoHide(value);
+    localStorage.setItem("metrik:edgeAutoHide", String(value));
+  }, []);
   const [pinnedHoverMode, setPinnedHoverMode] = useState(() =>
     normalizePinnedHoverMode(localStorage.getItem("metrik:pinnedHoverMode")),
   );
@@ -1034,6 +1043,8 @@ export function App() {
 
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
+  const edgeAutoHideRef = useRef(edgeAutoHide);
+  edgeAutoHideRef.current = edgeAutoHide;
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
   const stripOrientationRef = useRef(stripOrientation);
@@ -1203,16 +1214,21 @@ export function App() {
     };
   }, []);
 
-  // 边缘挂靠：拖到屏幕上缘自动收起，鼠标碰边弹出。
+  // 边缘挂靠（可选，默认关闭）：开启后未固定卡片/胶囊靠边自动收起，鼠标贴边弹出。
   useEffect(() => {
     const stopPromise = startEdgeDock({
       getMode: () => viewModeRef.current,
       getPinned: () => pinnedRef.current,
+      getEnabled: () => edgeAutoHideRef.current,
     });
     return () => {
       stopPromise.then((stop) => stop?.());
     };
   }, []);
+
+  useEffect(() => {
+    runWindowAction(() => syncEdgeDock());
+  }, [edgeAutoHide, pinned, viewMode]);
 
   useEffect(() => {
     if (!drawerOpen) return undefined;
@@ -1614,6 +1630,7 @@ export function App() {
           pinned={pinned}
           loading={appBusy}
           glassAlpha={shellGlassAlpha}
+          rawGlassAlpha={glassAlpha}
           glassMode={glassMode}
           glassTint={glassTint}
           glassInk={glassInk}
@@ -1804,6 +1821,8 @@ export function App() {
             onStripScale={handleStripScale}
             pinned={pinned}
             onPinnedChange={handlePinnedChange}
+            edgeAutoHide={edgeAutoHide}
+            onEdgeAutoHideChange={handleEdgeAutoHideChange}
             pinnedHoverMode={pinnedHoverMode}
             onPinnedHoverMode={handlePinnedHoverMode}
             pinnedHoverOpacity={pinnedHoverOpacity}

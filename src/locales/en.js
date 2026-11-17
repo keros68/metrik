@@ -309,11 +309,11 @@ export default {
   "大窗口的明暗主题，「自动」跟随系统；小组件不受影响。": "Light or dark theme for the expanded view. Auto follows the system. The widget is not affected.",
   "完整视图主题": "Expanded view theme",
   "组件外观": "Widget appearance",
-  "深色是 HUD 玻璃；浅色是透亮白磨砂；透明会直接透出桌面与后方窗口，并叠加轻霜和边缘高光。":
-    "Dark is HUD glass. Light is bright frosted white. Clear shows the desktop and windows behind it, with a light frost and edge highlight.",
+  "深色是 HUD 玻璃；浅色是透亮白磨砂；透明是无模糊清透水晶框，直接透出桌面与后方窗口并勾勒细白高光边。":
+    "Dark is HUD glass. Light is bright frosted white. Clear is an unblurred crystal frame that shows the desktop and windows behind it with a fine white highlight border.",
   "透明档文字": "Text on clear",
-  "深色字配白霜，在浅色壁纸上更清晰；白色字配一层薄暗罩，接近桌面挂件常见的风格。":
-    "Dark text sits on white frost and reads better on light wallpapers. White text sits on a thin dark scrim, like common desktop widgets.",
+  "白色字配柔和阴影，直接透出桌面壁纸与后方窗口；深色字配轻薄白底，在浅色壁纸上更清晰。":
+    "White text uses a soft shadow directly over the wallpaper and windows behind it. Dark text uses a sheer light backing for bright wallpapers.",
   "玻璃浓度": "Glass density",
   "同时作用于卡片和胶囊；越低越通透，越高越厚实。": "Applies to both the compact card and the quota strip. Lower is more see-through, higher is more solid.",
   "玻璃浓度百分比": "Glass density percentage",
@@ -323,6 +323,10 @@ export default {
   "胶囊缩放": "Quota strip scale",
   "仅调整胶囊尺寸，与卡片互不影响；下次进入时生效。": "Scales the quota strip only, independent of the compact card. Takes effect the next time it opens.",
   "胶囊缩放百分比": "Quota strip scale percentage",
+  "贴边自动隐藏": "Auto-hide at screen edges",
+  "开启后，未固定的卡片或胶囊靠近屏幕边缘时会自动收起，仅留极窄边缘，鼠标贴到屏幕边沿停顿后弹出。":
+    "When enabled, unpinned cards and strips tuck into a thin edge sliver near screen borders and slide out when you hold the pointer at the screen edge.",
+  "靠边时自动收起": "Tuck away when placed at a screen edge",
   "置顶展示": "Pinned display",
   "置顶后卡片和胶囊的全部控件、拖动与点击均不可用；只能回到此设置取消。":
     "When pinned, the compact card and quota strip ignore all controls, dragging and clicks. Unpin here in Settings.",

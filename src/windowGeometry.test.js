@@ -5,10 +5,12 @@ import {
   desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,
+  isCursorInEdgeRevealZone,
   isDockAnchorPosition,
   isStableFloatingMode,
   monitorForWindowPosition,
   physicalWindowSize,
+  stripDetailPopupLayout,
   verticalStripHoverLocalLayout,
   verticalStripHoverLayout,
   viewportCorrectedPhysicalSize,
@@ -253,4 +255,74 @@ test("desync heal retry cadence tolerates invalid attempt counters", () => {
   assert.equal(desyncHealRetryDelayMs(Number.NaN), 0);
   assert.equal(desyncHealRetryDelayMs(-3), 0);
   assert.equal(desyncHealRetryDelayMs(2.8), 600);
+});
+
+test("stripDetailPopupLayout places the popup beside the rail without moving the rail", () => {
+  assert.deepEqual(
+    stripDetailPopupLayout({
+      railPosition: { x: 1878, y: 300 },
+      railSize: { width: 42, height: 260 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      popupSize: { width: 260, height: 360 },
+      cardHeight: 180,
+      anchorY: 80,
+    }),
+    { side: "right", x: 1618, y: 200, cardCenter: 180, pointerY: 90 },
+  );
+  assert.deepEqual(
+    stripDetailPopupLayout({
+      railPosition: { x: 0, y: 20 },
+      railSize: { width: 42, height: 260 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      popupSize: { width: 260, height: 360 },
+      cardHeight: 240,
+      anchorY: 23,
+    }),
+    { side: "left", x: 42, y: 0, cardCenter: 128, pointerY: 35 },
+  );
+  assert.deepEqual(
+    stripDetailPopupLayout({
+      railPosition: { x: 0, y: 0 },
+      railSize: { width: 42, height: 260 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      popupSize: { width: 260, height: 360 },
+      cardHeight: 240,
+      anchorY: 23,
+    }),
+    { side: "left", x: 42, y: 0, cardCenter: 128, pointerY: 22 },
+  );
+  assert.equal(stripDetailPopupLayout({ railPosition: null }), null);
+});
+
+test("isCursorInEdgeRevealZone restricts reveal to the narrow outer edge band", () => {
+  const rightDock = {
+    edge: "right",
+    x: 1878,
+    y: 200,
+    width: 42,
+    height: 300,
+    left: 0,
+    top: 0,
+    right: 1920,
+    bottom: 1040,
+    scale: 1.5,
+  };
+  assert.equal(isCursorInEdgeRevealZone({ x: 1918, y: 300 }, rightDock, 2), true);
+  assert.equal(isCursorInEdgeRevealZone({ x: 1916, y: 300 }, rightDock, 2), false);
+  assert.equal(isCursorInEdgeRevealZone({ x: 1919, y: 150 }, rightDock, 2), false);
+
+  const bottomDock = {
+    edge: "bottom",
+    x: 400,
+    y: 1012,
+    width: 320,
+    height: 28,
+    left: 0,
+    top: 0,
+    right: 1920,
+    bottom: 1040,
+    scale: 1,
+  };
+  assert.equal(isCursorInEdgeRevealZone({ x: 520, y: 1039 }, bottomDock, 2), true);
+  assert.equal(isCursorInEdgeRevealZone({ x: 520, y: 1036 }, bottomDock, 2), false);
 });

@@ -508,3 +508,228 @@ test("a fresh hover expansion first grows in place, then moves the origin", asyn
   await context.expandVerticalStripHover(hover, () => events.push("layout"), () => events.push("align-left"));
   assert.equal(events.includes("align-left"), false);
 });
+
+test("Windows detail popup requests companion window without resizing or moving main", async () => {
+  const context = controller();
+  const calls = [];
+  const appWindow = {
+    outerPosition: async () => ({ x: 1878, y: 300 }),
+    outerSize: async () => ({ width: 42, height: 260 }),
+    scaleFactor: async () => 1.25,
+    setSize: async () => { throw new Error("main must not resize"); },
+    setPosition: async () => { throw new Error("main must not move"); },
+  };
+  Object.assign(context, {
+    isDesktop: () => true,
+    isWindowsPlatform: () => true,
+    windowApi: async () => ({
+      getCurrentWindow: () => appWindow,
+      currentMonitor: async () => ({
+        workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      }),
+    }),
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      return 7;
+    },
+  });
+
+  await context.showStripDetailPopup({
+    agentId: "codex",
+    cell: { tightest: { key: "five_hour" } },
+    anchorY: 48,
+    glassTint: "clear",
+    glassInk: "light",
+    glassAlpha: 0.25,
+    shellGlassAlpha: 0.25,
+  });
+  await context.hideStripDetailPopup();
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], "request_strip_detail");
+  assert.equal(JSON.stringify(calls[0][1].payload.railPosition), JSON.stringify({ x: 1878, y: 300 }));
+  assert.equal(JSON.stringify(calls[0][1].payload.railSize), JSON.stringify({ width: 42, height: 260 }));
+  assert.equal(calls[0][1].payload.glassTint, "clear");
+  assert.equal(calls[0][1].payload.glassInk, "light");
+  assert.equal(JSON.stringify(calls[1]), JSON.stringify(["hide_strip_detail", undefined]));
+});
+
+test("collapseVerticalStripHover retains transient hover guard until bounds restore finishes", async () => {
+  const saved = {};
+  const context = vm.createContext({
+    ...geometry,
+    console: { warn() {} },
+    window: {
+      innerWidth: 320,
+      innerHeight: 320,
+      setTimeout: (fn) => { fn(); return 1; },
+      clearTimeout: () => {},
+    },
+    localStorage: {
+      getItem: (key) => saved[key] ?? null,
+      setItem: (key, value) => { saved[key] = value; },
+    },
+  });
+  vm.runInContext(source, context);
+
+  let moveHandler = null;
+  let position = { x: 1878, y: 300 };
+  let size = { width: 42, height: 260 };
+  const appWindow = {
+    outerPosition: async () => position,
+    outerSize: async () => size,
+    innerSize: async () => size,
+    scaleFactor: async () => 1,
+    onMoved: async (handler) => {
+      moveHandler = handler;
+      return () => {};
+    },
+    setSize: async (next) => { size = next; },
+    setPosition: async (next) => { position = next; },
+  };
+  const api = {
+    getCurrentWindow: () => appWindow,
+    currentMonitor: async () => ({
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+    }),
+    availableMonitors: async () => [{
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+    }],
+    PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isWindowsPlatform: () => true,
+    isLinuxPlatform: () => false,
+    windowApi: async () => api,
+    scaledPhysicalSize: async (_api, _win, width, height) => ({ width, height }),
+    settleWebviewLayout: async () => {},
+    applyWebviewZoom: async () => {},
+    invoke: async (command, args) => {
+      if (command === "set_window_bounds") {
+        // Trigger onMoved mid-collapse; transient guard must still suppress position saving.
+        moveHandler?.();
+        position = { x: args.x, y: args.y };
+        size = { width: args.width, height: args.height };
+      }
+    },
+  });
+
+  await context.startPositionMemory(() => "strip-vertical");
+  await context.expandVerticalStripHover({
+    width: 312, height: 260, railWidth: 42, railHeight: 260,
+    anchorY: 80, cardHeight: 160,
+  });
+  await context.collapseVerticalStripHover();
+  assert.equal(saved["metrik:stripVerticalPosition"], undefined);
+});
+
+test("startEdgeDock is opt-in and requires 150ms inside the 2px outer edge zone to reveal", async () => {
+  let now = 1000;
+  let pollFn = null;
+  let timerSeq = 1;
+  const context = vm.createContext({
+    ...geometry,
+    console: { warn() {} },
+    Date: { now: () => now },
+    window: {
+      innerWidth: 42,
+      innerHeight: 260,
+      setTimeout: (fn) => {
+        const id = timerSeq++;
+        fn();
+        return id;
+      },
+      clearTimeout: () => {},
+      setInterval: (fn) => {
+        pollFn = fn;
+        return 99;
+      },
+      clearInterval: () => {
+        pollFn = null;
+      },
+    },
+    localStorage: { getItem: () => null, setItem() {} },
+  });
+  vm.runInContext(source, context);
+
+  let enabled = false;
+  let position = { x: 1878, y: 200 };
+  let cursor = { x: 1000, y: 500 };
+  const alwaysOnTopCalls = [];
+  const positions = [];
+  const appWindow = {
+    outerPosition: async () => position,
+    outerSize: async () => ({ width: 42, height: 260 }),
+    setPosition: async (next) => {
+      position = { x: next.x, y: next.y };
+      positions.push(position);
+    },
+    setAlwaysOnTop: async (flag) => { alwaysOnTopCalls.push(flag); },
+    onMoved: async () => () => {},
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isLinuxPlatform: () => false,
+    isWindowsPlatform: () => true,
+    windowApi: async () => ({
+      getCurrentWindow: () => appWindow,
+      currentMonitor: async () => ({
+        scaleFactor: 1,
+        position: { x: 0, y: 0 },
+        size: { width: 1920, height: 1080 },
+        workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      }),
+      cursorPosition: async () => cursor,
+      PhysicalPosition: class { constructor(x, y) { this.x = x; this.y = y; } },
+    }),
+  });
+
+  const stop = await context.startEdgeDock({
+    getMode: () => "strip-vertical",
+    getPinned: () => false,
+    getEnabled: () => enabled,
+  });
+  assert.equal(positions.length, 0);
+  assert.equal(alwaysOnTopCalls.length, 0);
+  assert.equal(pollFn, null);
+
+  enabled = true;
+  await context.syncEdgeDock();
+  assert.deepEqual(position, { x: 1878, y: 200 });
+  assert.equal(alwaysOnTopCalls.at(-1), true);
+  assert.ok(pollFn);
+
+  await pollFn();
+  now += 950;
+  await pollFn();
+  assert.deepEqual(position, { x: 1918, y: 200 });
+
+  // 5px away from right edge stays hidden.
+  cursor = { x: 1915, y: 300 };
+  now += 200;
+  await pollFn();
+  assert.deepEqual(position, { x: 1918, y: 200 });
+
+  // Inside 2px band: first sample starts dwell timer (< 150ms stays hidden).
+  cursor = { x: 1919, y: 300 };
+  await pollFn();
+  assert.deepEqual(position, { x: 1918, y: 200 });
+
+  now += 80;
+  await pollFn();
+  assert.deepEqual(position, { x: 1918, y: 200 });
+
+  now += 80;
+  await pollFn();
+  assert.deepEqual(position, { x: 1878, y: 200 });
+
+  enabled = false;
+  await context.syncEdgeDock();
+  assert.equal(alwaysOnTopCalls.at(-1), false);
+  await stop();
+});

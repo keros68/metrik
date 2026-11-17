@@ -10,6 +10,7 @@ import {
 import {
   desyncHealRetryDelayMs,
   floatingViewportSize,
+  isCursorInEdgeRevealZone,
   isDockAnchorPosition,
   isStableFloatingMode,
   monitorArea,
@@ -811,6 +812,7 @@ async function applyWindowMode(mode, options = {}) {
   // 详情卡借用同一个 HWND 临时扩窗。任何真正的形态切换都先恢复胶囊基准
   // 几何；否则下面的记位会保存透明承载区坐标，卸载清理还会在完整视图
   // 显示后把大窗口重新拖回胶囊位置。
+  await hideStripDetailPopup();
   await collapseVerticalStripHover();
 
   // 变形前记下离开的悬浮形态的坐标：compact/横条/竖条各记各的，互不污染
@@ -1162,16 +1164,83 @@ async function expandVerticalStripHover(
   }
 }
 
+async function showStripDetailPopup({
+  agentId,
+  cell,
+  anchorY,
+  stripScale: scaleOverride,
+  glassTint,
+  glassInk,
+  glassAlpha,
+  shellGlassAlpha,
+}) {
+  if (typeof isDesktop !== "function" || !isDesktop() || !isWindowsPlatform()) return null;
+  if (typeof invoke !== "function") return null;
+  const api = await windowApi();
+  if (!api) return null;
+  const appWindow = api.getCurrentWindow();
+  const [railPosition, railSize, monitor, factor] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+    api.currentMonitor().catch(() => null),
+    appWindow.scaleFactor().catch(() => 1),
+  ]);
+  const workArea = monitor?.workArea;
+  if (!railPosition || !railSize || !workArea) return null;
+  const effectiveScale = Number.isFinite(scaleOverride) && scaleOverride > 0
+    ? scaleOverride
+    : stripScale;
+  return invoke("request_strip_detail", {
+    payload: {
+      agentId,
+      cell,
+      anchorY,
+      railPosition: { x: railPosition.x, y: railPosition.y },
+      railSize: { width: railSize.width, height: railSize.height },
+      workArea: {
+        x: workArea.position.x,
+        y: workArea.position.y,
+        width: workArea.size.width,
+        height: workArea.size.height,
+      },
+      stripScale: effectiveScale,
+      scaleFactor: factor,
+      glassTint,
+      glassInk,
+      glassAlpha,
+      shellGlassAlpha,
+    },
+  }).catch(() => null);
+}
+
+async function hideStripDetailPopup() {
+  if (typeof isDesktop !== "function" || !isDesktop() || !isWindowsPlatform()) return;
+  if (typeof invoke !== "function") return;
+  await invoke("hide_strip_detail").catch(() => {});
+}
+
+async function onStripDetailClosed(handler) {
+  if (typeof isDesktop !== "function" || !isDesktop() || !isWindowsPlatform()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("metrik://strip-detail-closed", () => handler());
+}
+
 async function collapseVerticalStripHover() {
   if ((!isWindowsPlatform() && !isLinuxPlatform()) || !stripHoverRestore) return;
   const restore = stripHoverRestore;
-  stripHoverRestore = null;
   const api = await windowApi();
-  if (!api) return;
+  if (!api) {
+    stripHoverRestore = null;
+    return;
+  }
   const appWindow = api.getCurrentWindow();
-  await applyWebviewZoom(stripScale);
-  await setWindowBounds(appWindow, restore.position, restore.size);
-  rememberStripSize(restore.width, restore.height);
+  try {
+    await applyWebviewZoom(stripScale);
+    await setWindowBounds(appWindow, restore.position, restore.size);
+    rememberStripSize(restore.width, restore.height);
+  } finally {
+    stripHoverRestore = null;
+  }
 }
 
 /// 等 WebView 视口达到目标 CSS 宽度，并跨过新尺寸的首次合成。冷启动后 GPU
@@ -1232,6 +1301,7 @@ async function beginStripControlsExpand() {
   if (isMacPlatform()) return;
   // 点 … 时详情卡可能还开着，此刻的原生几何是透明承载区而非条身；
   // 先收回悬停扩窗再捕获，否则收起菜单会把条身还原到承载区左缘。
+  await hideStripDetailPopup();
   await collapseVerticalStripHover();
   // 已有待还原的几何说明上一次收起还没落地（快速连点 ⋯）：旧值才是
   // 收起态的稳定几何，不能被当前展开态覆盖。
@@ -1383,6 +1453,7 @@ async function reassertCompactSize(scaleFactor = null, isLatest = null, retryDel
 /// 完整，真正被裁的是外层 HWND。DPI 事件必须像 compact 一样直接重断言。
 async function reassertStripSize({ width, height, scaleFactor = null }) {
   if (isMacPlatform()) return;
+  await hideStripDetailPopup();
   await collapseVerticalStripHover();
   const api = await windowApi();
   if (!api) return;
@@ -1488,9 +1559,17 @@ async function setWindowGlass(enabled, radius = 12) {
 }
 
 const DOCK_TRIGGER_PX = 8;
-const DOCK_PEEK_PX = 6;
+const DOCK_PEEK_PX = 2;
+const DOCK_REVEAL_EDGE_PX = 2;
+const DOCK_REVEAL_DELAY_MS = 150;
 const DOCK_HIDE_DELAY_MS = 900;
-const DOCK_POLL_MS = 250;
+const DOCK_POLL_MS = 80;
+
+let edgeDockSync = null;
+
+function syncEdgeDock() {
+  return edgeDockSync ? edgeDockSync() : Promise.resolve();
+}
 
 let pinnedHoverBehaviorQueue = Promise.resolve();
 let pinnedHoverEnabled = false;
@@ -1571,9 +1650,9 @@ function setPinnedHoverTargetOpacity(opacity) {
   if (pinnedHoverEnabled) setPinnedHoverBehavior(true);
 }
 
-/// 边缘挂靠：未固定的卡片和胶囊条可贴四边自动收起，只留一条细边。
-/// 细边落在窗口的非客户区，webview 收不到 hover，因此以全局光标位置判断显示。
-async function startEdgeDock({ getMode, getPinned }) {
+/// 边缘挂靠：默认关闭（可由用户在设置中开启）。未固定的卡片和胶囊条可贴四边自动收起，
+/// 只留一条极细边缘；仅当指针贴到屏幕最外侧 2px 边缘并停留 150ms 后才弹出，避免路过误触。
+async function startEdgeDock({ getMode, getPinned, getEnabled = () => false }) {
   // Wayland 不提供全局指针与窗口坐标；Linux 的 X11 会话可以正常启用。
   if (isMacPlatform() || (isLinuxPlatform() && !(await supportsGlobalWindowCoordinates()))) {
     return () => {};
@@ -1585,6 +1664,7 @@ async function startEdgeDock({ getMode, getPinned }) {
   let hidden = false;
   let disposed = false;
   let outsideSinceMs = null;
+  let revealHoverSinceMs = null;
   let checkTimer;
   let pollTimer;
   let alwaysOnTopQueue = Promise.resolve();
@@ -1594,7 +1674,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     Boolean(stripHoverRestore),
   );
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const peek = () => Math.round(DOCK_PEEK_PX * dock.scale);
+  const peek = () => Math.max(2, Math.round(DOCK_PEEK_PX * dock.scale));
   const exposedPosition = () => ({ x: dock.x, y: dock.y });
   const hiddenPosition = () => {
     const visible = peek();
@@ -1630,6 +1710,7 @@ async function startEdgeDock({ getMode, getPinned }) {
     dock = null;
     hidden = false;
     outsideSinceMs = null;
+    revealHoverSinceMs = null;
     stopPoll();
     setDockAlwaysOnTop(getPinned());
   };
@@ -1639,29 +1720,29 @@ async function startEdgeDock({ getMode, getPinned }) {
     dock = null;
     hidden = false;
     outsideSinceMs = null;
+    revealHoverSinceMs = null;
     stopPoll();
     await setDockAlwaysOnTop(getPinned());
   };
 
   const poll = async () => {
     if (disposed || !dock) return;
-    if (getPinned() || !canDock()) {
+    if (!getEnabled() || getPinned() || !canDock()) {
       await undock();
       return;
     }
     const cursor = await api.cursorPosition().catch(() => null);
     if (!cursor || !dock) return;
     if (hidden) {
-      const visible = peek();
-      const onStrip = dock.edge === "bottom"
-        ? cursor.x >= dock.x && cursor.x <= dock.x + dock.width && cursor.y >= dock.bottom - visible && cursor.y <= dock.bottom + visible
-        : dock.edge === "left"
-          ? cursor.y >= dock.y && cursor.y <= dock.y + dock.height && cursor.x >= dock.left - visible && cursor.x <= dock.left + visible
-          : dock.edge === "right"
-            ? cursor.y >= dock.y && cursor.y <= dock.y + dock.height && cursor.x >= dock.right - visible && cursor.x <= dock.right + visible
-            : cursor.x >= dock.x && cursor.x <= dock.x + dock.width && cursor.y >= dock.top - visible && cursor.y <= dock.top + visible;
-      if (onStrip) {
+      const onEdge = isCursorInEdgeRevealZone(cursor, dock, DOCK_REVEAL_EDGE_PX);
+      if (!onEdge) {
+        revealHoverSinceMs = null;
+        return;
+      }
+      revealHoverSinceMs = revealHoverSinceMs ?? Date.now();
+      if (Date.now() - revealHoverSinceMs >= DOCK_REVEAL_DELAY_MS) {
         hidden = false;
+        revealHoverSinceMs = null;
         outsideSinceMs = null;
         await slideTo(exposedPosition());
       }
@@ -1678,13 +1759,15 @@ async function startEdgeDock({ getMode, getPinned }) {
     if (Date.now() - outsideSinceMs >= DOCK_HIDE_DELAY_MS) {
       hidden = true;
       outsideSinceMs = null;
+      revealHoverSinceMs = null;
+      await hideStripDetailPopup();
       await slideTo(hiddenPosition());
     }
   };
 
   const check = async () => {
     if (disposed) return;
-    if (!canDock() || getPinned()) {
+    if (!getEnabled() || !canDock() || getPinned()) {
       if (dock) await undock();
       return;
     }
@@ -1729,10 +1812,13 @@ async function startEdgeDock({ getMode, getPinned }) {
     dock = { edge, x, y, width: size.width, height: size.height, left, top, right, bottom, scale };
     hidden = false;
     outsideSinceMs = null;
+    revealHoverSinceMs = null;
     await slideTo(exposedPosition());
     await setDockAlwaysOnTop(true);
     if (!pollTimer) pollTimer = window.setInterval(poll, DOCK_POLL_MS);
   };
+
+  edgeDockSync = () => check();
 
   const onMove = (event) => {
     if (dock) {
@@ -1747,6 +1833,7 @@ async function startEdgeDock({ getMode, getPinned }) {
 
   return async () => {
     disposed = true;
+    edgeDockSync = null;
     stopPoll();
     window.clearTimeout(checkTimer);
     const unlisten = await unlistenPromise.catch(() => null);
@@ -1778,6 +1865,7 @@ async function setWindowPinned(pinned) {
 /// 尺寸，否则指针离开、菜单收起的那一刻窗口会跳回拖动前的位置。
 async function startWindowDragging() {
   if (isMacPlatform()) return;
+  await hideStripDetailPopup();
   const api = await windowApi();
   if (!api) return;
   if (stripControlsRestore) stripControlsRestore = { ...stripControlsRestore, position: null };
@@ -1877,6 +1965,7 @@ export {
   closeWindow,
   getAutostart,
   getMacAgentSelection,
+  hideStripDetailPopup,
   expandVerticalStripHover,
   installUpdate,
   isDesktop,
@@ -1887,6 +1976,7 @@ export {
   onMacAgentSelection,
   onMacAppearance,
   onScaleFactorChanged,
+  onStripDetailClosed,
   onTrayPinnedChange,
   onTrayShowExpanded,
   openExpandedWindow,
@@ -1907,9 +1997,11 @@ export {
   setPinnedHoverTargetOpacity,
   setWindowPinned,
   setWindowUiScale,
+  showStripDetailPopup,
   startEdgeDock,
   startPositionMemory,
   startWindowDragging,
+  syncEdgeDock,
   syncLinuxTrayPinned,
   stripContentSize,
   toggleMaximizeWindow,

@@ -60,19 +60,21 @@ Windows 桌面 / 后方窗口
 创建期 transparent: true 的 HWND + WebView2
           │  运行期保持不变
           ▼
-#root：唯一的大面积 backdrop-filter
+#root：按外观承接全窗口材质
           │
-          ├─ dark：深色 shell tint
-          ├─ light：浅色 shell tint
-          └─ clear：#root 白霜（深色字）或薄暗罩（白色字）
+          ├─ dark：深色 shell tint + backdrop-filter
+          ├─ light：浅色 shell tint + backdrop-filter
+          └─ clear：#root 无模糊清透底色（白字近全透 / 深色字薄白底）
           │
           ▼
 两端 #root：圆角按物理像素折算（--glass-radius），不随缩放变大
-浏览器 #root：额外补一层模拟静态描边；桌面端不画
-两端 #root::after：边缘流光
+clear 桌面端 #root::before：1px 上亮下柔白渐变玻璃细边（z-index: 19）
+浏览器 #root：额外补一层模拟静态描边；桌面端不画外描边
+两端 #root::after：边缘流光（z-index: 20）
           │
           ▼
 widget/strip shell：透明内容布局、文字、图标、进度和小面积反馈
+Windows 竖条悬停详情：独立无焦点点击穿透伴随窗 `strip-detail`（主条永不扩窗）
 ```
 
 ### 3.1 创建期透明窗口
@@ -166,10 +168,9 @@ Windows 的 `dark`、`light`、`clear` 全部解析为 `alpha`，不能把 tint 
 | CSS fallback | 在对应组合上再加 `--glass-css` |
 | macOS | 加 `--mac`，忽略 Windows 的 light/clear 存储值 |
 
-clear 只覆盖材质层：shell 自身完全透明，白霜/暗罩和模糊都画在 `#root` 上。
-前景整套沿用另外两档——深色字复用 `--glass-light` 那套规则，白色字复用透明 HUD
-的白色体系（即不挂 `--glass-light`）。这两组文字色与罩层的配对不能拆开，
-理由见 §6.3。
+clear 只覆盖材质层：shell 自身完全透明，底色和细边高光都画在 `#root` 上并关闭模糊。
+前景整套沿用另外两档——白色字复用透明 HUD 的白色体系（不挂 `--glass-light`），
+深色字复用 `--glass-light` 那套规则。这两组文字色与底色的配对不能拆开，理由见 §6.3。
 
 只有 Windows clear 且模式为 `alpha` 时，shell 才带：
 
@@ -233,18 +234,19 @@ compact、horizontal strip 和 vertical strip 共用相同的 alpha 策略。形
 
 ### 6.2 唯一的大面积模糊层
 
-Windows alpha 模式只允许 `#root` 承担全窗口模糊：
+Windows alpha 模式下，`dark` 与 `light` 只允许 `#root` 承担全窗口模糊；`clear`
+在桌面端显式关闭 `backdrop-filter: none`，保持壁纸与后方窗口锐利透出（冰蓝式
+清透水晶框）。
 
 ```css
+/* dark / light */
 -webkit-backdrop-filter: blur(24px) saturate(160%);
 backdrop-filter: blur(24px) saturate(160%);
 ```
 
-不能在标题栏、周期控件、额度卡片等大面积子节点再次使用
-`backdrop-filter`。多层背景采样会显著增加 GPU 成本，也会把 tint 叠成乳白板。
-
-clear 卡片中的 compact 周期控件明确设置 `backdrop-filter: none`，防止继承或以后
-新增通用玻璃规则时形成第二层模糊。
+不能在标题栏、周期控件、额度卡片等大面积子节点再次使用 `backdrop-filter`。
+clear 卡片中的 compact 周期控件同样设置 `backdrop-filter: none`，防止继承或
+以后新增通用玻璃规则时形成额外模糊。
 
 ### 6.3 三种 tint
 
@@ -265,32 +267,32 @@ clear 卡片中的 compact 周期控件明确设置 `backdrop-filter: none`，�
 
 #### clear
 
-clear 的文字颜色由用户选（`metrik:glassInk`），**罩层跟着文字走**：
+clear 采用无模糊清透水晶框路线（对齐冰蓝桌面卡片），文字颜色由用户选
+（`metrik:glassInk`），**底色与阴影跟着文字走**：
 
-| 文字 | 罩层 | 浓度区间 |
+| 文字 | 底色 | 浓度区间 |
 |---|---|---|
-| 深色字（默认） | 白霜 `rgb(229 237 246 / a)` | `clamp(0.38, 0.3 + a * 0.36, 0.72)`，胶囊 `clamp(0.34, 0.26 + a * 0.32, 0.62)` |
-| 白色字 | 暗罩 `rgb(18 24 36 / a)` | `clamp(0.14, 0.1 + a * 0.34, 0.44)` |
-
-**白字配白霜是唯一必坏的组合，不提供。** 往白底上再加白不会拉开对比度：实测
-浅色壁纸上白字对比度 1.10:1，把霜从 0.28 加到 0.44 也只到 1.12:1。同一组测量里
-深色字配 0.44 白霜在亮壁纸上是 14.4:1、在暗背景上 4.0:1。所以
-`glassAppearance.js` 把文字色和罩层绑成一对，`glassAppearance.test.js` 有断言
-守着，改一边必须改另一边。
+| 白色字（默认） | 清透白底 `rgb(255 255 255 / a)` + 柔和暗影 | `clamp(0.015, (a - 0.05) * 0.22 + 0.015, 0.22)` |
+| 深色字 | 轻薄白底 `rgb(236 242 249 / a)` + 浅色光晕 | `clamp(0.04, (a - 0.05) * 0.44 + 0.04, 0.44)` |
 
 两档共同的部分：
 
-- shell 本身 `background: transparent`，白霜/暗罩和唯一的 `backdrop-filter`
-  都在 `#root` 上；
-- 大面积子面板改为透明，仅保留 inset 分隔边；
+- `#root` 关闭 `backdrop-filter`（不糊化桌面壁纸与后方窗口），并通过
+  `#root::before` 绘制一条 `1px` 上亮下柔白渐变（`rgba(255,255,255,0.72)` →
+  `rgba(255,255,255,0.34)`）玻璃外框，既保留冰蓝同款水晶轮廓，又不改变
+  `clientWidth/clientHeight` 测量；
+- shell 本身 `background: transparent`，大面积子面板改为透明，仅保留 inset 分隔边；
 - hover、selected 和按钮只使用小面积半透明反馈；
-- 文字带一层与自身相反的阴影拉开局部对比（深色字配浅色光晕，白色字配深色
-  阴影）。**Blink 的 UA 样式给 `input`/`button` 硬写了 `text-shadow: none`**，
-  外壳那层阴影传不进按钮，周期签/额度卡/刷新/统计说明都要单独补一条；坐在
-  实心药丸上的选中态则要显式关掉阴影，并保持与药丸相反的字色；
-- 次级文字比另外两档更重（`0.82` / 字重 500）：薄罩下壁纸的明暗直接透上来，
-  浅色档那套 `0.58` 的次级色局部对比会塌到 1.8:1；
-- 浏览器没有真实 Alpha，clear 让位给浅色档的近实心回落，不假装透明。
+- 文字带一层与自身相反的阴影拉开局部对比（白色字配深色阴影，深色字配浅色光晕）。
+  **Blink 的 UA 样式给 `input`/`button` 硬写了 `text-shadow: none`**，外壳那层
+  阴影传不进按钮，周期签/额度卡/刷新/统计说明都要单独补一条；坐在实心药丸上的
+  选中态则要显式关掉阴影，并保持与药丸相反的字色；
+- 白色字档次级文字提高到 `0.90`（胶囊 `--` 为 `0.86`）、深色字档次级文字保持
+  `0.82` / 字重 500，保证极薄透底下仍清晰可读；
+- Windows 竖条悬停详情气泡由独立无焦点且点击穿透（`WS_EX_TRANSPARENT`）的
+  `strip-detail` 伴随窗渲染，主条永远保持 `42px` 宽度不变，彻底避免大透明画布
+  压盖底层窗口与首次扩窗闪烁；
+- 浏览器没有真实 Alpha，clear 让位给对应回落，不假装透明。
 
 ### 6.4 浓度映射
 
@@ -502,9 +504,11 @@ strip 的普通 `1px border` 会改变测量尺寸，造成 ResizeObserver 与�
 | 文件 | 职责 |
 |---|---|
 | `src-tauri/tauri.conf.json` | 创建期透明窗口能力 |
+| `src-tauri/src/strip_detail.rs` | Windows 竖条悬停独立无焦点点击穿透伴随窗管理 |
+| `src/StripDetailPopup.jsx` | 独立气泡窗渲染与几何定位提交 |
 | `src/glassAppearance.js` | 模式解析、class 组合、Windows 不可变合成决策 |
 | `src/glassAppearance.test.js` | 状态转换与 class 防回归测试 |
-| `src/windowClient.js` | 平台分流；Windows 不执行运行期合成变更 |
+| `src/windowClient.js` | 平台分流；Windows 不执行运行期合成变更；可选贴边自动隐藏与伴随窗协调 |
 | `src/App.jsx` | 用户状态、持久化、三态循环、旧 off 迁移、浓度映射、圆角物理像素折算 |
 | `src/widgets.jsx` | 玻璃指针变量 |
 | `src/appearanceOptions.js` | 主题、玻璃浓度与字色选项及其归一化 |
