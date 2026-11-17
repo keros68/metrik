@@ -10,11 +10,12 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { modelDisplayName } from "./modelNames.js";
+import { buildModelsCsvTable } from "./modelSpeed.js";
 import { compactTokens } from "./tokenFormat.js";
 import { formatDate, formatTime, t } from "./i18n.js";
 import { exportCsvFile, getProjectRules, setProjectRules } from "./usageClient";
 import { AGENT_META, AGENT_ORDER } from "./agentMeta.jsx";
-import { formatUsd, PERIODS } from "./viewParts.jsx";
+import { formatUsd, ModelResponseSpeedHelp, ModelSpeedTable, PERIODS } from "./viewParts.jsx";
 import { feedbackText } from "./SettingsSection.jsx";
 
 function sessionDayLabel(ms) {
@@ -215,6 +216,23 @@ async function exportProjectsCsv(projects) {
   );
 }
 
+function buildModelsCsv(models) {
+  const { header, rows } = buildModelsCsvTable(models);
+  return toCsv(header, rows);
+}
+
+async function exportModelsCsv(models) {
+  return saveCsv(
+    `metrik-models-${new Date().toLocaleDateString("sv-SE")}.csv`,
+    buildModelsCsv(models),
+  );
+}
+
+const USAGE_VIEWS = [
+  { id: "projects", label: "项目" },
+  { id: "models", label: "模型与速率" },
+];
+
 // 项目占比环形图：与报告页 Agent 占比同一视觉语言；段间留白 2.5，
 // 点击分段进入对应项目详情。"其他"聚合段不可点。
 function ProjectShareDonut({ projects, colorByPath, onOpen }) {
@@ -285,11 +303,19 @@ export function ShareDonut({ className, ariaLabel, segments, total, centerTokens
   );
 }
 
-// 用量页：项目列表 → 点击进入单个项目的会话明细（层级下钻，不再同屏堆两个列表）。
-// detail 为 null 时是项目列表；{ type:"project", path } 是项目详情；
-// { type:"unattributed" } 是读不到目录的会话。
-export function UsageSection({ projectsState, sessionsState, period, onRulesChanged }) {
-  const [agentFilter, setAgentFilter] = useState("all");
+// 用量页：顶部「项目 | 模型与速率」切换。
+// 项目视图支持点击项目进入会话明细（detail 为 { type:"project", path } 或 { type:"unattributed" }）。
+export function UsageSection({
+  snapshot,
+  projectsState,
+  sessionsState,
+  period,
+  activeView = "projects",
+  onViewChange,
+  jumpRequest,
+  onRulesChanged,
+}) {
+  const [agentFilter, setAgentFilter] = useState(() => jumpRequest?.agent || "all");
   const [modelFilter, setModelFilter] = useState("all");
   const [detail, setDetail] = useState(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -300,6 +326,21 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
   const [rulesBusy, setRulesBusy] = useState(false);
   const rulesRef = useRef(null);
   const rulesQueueRef = useRef(Promise.resolve());
+  const appliedJumpRef = useRef(jumpRequest?.nonce || 0);
+
+  useEffect(() => {
+    if (!jumpRequest?.nonce || jumpRequest.nonce === appliedJumpRef.current) return;
+    appliedJumpRef.current = jumpRequest.nonce;
+    setDetail(null);
+    setNote(null);
+    setAgentFilter(jumpRequest.agent || "all");
+  }, [jumpRequest]);
+
+  const switchView = (next) => {
+    setNote(null);
+    if (next === "models") setDetail(null);
+    onViewChange?.(next);
+  };
 
   useEffect(() => {
     if (rulesOpen && rules == null) {
@@ -395,6 +436,129 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
     }).catch(() => {});
   };
 
+  const viewToggle = (
+    <div className="report-view-toggle" role="group" aria-label={t("切换用量维度")}>
+      {USAGE_VIEWS.map((item) => (
+        <button
+          type="button"
+          key={item.id}
+          className={activeView === item.id ? "is-selected" : ""}
+          aria-pressed={activeView === item.id}
+          onClick={() => switchView(item.id)}
+        >
+          {t(item.label)}
+        </button>
+      ))}
+    </div>
+  );
+
+  const noteBanner = note && (
+    <p className="usage-note" role="status">
+      {feedbackText(note)}
+      {note.undo && (
+        <button
+          type="button"
+          disabled={rulesBusy}
+          onClick={() => { setNote(null); note.undo(); }}
+        >
+          {t("撤销")}
+        </button>
+      )}
+    </p>
+  );
+
+  // ── 模型与速率视图 ──
+  if (activeView === "models") {
+    if (snapshot?.pending) {
+      return (
+        <main className="usage-section" aria-busy="true">
+          <header className="settings-header">
+            <h1>{t("用量")}</h1>
+            <p>{t("正在读取用量明细。只读取已索引的账本，不触发新的日志扫描。")}</p>
+          </header>
+          <div className="usage-toolbar">{viewToggle}</div>
+        </main>
+      );
+    }
+    if (!snapshot || snapshot.loadError) {
+      return (
+        <main className="usage-section">
+          <header className="settings-header">
+            <h1>{t("用量")}</h1>
+            <p>{t("本地账本读取失败，明细暂不可用；未以演示数据替代。稍后重试。")}</p>
+          </header>
+          <div className="usage-toolbar">{viewToggle}</div>
+        </main>
+      );
+    }
+
+    const allModels = snapshot.models || [];
+    const filteredModels = allModels.filter((entry) =>
+      agentFilter === "all" || entry.agent === agentFilter);
+    const selectedModelAgentLabel = agentFilter === "all"
+      ? null
+      : AGENT_META[agentFilter]?.label || agentFilter;
+
+    return (
+      <main className="usage-section" aria-labelledby="usage-title">
+        <header className="settings-header">
+          <h1 id="usage-title">{t("用量")}</h1>
+          <p>
+            <strong>{t("模型与速率")}</strong> · {selectedModelAgentLabel
+              ? t("{period}内 {agent} 共 {count} 个模型记录。速率为该来源的实测响应，非跨渠道基准。", {
+                period: t(PERIODS.find((item) => item.id === period)?.label),
+                agent: selectedModelAgentLabel,
+                count: filteredModels.length,
+              })
+              : t("{period}内 {count} 个模型记录，按 Agent 与模型分别统计。速率为对应来源的实测响应，非跨渠道基准。", {
+                period: t(PERIODS.find((item) => item.id === period)?.label),
+                count: allModels.length,
+              })}
+            {snapshot.isDemo ? ` ${t("当前为浏览器演示数据。")}` : ""}
+          </p>
+        </header>
+
+        <div className="usage-toolbar">
+          {viewToggle}
+          <label className="usage-filter">
+            <span>{t("来源 Agent")}</span>
+            <select
+              value={agentFilter}
+              onChange={(event) => setAgentFilter(event.target.value)}
+              aria-label={t("按 Agent 筛选模型")}
+            >
+              <option value="all">{t("全部 Agent")}</option>
+              {AGENT_ORDER.map((id) => <option key={id} value={id}>{AGENT_META[id].label}</option>)}
+            </select>
+          </label>
+          <div className="usage-toolbar-end usage-toolbar-actions">
+            <ModelResponseSpeedHelp align="end" />
+            <button
+              type="button"
+              className="ledger-button"
+              disabled={!filteredModels.length}
+              onClick={() => noteExport(() => exportModelsCsv(filteredModels))}
+            >
+              {t("导出 CSV（{count}）", { count: filteredModels.length })}
+            </button>
+          </div>
+        </div>
+
+        {noteBanner}
+
+        <section className="report-card model-speed-board" aria-label={t("模型用量与响应速率")}>
+          <ModelSpeedTable
+            entries={filteredModels}
+            ariaLabel={t("模型用量与响应速率")}
+            emptyText={allModels.length === 0
+              ? t("本周期内暂无已记录的模型用量。")
+              : t("当前筛选条件下暂无模型记录。")}
+          />
+        </section>
+      </main>
+    );
+  }
+
   const loading = !projectsState || projectsState.status === "loading"
     || !sessionsState || sessionsState.status === "loading";
   if (loading) {
@@ -404,6 +568,7 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
           <h1>{t("用量")}</h1>
           <p>{t("正在读取用量明细。只读取已索引的账本，不触发新的日志扫描。")}</p>
         </header>
+        <div className="usage-toolbar">{viewToggle}</div>
       </main>
     );
   }
@@ -414,6 +579,7 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
           <h1>{t("用量")}</h1>
           <p>{t("本地账本读取失败，明细暂不可用；未以演示数据替代。稍后重试。")}</p>
         </header>
+        <div className="usage-toolbar">{viewToggle}</div>
       </main>
     );
   }
@@ -471,21 +637,6 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
       })}
     </section>
   ));
-
-  const noteBanner = note && (
-    <p className="usage-note" role="status">
-      {feedbackText(note)}
-      {note.undo && (
-        <button
-          type="button"
-          disabled={rulesBusy}
-          onClick={() => { setNote(null); note.undo(); }}
-        >
-          {t("撤销")}
-        </button>
-      )}
-    </p>
-  );
 
   // ── 项目详情视图 ──
   if (detail) {
@@ -587,6 +738,7 @@ export function UsageSection({ projectsState, sessionsState, period, onRulesChan
       </header>
 
       <div className="usage-toolbar">
+        {viewToggle}
         <label className="usage-filter">
           <span>{t("包含 Agent")}</span>
           <select

@@ -1,7 +1,17 @@
-import { useEffect, useRef, useState } from "react";
-import { Info } from "@phosphor-icons/react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Info } from "@phosphor-icons/react";
+import { AGENT_META } from "./agentMeta.jsx";
 import { formatNumber, t } from "./i18n.js";
+import { modelDisplayName } from "./modelNames.js";
+import {
+  defaultModelSortDirection,
+  extractModelTimingCells,
+  formatDurationParts,
+  formatRateParts,
+  sortModelEntries,
+} from "./modelSpeed.js";
 import { formatClock } from "./quotaView.jsx";
+import { compactTokens } from "./tokenFormat.js";
 
 export const PERIODS = [
   { id: "today", label: "今日" },
@@ -92,8 +102,9 @@ export function formatUsd(value) {
   return `$${amount.toFixed(decimals)}`;
 }
 
-export function ModelResponseSpeedHelp() {
+export function ModelResponseSpeedHelp({ align = "start" }) {
   const anchor = useRef(null);
+  const tooltipId = useId();
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => {
     const dismiss = (event) => {
@@ -107,67 +118,141 @@ export function ModelResponseSpeedHelp() {
   return (
     <div
       ref={anchor}
-      className="model-speed-help"
+      className={`model-speed-help ${align === "end" ? "model-speed-help--end" : ""}`}
       data-dismissed={dismissed || undefined}
       onMouseEnter={() => setDismissed(false)}
       onFocusCapture={() => setDismissed(false)}
     >
-      <button type="button" className="model-speed-help-button" aria-describedby="model-speed-explanation">
+      <button type="button" className="model-speed-help-button" aria-describedby={tooltipId}>
         {t("响应计时")}
         <Info size={13} weight="regular" aria-hidden="true" />
       </button>
-      <span id="model-speed-explanation" role="tooltip" className="model-speed-tooltip">
+      <span id={tooltipId} role="tooltip" className="model-speed-tooltip">
         {t("响应均速按包含等待的总耗时计算。首 token 延迟和请求总耗时取平均值，流式速度按流式阶段的总耗时计算。")}
       </span>
     </div>
   );
 }
 
-function formatRate(rate) {
-  return rate < 0.1 ? "<0.1" : formatNumber(rate, { maximumFractionDigits: 1 });
-}
+const SPEED_TABLE_COLUMNS = [
+  { key: "tokens", label: "用量占比", kind: "usage" },
+  { key: "firstToken", label: "首 token 延迟", kind: "duration" },
+  { key: "stream", label: "流式速度", kind: "rate" },
+  { key: "response", label: "均速（含等待）", title: "响应均速（含等待）", kind: "rate" },
+  { key: "duration", label: "请求总耗时", kind: "duration" },
+];
 
-function formatDuration(ms) {
-  return ms < 1000
-    ? `${formatNumber(ms, { maximumFractionDigits: 1 })} ms`
-    : `${formatNumber(ms / 1000, { maximumFractionDigits: 2 })} s`;
-}
-
-export function ModelResponseSpeed({ entry }) {
-  const timing = entry.requestTiming;
-  if (timing) {
-    const formatSpeed = (value) => `${formatRate(value)} tokens/s`;
-    const showResponseAverage = entry.agent === "codex" || entry.agent === "claude" || (entry.agent === "opencode" && entry.responseSampleCount > 0);
-    const metrics = [
-      [t("响应均速（含等待）"), showResponseAverage && { value: entry.responseTokensPerSecond, sampleCount: entry.responseSampleCount }, formatSpeed],
-      [t("首 token 延迟"), timing.firstTokenLatencyMs, formatDuration],
-      [t("流式速度"), timing.streamTokensPerSecond, formatSpeed],
-      [t("请求总耗时"), timing.requestDurationMs, formatDuration],
-    ];
+function MetricCell({ cell, kind }) {
+  if (!cell.available) {
     return (
-      <div className="model-response-speed model-response-speed--metrics">
-        {metrics.filter(([, metric]) => metric).map(([label, metric, format]) => (
-          <div key={label}>
-            <span>{label}</span>
-            <strong>{Number.isFinite(metric.value) ? format(metric.value) : t("暂无计时")}</strong>
-            <small>{t("{count} 个有效样本", { count: formatNumber(metric.sampleCount ?? 0) })}</small>
-          </div>
-        ))}
-      </div>
+      <td className="model-col-metric model-col-metric--empty" aria-label={t("暂无计时")}>
+        <span aria-hidden="true">—</span>
+      </td>
     );
   }
-
-  const rate = entry.responseTokensPerSecond;
-  const count = entry.responseSampleCount;
-  const available = Number.isFinite(rate) && rate > 0 && Number.isInteger(count) && count > 0;
+  const parts = kind === "duration" ? formatDurationParts(cell.value) : formatRateParts(cell.value);
   return (
-    <div className={`model-response-speed ${available ? "" : "model-response-speed--unavailable"}`}>
-      {available ? (
-        <>
-          <strong>{formatRate(rate)} <span>tokens/s</span></strong>
-          <small>{t("{count} 个有效样本", { count: formatNumber(count) })}</small>
-        </>
-      ) : <span>{t("暂无计时")}</span>}
+    <td className="model-col-metric">
+      <strong>
+        {parts.number} <span className="model-metric-unit">{parts.unit}</span>
+      </strong>
+      <small>{t("{count} 样本", { count: formatNumber(cell.sampleCount) })}</small>
+    </td>
+  );
+}
+
+export function ModelSpeedTable({ entries, ariaLabel, emptyText }) {
+  const [sort, setSort] = useState({ key: "tokens", dir: "desc" });
+  const maxTokens = useMemo(
+    () => (entries || []).reduce((max, item) => Math.max(max, Number(item.tokens) || 0), 0),
+    [entries],
+  );
+  const sorted = useMemo(
+    () => sortModelEntries(entries, sort.key, sort.dir),
+    [entries, sort.key, sort.dir],
+  );
+
+  const toggleSort = (key) => {
+    setSort((current) => (
+      current.key === key
+        ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: defaultModelSortDirection(key) }
+    ));
+  };
+
+  if (!sorted.length) {
+    return <p className="settings-muted">{emptyText || t("当前筛选条件下暂无模型记录。")}</p>;
+  }
+
+  return (
+    <div className="model-table-scroll">
+      <table className="model-speed-table" aria-label={ariaLabel || t("模型用量与响应速率")}>
+        <thead>
+          <tr>
+            <th scope="col" className="model-col-name">{t("模型")}</th>
+            {SPEED_TABLE_COLUMNS.map((column) => {
+              const active = sort.key === column.key;
+              const SortIcon = sort.dir === "asc" ? ArrowUp : ArrowDown;
+              return (
+                <th
+                  scope="col"
+                  key={column.key}
+                  className={column.kind === "usage" ? "model-col-usage" : "model-col-metric"}
+                  aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                >
+                  <button
+                    type="button"
+                    className={`model-sort-button ${active ? "is-active" : ""}`}
+                    title={column.title ? t(column.title) : undefined}
+                    onClick={() => toggleSort(column.key)}
+                  >
+                    <span>{t(column.label)}</span>
+                    {active && <SortIcon size={11} weight="bold" aria-hidden="true" />}
+                  </button>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((entry) => {
+            const meta = AGENT_META[entry.agent];
+            const accent = meta?.accent || "#74767a";
+            const agentLabel = meta?.label || entry.agent;
+            const displayName = modelDisplayName(entry.model);
+            const cells = extractModelTimingCells(entry);
+            const barRatio = maxTokens > 0 ? Math.max(0, Math.min(1, entry.tokens / maxTokens)) : 0;
+            return (
+              <tr key={`${entry.agent}-${entry.model}`}>
+                <td className="model-col-name">
+                  <div className="model-table-id">
+                    <i className="model-dot" style={{ backgroundColor: accent }} aria-hidden="true" />
+                    <div className="model-table-names">
+                      <strong title={displayName}>{displayName}</strong>
+                      <small>{agentLabel}</small>
+                    </div>
+                  </div>
+                </td>
+                <td className="model-col-usage">
+                  <div className="model-table-usage">
+                    <div className="model-table-usage-figures">
+                      <strong>{compactTokens(entry.tokens)}</strong>
+                      <small>{Number(entry.share || 0).toFixed(1)}%</small>
+                    </div>
+                    <span className="model-track" aria-hidden="true">
+                      <i style={{ transform: `scaleX(${barRatio})`, backgroundColor: accent }} />
+                    </span>
+                  </div>
+                </td>
+                <MetricCell cell={cells.firstToken} kind="duration" />
+                <MetricCell cell={cells.stream} kind="rate" />
+                <MetricCell cell={cells.response} kind="rate" />
+                <MetricCell cell={cells.duration} kind="duration" />
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
