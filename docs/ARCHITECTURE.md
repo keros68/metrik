@@ -37,18 +37,11 @@ GLM key from pi auth ─────┤
 Cursor dashboard (opt-in) ┘
 ```
 
-The UI invokes one asynchronous Tauri command, `usage_snapshot(period)`. Blocking discovery, parsing, SQLite work, and the local quota subprocess run inside `spawn_blocking`, guarded by a single scan lock. On each request the engine:
+A refresh calls `usage_snapshot(period)`. The engine scans sources over a fixed 182-day retention window, then refreshes official quotas under a separate lock. The selected period controls which indexed events the snapshot aggregates in the user's local timezone.
 
-1. discovers recently modified source files for the requested horizon;
-2. skips unchanged files already covered by the ledger;
-3. reparses changed files through a minimal typed deserializer and counts malformed or unreadable lines;
-4. reconciles only the requested coverage slice of that source in one transaction, retaining older observations;
-5. removes orphaned events and stale local history;
-6. aggregates events in the user's local timezone, downgrading affected source payloads to `partial`.
+Each completed source parse replaces that source's observations in one transaction. The scanner prunes orphaned events and expired local history. It reports incomplete coverage as `partial`.
 
-The initial Today view scans only files that can contain today's events. Expanding to 7 or 30 days widens coverage on demand and records that coverage in `scan_source`. A parser-version upgrade performs one retained-history rebuild before returning to narrow scans.
-
-The user-reachable `rebuild_local_ledger(period)` command takes the same scan lock, transactionally clears only the four derived Metrik tables, and immediately rebuilds the selected period. Agent source logs, source contents, credentials, and unrelated SQLite tables are outside that reset boundary.
+The `rebuild_local_ledger(period)` command takes the scan lock, clears the four derived Metrik tables in one transaction, and starts indexing the same retention window. It returns a snapshot for the selected period. Agent source logs, credentials, and unrelated SQLite tables are outside the reset boundary.
 
 ## Event identity
 
@@ -311,7 +304,7 @@ SQLite runs in WAL mode with `auto_vacuum = INCREMENTAL` under the operating sys
 
 How raw directories become displayed *projects* is a query-layer concern (`projects.rs`), never written into events. User rules live in one `app_setting` row: registered project roots absorb their subdirectories, hidden prefixes drop out of the project list, and edits take effect on the next read with no rescan. Unmatched paths fall back to the nearest `.git` ancestor (a worktree's `.git` file counts) and finally to the raw directory; the home directory itself, home-level dot-directories, Downloads, and the system temp directory are built-in non-projects, though a registered root overrides them because the most specific rule wins. Prefix matching is byte-wise and segment-aligned — Chinese directory names made char-boundary slicing panic, and `D:/work/usa` must not match `D:/work/usage` — and case-insensitive on Windows and macOS (NTFS and default APFS are case-insensitive; Linux stays case-sensitive). Hidden usage is reported as an explicit count, not folded into an "other" project.
 
-The parse horizon is the retention window (182 days, the same as the 26-week report) for every source, and it deliberately does **not** follow the period the user selected. It used to: `today` parsed 8 days back, `month` 61. Because `scan_source.coverage_start_ms` records how far back a file was parsed, selecting a wider period invalidated every source parsed under a narrower one, and the whole re-scan ran synchronously inside one `usage_snapshot` request. On a 3 GB Codex log directory that made "30 days" a 23-minute frozen request. A fixed horizon means a file is parsed once, on arrival or on change; switching periods is then a pure SQL query. Sources still needing a parse are queued newest-first and cut off by `PARSE_BUDGET`; the remainder is reported as `indexing.pending` and the UI labels the numbers as incomplete rather than presenting a partial ledger as exact.
+The scanner reuses a source when its fingerprint and parser version match and `scan_source.coverage_start_ms` covers the retention window. Switching from Today to 7 or 30 days preserves that coverage. The queue prioritizes in-progress parses, then modification time within each group. When `PARSE_BUDGET` expires, `indexing.pending` tells the UI how many sources still need work.
 
 Per-source work must stay proportional to that source, never to the size of the ledger. Single-source events carry `usage_event.source_seq` inline without junction-table rows; replacing a source detaches its indexed `source_seq` pointers (`idx_usage_event_source_seq` and `idx_event_extra_source_seq`), promotes any secondary source from `event_extra_source`, and checks orphan deletion only against the event ids detached by that source.
 
