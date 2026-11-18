@@ -1,13 +1,5 @@
 import { formatNumber } from "./i18n.js";
 
-export const MODEL_SORT_COLUMNS = [
-  "tokens",
-  "firstToken",
-  "stream",
-  "response",
-  "duration",
-];
-
 /// 各列的自然初始排序方向：用量与吞吐按从大到小，延迟与耗时按从快到慢（从小到大）。
 export function defaultModelSortDirection(column) {
   return column === "firstToken" || column === "duration" ? "asc" : "desc";

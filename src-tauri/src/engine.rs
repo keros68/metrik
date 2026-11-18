@@ -928,9 +928,11 @@ fn global_event_bounds(connection: &Connection) -> Result<(Option<i64>, Option<i
     connection
         .query_row(
             "SELECT MIN(min_ms), MAX(max_ms) FROM (
-                 SELECT MIN(occurred_at_ms) AS min_ms, MAX(occurred_at_ms) AS max_ms FROM usage_event
+                 SELECT (SELECT MIN(occurred_at_ms) FROM usage_event) AS min_ms,
+                        (SELECT MAX(occurred_at_ms) FROM usage_event) AS max_ms
                  UNION ALL
-                 SELECT MIN(occurred_at_ms), MAX(occurred_at_ms) FROM remote_usage_event
+                 SELECT (SELECT MIN(occurred_at_ms) FROM remote_usage_event),
+                        (SELECT MAX(occurred_at_ms) FROM remote_usage_event)
              )",
             [],
             |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
@@ -4714,10 +4716,16 @@ mod tests {
             .unwrap();
         let today = Local::now().date_naive();
         let local_now = test_local_time(today, 12);
-        let earliest_ms = test_local_time(today, 8).timestamp_millis();
+        let earliest_ms = (local_now - Duration::days(REPORT_WINDOW_DAYS)).timestamp_millis();
         let latest_ms = test_local_time(today, 11).timestamp_millis();
 
-        insert_test_usage(&connection, "first", earliest_ms, 10);
+        connection
+            .execute(
+                "INSERT INTO remote_usage_event (device_id, event_id, adapter_id,
+                     occurred_at_ms, processed_tokens) VALUES ('peer', 'first', 'codex', ?1, 10)",
+                [earliest_ms],
+            )
+            .unwrap();
         insert_test_usage(&connection, "last", latest_ms, 20);
 
         let report = report_at(&connection, local_now).unwrap();
