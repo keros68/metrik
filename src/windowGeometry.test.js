@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  computeDragScale,
   desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,
@@ -325,4 +326,27 @@ test("isCursorInEdgeRevealZone restricts reveal to the narrow outer edge band", 
   };
   assert.equal(isCursorInEdgeRevealZone({ x: 520, y: 1039 }, bottomDock, 2), true);
   assert.equal(isCursorInEdgeRevealZone({ x: 520, y: 1036 }, bottomDock, 2), false);
+});
+
+test("computeDragScale tracks pointer proportionally along card diagonal and strip axes", () => {
+  assert.equal(
+    computeDragScale({ startScale: 1, dx: 80, dy: 100, baseWidth: 320, baseHeight: 400, axis: "both" }),
+    1.25,
+  );
+  assert.equal(
+    computeDragScale({ startScale: 1, dx: -160, dy: -200, baseWidth: 320, baseHeight: 400, axis: "both" }),
+    0.75,
+  );
+  assert.equal(
+    computeDragScale({ startScale: 1.5, dx: 500, dy: 500, baseWidth: 320, baseHeight: 400, axis: "both" }),
+    2,
+  );
+  assert.equal(
+    computeDragScale({ startScale: 1, dx: 60, dy: 0, baseWidth: 240, baseHeight: 28, axis: "x" }),
+    1.25,
+  );
+  assert.equal(
+    computeDragScale({ startScale: 1, dx: 0, dy: -50, baseWidth: 42, baseHeight: 200, axis: "y" }),
+    0.75,
+  );
 });

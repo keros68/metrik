@@ -371,7 +371,7 @@ button:focus-visible {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: minmax(0, 1fr) 116px;
+  grid-template-columns: minmax(0, 1fr) 128px;
   gap: 7px;
 }
 
@@ -455,9 +455,9 @@ button:focus-visible {
 .widget-quota {
   display: grid;
   min-width: 0;
-  align-content: start;
+  align-content: center;
   overflow: hidden;
-  padding: 7px 9px 5px;
+  padding: 6px 8px;
   color: #25262a;
   text-align: left;
   background: rgba(251, 251, 250, 0.88);
@@ -490,7 +490,7 @@ button:focus-visible {
 
 .widget-quota-window {
   display: grid;
-  grid-template-columns: 15px minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(15px, auto) minmax(18px, 1fr) auto;
   align-items: center;
   gap: 5px;
   margin-top: 4px;
@@ -499,14 +499,19 @@ button:focus-visible {
 .widget-quota-window small {
   color: #74767a;
   font-size: 9px;
+  line-height: 1.15;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
 .widget-quota-window em {
+  min-width: 28px;
   color: #2b2d31;
   font-size: 11px;
   font-style: normal;
   font-weight: 570;
+  line-height: 1.15;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   text-align: right;
@@ -759,7 +764,11 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.12);
 }
 
-.widget-shell--transparent .window-action--active { color: #9ec1f5; }
+.widget-shell--transparent .window-action--active,
+.widget-shell--transparent .window-action--active:hover {
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.14);
+}
 
 .widget-shell--transparent .period-control--compact {
   background: rgba(255, 255, 255, 0.09);
@@ -1603,8 +1612,111 @@ html[data-pinned-hover-driver="local"][data-pinned-hover-mode="hide"][data-pinne
   background: rgba(31, 33, 36, 0.08);
 }
 
-.widget-shell--transparent.widget-shell--glass-light .window-action--active {
-  color: var(--blue);
+.widget-shell--transparent.widget-shell--glass-light .window-action--active,
+.widget-shell--transparent.widget-shell--glass-light .window-action--active:hover {
+  color: rgba(24, 26, 30, 0.94);
+  background: rgba(31, 33, 36, 0.1);
+}
+
+/* ============ 卡片 / 胶囊页面内等比例拖拽缩放角标 ============ */
+.floating-resize-handle {
+  position: absolute;
+  z-index: 12;
+  opacity: 0;
+  touch-action: none;
+  transition: opacity 160ms var(--motion);
+}
+
+.widget-shell:hover .floating-resize-handle,
+.strip-shell:hover .floating-resize-handle,
+.floating-resize-handle:hover,
+.floating-resize-handle.is-dragging {
+  opacity: 1;
+}
+
+.floating-resize-handle--card {
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.floating-resize-handle--card::before,
+.floating-resize-handle--card::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  border-right: 1.5px solid rgba(255, 255, 255, 0.42);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.42);
+  border-bottom-right-radius: 3px;
+  pointer-events: none;
+}
+
+.floating-resize-handle--card::before {
+  width: 7px;
+  height: 7px;
+}
+
+.floating-resize-handle--card::after {
+  right: 6px;
+  bottom: 6px;
+  width: 3px;
+  height: 3px;
+  opacity: 0.7;
+}
+
+.widget-shell--glass-light .floating-resize-handle--card::before,
+.widget-shell--glass-light .floating-resize-handle--card::after {
+  border-color: rgba(31, 33, 36, 0.36);
+}
+
+.floating-resize-handle--strip-h {
+  top: 2px;
+  right: 1px;
+  bottom: 2px;
+  width: 7px;
+  cursor: ew-resize;
+}
+
+.floating-resize-handle--strip-h::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 2px;
+  height: 10px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+}
+
+.floating-resize-handle--strip-v {
+  right: 4px;
+  bottom: 1px;
+  left: 4px;
+  height: 7px;
+  cursor: ns-resize;
+}
+
+.floating-resize-handle--strip-v::before {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  width: 12px;
+  height: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+}
+
+.strip-shell--glass-light .floating-resize-handle--strip-h::before,
+.strip-shell--glass-light .floating-resize-handle--strip-v::before {
+  background: rgba(31, 33, 36, 0.36);
 }
 
 .widget-shell--transparent.widget-shell--glass-light .period-control--compact {

@@ -351,7 +351,35 @@ function monitorForWindowPosition(
   return best;
 }
 
+/// 卡片或胶囊的等比例拖拽缩放：将屏幕坐标位移投影到基准尺寸方向，
+/// 实现角标 1:1 跟随指针缩放，并钳制在允许的缩放区间内。
+function computeDragScale({
+  startScale,
+  dx = 0,
+  dy = 0,
+  baseWidth = 320,
+  baseHeight = 320,
+  axis = "both",
+  min = 0.75,
+  max = 2,
+}) {
+  const base = Number.isFinite(startScale) && startScale > 0 ? startScale : 1;
+  const w = Math.max(1, Number(baseWidth) || 1);
+  const h = Math.max(1, Number(baseHeight) || 1);
+  let delta = 0;
+  if (axis === "x") {
+    delta = dx / w;
+  } else if (axis === "y") {
+    delta = dy / h;
+  } else {
+    delta = (dx * w + dy * h) / (w * w + h * h);
+  }
+  const clamped = Math.min(max, Math.max(min, base + delta));
+  return Math.round(clamped * 100) / 100;
+}
+
 export {
+  computeDragScale,
   desyncHealRetryDelayMs,
   floatingViewportSize,
   horizontalStripTargetWidth,

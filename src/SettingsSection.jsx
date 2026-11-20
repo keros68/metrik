@@ -462,14 +462,40 @@ function SliderRow({ label, hint, min, max, step, percent, ariaLabel, onChange }
   );
 }
 
-function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
+function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, surfaceVisibility, onSetSurfaceVisible, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity }) {
   return (
     <div className="settings-card">
       <h2>{t("外观与缩放")}</h2>
+      {!IS_MAC && onSetSurfaceVisible && (
+        <div className="settings-subsection">
+          <h3>{t("显示窗口")}</h3>
+          <p className="settings-muted">
+            {t("桌面卡片、桌面胶囊与主面板相互独立，可自由勾选同时显示；调整下方样式与缩放会实时生效。")}
+          </p>
+          <div style={{ display: "flex", gap: "18px", flexWrap: "wrap", marginTop: "6px" }}>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={Boolean(surfaceVisibility?.compact)}
+                onChange={(event) => onSetSurfaceVisible("compact", event.target.checked)}
+              />
+              <span>{t("桌面卡片")}</span>
+            </label>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={Boolean(surfaceVisibility?.strip)}
+                onChange={(event) => onSetSurfaceVisible("strip", event.target.checked)}
+              />
+              <span>{t("桌面胶囊")}</span>
+            </label>
+          </div>
+        </div>
+      )}
       <p className="settings-muted">
-        {t("大窗口的明暗主题，「自动」跟随系统；小组件不受影响。")}
+        {t("主面板的明暗主题，「自动」跟随系统；小组件不受影响。")}
       </p>
-      <div className="theme-toggle" role="group" aria-label={t("完整视图主题")}>
+      <div className="theme-toggle" role="group" aria-label={t("主面板主题")}>
         {THEME_OPTIONS.map((option) => (
           <button
             key={option.id}
@@ -541,7 +567,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
       {!IS_MAC && (
         <SliderRow
           label={t("卡片缩放")}
-          hint={t("仅调整卡片尺寸；滑杆改动下次进入时生效。")}
+          hint={t("实时生效；未置顶时也可直接在卡片右下角拖拽等比例缩放。")}
           min={UI_SCALE_RANGE.min * 100}
           max={UI_SCALE_RANGE.max * 100}
           step={5}
@@ -553,7 +579,7 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
       {!IS_MAC && (
         <SliderRow
           label={t("胶囊缩放")}
-          hint={t("仅调整胶囊尺寸，与卡片互不影响；下次进入时生效。")}
+          hint={t("仅调整胶囊尺寸，实时生效；未置顶时也可直接在胶囊末端拖拽缩放。")}
           min={UI_SCALE_RANGE.min * 100}
           max={UI_SCALE_RANGE.max * 100}
           step={5}
@@ -1135,7 +1161,7 @@ const SETTINGS_TABS = [
   },
 ];
 
-export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
+export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidgetAgent, onMoveWidgetAgent, stripAgents, onToggleStripAgent, onMoveStripAgent, detectedAgents, trayBadgeEnabled, onToggleTrayBadge, glassAlpha, onGlassAlpha, glassTint, onGlassTint, glassInk, onGlassInk, uiScale, onUiScale, stripScale, onStripScale, edgeAutoHide, onEdgeAutoHideChange, surfaceVisibility, onSetSurfaceVisible, pinned, onPinnedChange, pinnedHoverMode, onPinnedHoverMode, pinnedHoverOpacity, onPinnedHoverOpacity, theme, onThemeChange, autoUpdateCheck, onAutoUpdateCheck, availableUpdate }) {
   const [settings, setSettings] = useState(null);
   const [directoryInput, setDirectoryInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1241,6 +1267,8 @@ export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidge
               onStripScale={onStripScale}
               edgeAutoHide={edgeAutoHide}
               onEdgeAutoHideChange={onEdgeAutoHideChange}
+              surfaceVisibility={surfaceVisibility}
+              onSetSurfaceVisible={onSetSurfaceVisible}
               pinned={pinned}
               onPinnedChange={onPinnedChange}
               pinnedHoverMode={pinnedHoverMode}

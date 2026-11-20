@@ -27,8 +27,8 @@ use tauri::image::Image;
 use tauri::menu::Menu;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    ActivationPolicy, AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, Runtime, WebviewUrl,
-    WebviewWindowBuilder,
+    ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, Runtime,
+    WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
 use tauri_nspanel::{panel_delegate, ManagerExt, WebviewWindowExt};
@@ -700,6 +700,10 @@ pub fn open_expanded_window(app: AppHandle, nav: Option<String>) -> Result<(), S
         window.show().map_err(|error| error.to_string())?;
         window.unminimize().ok();
         window.set_focus().map_err(|error| error.to_string())?;
+        if let Some(nav) = nav.as_deref().filter(|value| !value.is_empty()) {
+            crate::set_pending_panel_nav(&app, nav);
+            let _ = app.emit_to(EXPANDED_LABEL, crate::PANEL_NAV_EVENT, nav);
+        }
         return Ok(());
     }
 
