@@ -470,8 +470,6 @@ export function StripBar({
   orientation,
   onToggleOrientation,
   onTogglePinned,
-  onRestore,
-  onExpand,
   onDragScale,
   onCommitDragScale,
   availableUpdate,
@@ -1009,15 +1007,6 @@ export function StripBar({
               title={vertical ? t("切换为横条") : t("切换为竖条")}
             >
               <OrientationIcon size={15} weight={buttonWeight} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="strip-button"
-              onClick={onExpand}
-              aria-label={t("打开主面板")}
-              title={t("主面板")}
-            >
-              <CornersOut size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
           </>
         )}

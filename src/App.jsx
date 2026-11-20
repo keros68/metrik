@@ -1909,8 +1909,6 @@ export function App() {
           orientation={stripOrientation}
           onToggleOrientation={handleToggleStripOrientation}
           onTogglePinned={handleTogglePinned}
-          onRestore={() => handleWindowMode("compact")}
-          onExpand={() => handleWindowMode("expanded")}
           onDragScale={handleStripLiveDragScale}
           onCommitDragScale={handleStripCommitDragScale}
           availableUpdate={availableUpdate}

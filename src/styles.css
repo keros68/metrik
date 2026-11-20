@@ -2625,9 +2625,9 @@ html:has(.strip-detail-popup) #root::after {
   /* 与窗口按钮组垂直居中对齐：按钮组 top 8 + 总高 44（40 按钮 + 2×2 padding），
      中线 30；本按钮高 32 → top = 30 - 16 = 14。 */
   top: 14px;
-  /* 贴在窗口按钮组左侧：按钮组 right 10 + padding 4 + 6 个 40px 按钮 = 右缘 254，
-     再留 16px 间距。按钮增减时这里要跟着改。 */
-  right: 270px;
+  /* 贴在窗口按钮组左侧：按钮组 right 10 + padding 4 + 4 个 40px 按钮 = 右缘 174，
+     再留 12px 间距。按钮增减时这里要跟着改。 */
+  right: 186px;
   display: grid;
   width: 32px;
   height: 32px;

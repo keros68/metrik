@@ -492,21 +492,24 @@ function AppearanceCard({ theme, onThemeChange, glassAlpha, onGlassAlpha, glassT
           </div>
         </div>
       )}
-      <p className="settings-muted">
-        {t("主面板的明暗主题，「自动」跟随系统；小组件不受影响。")}
-      </p>
-      <div className="theme-toggle" role="group" aria-label={t("主面板主题")}>
-        {THEME_OPTIONS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={theme === option.id ? "is-selected" : ""}
-            aria-pressed={theme === option.id}
-            onClick={() => onThemeChange(option.id)}
-          >
-            {t(option.label)}
-          </button>
-        ))}
+      <div className="settings-subsection">
+        <h3>{t("主面板主题")}</h3>
+        <p className="settings-muted">
+          {t("主面板的明暗主题，「自动」跟随系统；小组件不受影响。")}
+        </p>
+        <div className="theme-toggle" role="group" aria-label={t("主面板主题")}>
+          {THEME_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={theme === option.id ? "is-selected" : ""}
+              aria-pressed={theme === option.id}
+              onClick={() => onThemeChange(option.id)}
+            >
+              {t(option.label)}
+            </button>
+          ))}
+        </div>
       </div>
       {/* macOS 面板材质跟随系统 vibrancy，不提供组件外观选项；
           深/浅配色用于 Windows 与 Linux 的卡片和胶囊。 */}
@@ -748,7 +751,7 @@ function AgentsDisplayCard({ widgetAgents, onToggleWidgetAgent, onMoveWidgetAgen
       <div className="settings-agent-columns">
         <AgentListColumn
           title={IS_MAC ? t("菜单栏、小组件与侧栏") : t("小组件与侧栏")}
-          hint={t("完整视图侧栏还会自动加入本周期内产生用量的 Agent。")}
+          hint={t("主面板侧栏还会自动加入本周期内产生用量的 Agent。")}
           agents={widgetAgents}
           detected={detectedAgents}
           onToggle={onToggleWidgetAgent}
@@ -1139,7 +1142,7 @@ const SETTINGS_TABS = [
     id: "appearance",
     label: "外观与缩放",
     title: "外观与缩放",
-    blurb: "完整视图的明暗主题，卡片与胶囊的组件外观、玻璃浓度及独立缩放。",
+    blurb: "主面板的明暗主题，卡片与胶囊的组件外观、玻璃浓度及独立缩放。",
   },
   {
     id: "display",
