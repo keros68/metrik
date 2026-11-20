@@ -373,7 +373,7 @@ export default {
   "勾选即展示（至少保留一个），勾选顺序即显示顺序，↑ 上移。": "Checked agents are shown (keep at least one), in the order listed. Use ↑ to move up.",
   "菜单栏、小组件与侧栏": "Menu bar, widget and sidebar",
   "小组件与侧栏": "Widget and sidebar",
-  "完整视图侧栏还会自动加入本周期内产生用量的 Agent。": "The expanded view sidebar also adds any agent with usage in the current period.",
+  "主面板侧栏还会自动加入本周期内产生用量的 Agent。": "The main panel sidebar also adds any agent with usage in the current period.",
   "胶囊条": "Quota strip",
   "无配额来源的以 \"--\" 占位。": "Agents without a quota source show \"--\".",
   "任务栏图标": "Taskbar icon",
@@ -464,7 +464,7 @@ export default {
   "多设备同步与更新": "Multi-device sync and updates",
   "多台电脑指向同一个共享文件夹即可互相合并统计；导出只含事件标识、Agent、时间与 token 数，不含对话内容或凭据。":
     "Point several computers at the same shared folder to merge their statistics. Exports contain only event IDs, agents, times and token counts, never conversation content or credentials.",
-  "完整视图的明暗主题，卡片与胶囊的组件外观、玻璃浓度及独立缩放。": "Expanded view theme, plus widget appearance, glass density and separate scale for the compact card and quota strip.",
+  "主面板的明暗主题，卡片与胶囊的组件外观、玻璃浓度及独立缩放。": "Main panel theme, plus widget appearance, glass density and separate scale for the compact card and quota strip.",
   "同步设置读取失败，稍后重试。": "Couldn't read the sync settings. Try again later.",
   "同步已开启，本机统计事件已导出。": "Sync is on. Statistics events from this device are exported.",
   "同步已关闭，已清除合并的远端统计。": "Sync is off. Merged statistics from other devices are cleared.",
