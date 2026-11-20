@@ -194,7 +194,7 @@ async function applyWebviewZoom(factor) {
 
 /// 启动时就地应用缩放系数（不走 applyWindowMode 的 hide/show，避免闪烁）。
 /// strip 的启动尺寸由 strip 专属 effect 走 applyWindowMode，这里只管 compact。
-async function applyStartupUiScale(mode) {
+async function applyStartupUiScale(mode, options = {}) {
   if (isMacPlatform() || mode !== "compact") return;
   const api = await windowApi();
   if (!api) return;
@@ -202,12 +202,13 @@ async function applyStartupUiScale(mode) {
   // Windows 与 Linux 首窗都以 hidden 创建（tauri.windows/linux.conf.json）：
   // 位置和首帧尺寸恢复后才首次显示，避免先在屏幕中央按默认尺寸闪现再
   // 跳走。任何一步失败都不能把应用永久留在托盘，所以显示放在 finally。
-  let revealed = false;
+  let revealed = Boolean(options.keepHidden);
   const reveal = async () => {
     if (revealed) return;
     revealed = true;
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
+    await invoke("notify_surface_visibility").catch(() => {});
   };
   try {
     await applyWebviewZoom(uiScale);
@@ -626,6 +627,75 @@ async function onTrayShowExpanded(handler) {
   return listen("tray://show-expanded", () => handler());
 }
 
+async function getSurfaceVisibility() {
+  if (!isDesktop() || isMacPlatform()) {
+    return { compact: true, strip: false, expanded: false };
+  }
+  return invoke("get_surface_visibility").catch(() => ({
+    compact: true,
+    strip: false,
+    expanded: false,
+  }));
+}
+
+async function setSurfaceVisible(surface, visible, nav = null) {
+  if (!isDesktop() || isMacPlatform()) return;
+  await invoke("set_surface_visible", { surface, visible: Boolean(visible), nav: nav || null });
+}
+
+async function notifySurfaceVisibility() {
+  if (!isDesktop() || isMacPlatform()) return;
+  await invoke("notify_surface_visibility").catch(() => {});
+}
+
+async function onSurfaceVisibilityChanged(handler) {
+  if (!isDesktop() || isMacPlatform()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("metrik://surface-visibility", (event) => handler(event.payload || {}));
+}
+
+async function onPanelNav(handler) {
+  if (!isDesktop()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("metrik://panel-nav", (event) => handler(event.payload));
+}
+
+async function takePendingPanelNav() {
+  if (!isDesktop()) return null;
+  return invoke("take_pending_panel_nav").catch(() => null);
+}
+
+async function isSurfaceVisibilityRequested(surface) {
+  if (!isDesktop() || isMacPlatform()) return true;
+  return invoke("is_surface_visibility_requested", { surface }).catch(() => true);
+}
+
+/// 跨窗口实时状态同步（卡片 / 胶囊 / 主面板共享设置与缩放）。
+/// 附带发送窗口 label 与递增序号 seq，监听方跳过自身广播并忽略陈旧事件。
+let lastBroadcastSeq = 0;
+
+async function broadcastStateSync(key, value) {
+  if (!isDesktop()) return;
+  const api = await windowApi();
+  const source = api?.getCurrentWindow?.().label || "";
+  const seq = Math.max(Date.now(), lastBroadcastSeq + 1);
+  lastBroadcastSeq = seq;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit("metrik://state-sync", { key, value, source, seq }).catch(() => {});
+}
+
+async function onStateSync(handler) {
+  if (!isDesktop()) return () => {};
+  const api = await windowApi();
+  const selfLabel = api?.getCurrentWindow?.().label || "";
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("metrik://state-sync", (event) => {
+    const payload = event.payload || {};
+    if (payload.source && selfLabel && payload.source === selfLabel) return;
+    handler(payload);
+  });
+}
+
 /// mac 外观改动（玻璃浓度）的跨窗口广播：设置页开在独立的完整视图窗口，
 /// 面板是另一个 webview 实例。WKWebView 的 storage 事件不跨窗口触发
 /// （每个窗口是独立 process pool），所以走 Tauri 事件总线；emit 也会回到
@@ -911,17 +981,20 @@ async function applyWindowMode(mode, options = {}) {
     }
     // 钳位/居中后的最终坐标是显示后校验的基准。
     const stripFinal = await appWindow.outerPosition().catch(() => null);
-    await appWindow.show().catch(() => {});
-    await ensurePositionAfterShow(api, appWindow, stripFinal);
-    await reconcileFloatingSizeAfterShow(
-      api,
-      appWindow,
-      width,
-      height,
-      stripScale,
-      physical,
-    );
-    await appWindow.setFocus().catch(() => {});
+    if (await isSurfaceVisibilityRequested("strip")) {
+      await appWindow.show().catch(() => {});
+      await invoke("notify_surface_visibility").catch(() => {});
+      await ensurePositionAfterShow(api, appWindow, stripFinal);
+      await reconcileFloatingSizeAfterShow(
+        api,
+        appWindow,
+        width,
+        height,
+        stripScale,
+        physical,
+      );
+      await appWindow.setFocus().catch(() => {});
+    }
     return;
   }
 
@@ -1483,6 +1556,90 @@ async function reassertStripSize({ width, height, scaleFactor = null }) {
   );
 }
 
+/// 卡片实时等比例缩放（拖拽角标或设置页滑杆联动）：不 hide/show，
+/// 直接同步更新 WebView zoom 与窗口物理尺寸；松手（persist=true）后再做视口校验与工作区钳位。
+async function applyLiveCompactScale(nextScale, { persist = false } = {}) {
+  if (isMacPlatform()) return readUiScale();
+  const normalized = persist ? setWindowUiScale(nextScale) : normalizeUiScale(nextScale);
+  uiScale = normalized;
+  const api = await windowApi();
+  if (!api) return normalized;
+  const appWindow = api.getCurrentWindow();
+  const size = WINDOW_SIZES.compact;
+  const height = compactContentHeight(size.height);
+  await applyWebviewZoom(normalized);
+  const physical = await scaledPhysicalSize(api, appWindow, size.width, height, normalized);
+  await appWindow.setSize(physical).catch(() => {});
+  if (persist) {
+    await clampIntoWorkArea(api, appWindow, physical);
+    await reconcileFloatingSizeAfterShow(api, appWindow, size.width, height, normalized, physical);
+  }
+  return normalized;
+}
+
+/// 胶囊条实时等比例缩放（拖拽末端或设置页滑杆联动）：不 hide/show。
+/// 落盘时保留贴右/贴底边锚定，防止缩小后脱离屏幕边缘。
+async function applyLiveStripScale(nextScale, { width, height } = {}, { persist = false } = {}) {
+  if (isMacPlatform()) return readStripScale();
+  const normalized = persist ? setStripScale(nextScale) : normalizeUiScale(nextScale);
+  stripScale = normalized;
+  const api = await windowApi();
+  if (!api) return normalized;
+  const appWindow = api.getCurrentWindow();
+  const size = WINDOW_SIZES.strip;
+  const targetWidth = Math.max(size.minWidth, Math.round(width || size.width));
+  const targetHeight = Math.max(size.minHeight, Math.round(height || size.height));
+  await hideStripDetailPopup();
+  await collapseVerticalStripHover();
+  const coordinateAware = !isLinuxPlatform() || await supportsGlobalWindowCoordinates();
+  const [pos, outer, monitor] = persist && coordinateAware
+    ? await Promise.all([
+        appWindow.outerPosition().catch(() => null),
+        appWindow.outerSize().catch(() => null),
+        api.currentMonitor().catch(() => null),
+      ])
+    : [null, null, null];
+  const workArea = monitor?.workArea;
+  const anchor = { right: false, bottom: false };
+  if (persist && coordinateAware && pos && outer && workArea) {
+    const workRight = workArea.position.x + workArea.size.width;
+    const workBottom = workArea.position.y + workArea.size.height;
+    anchor.right = Math.abs(pos.x + outer.width - workRight) <= 8;
+    anchor.bottom = Math.abs(pos.y + outer.height - workBottom) <= 8;
+  }
+  await applyWebviewZoom(normalized);
+  let physical = await scaledPhysicalSize(
+    api,
+    appWindow,
+    targetWidth,
+    targetHeight,
+    normalized,
+    monitor?.scaleFactor,
+  );
+  await appWindow.setSize(physical).catch(() => {});
+  if (persist) {
+    physical = await reconcileFloatingSizeAfterShow(
+      api,
+      appWindow,
+      targetWidth,
+      targetHeight,
+      normalized,
+      physical,
+    );
+    if (coordinateAware && (anchor.right || anchor.bottom) && pos && workArea) {
+      const workRight = workArea.position.x + workArea.size.width;
+      const workBottom = workArea.position.y + workArea.size.height;
+      const nextX = anchor.right ? workRight - physical.width : pos.x;
+      const nextY = anchor.bottom ? workBottom - physical.height : pos.y;
+      await appWindow
+        .setPosition(new api.PhysicalPosition(Math.round(nextX), Math.round(nextY)))
+        .catch(() => {});
+    }
+    await clampIntoWorkArea(api, appWindow, physical);
+  }
+  return normalized;
+}
+
 /// macOS 菜单栏面板的高度跟随内容（宽度恒为 compact 设计宽，不做缩放——
 /// 面板是系统 UI 的一部分，尺寸固定；缩放系数只属于 Windows 小插件）。
 /// 面板顶部锚定菜单栏图标，长高向下延伸——macos.rs 的 resize_panel 会
@@ -1953,11 +2110,14 @@ async function toggleMaximizeWindow() {
 export {
   UI_SCALE_RANGE,
   WINDOW_SIZES,
+  applyLiveCompactScale,
+  applyLiveStripScale,
   applyStartupUiScale,
   applyWindowMode,
   beginStripControlsExpand,
   broadcastMacAgentSelection,
   broadcastMacAppearance,
+  broadcastStateSync,
   cancelStripControlsExpand,
   checkForUpdate,
   collapseStripControlsExpand,
@@ -1965,6 +2125,7 @@ export {
   closeWindow,
   getAutostart,
   getMacAgentSelection,
+  getSurfaceVisibility,
   hideStripDetailPopup,
   expandVerticalStripHover,
   installUpdate,
@@ -1973,10 +2134,14 @@ export {
   isMacPlatform,
   isWindowsPlatform,
   minimizeWindow,
+  notifySurfaceVisibility,
   onMacAgentSelection,
   onMacAppearance,
+  onPanelNav,
   onScaleFactorChanged,
+  onStateSync,
   onStripDetailClosed,
+  onSurfaceVisibilityChanged,
   onTrayPinnedChange,
   onTrayShowExpanded,
   openExpandedWindow,
@@ -1990,6 +2155,7 @@ export {
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
+  setSurfaceVisible,
   updateMacStatusItems,
   updateTrayQuotaBadge,
   setStripScale,
@@ -2004,5 +2170,6 @@ export {
   syncEdgeDock,
   syncLinuxTrayPinned,
   stripContentSize,
+  takePendingPanelNav,
   toggleMaximizeWindow,
 };

@@ -38,18 +38,25 @@ import {
   rebuildLocalLedger,
 } from "./usageClient";
 import {
+  applyLiveCompactScale,
+  applyLiveStripScale,
   applyStartupUiScale,
   applyWindowMode,
   broadcastMacAgentSelection,
   broadcastMacAppearance,
+  broadcastStateSync,
   checkForUpdate,
   collapseVerticalStripHover,
   getMacAgentSelection,
+  getSurfaceVisibility,
   isDesktop,
   isWindowsPlatform,
   onMacAgentSelection,
   onMacAppearance,
+  onPanelNav,
   onScaleFactorChanged,
+  onStateSync,
+  onSurfaceVisibilityChanged,
   onTrayPinnedChange,
   onTrayShowExpanded,
   openExpandedWindow,
@@ -61,6 +68,7 @@ import {
   setNativeTheme,
   setPinnedHoverTargetOpacity,
   setStripScale,
+  setSurfaceVisible,
   setWindowGlass,
   setWindowPinned,
   setWindowUiScale,
@@ -69,6 +77,7 @@ import {
   stripContentSize,
   syncEdgeDock,
   syncLinuxTrayPinned,
+  takePendingPanelNav,
   updateMacStatusItems,
   updateTrayQuotaBadge,
 } from "./windowClient";
@@ -671,11 +680,27 @@ function SourceDrawer({ snapshot, onClose, onRebuildLedger, rebuildState }) {
 
 function initialWindowMode() {
   if (typeof window === "undefined") return "compact";
-  if (new URLSearchParams(window.location.search).get("view") === "expanded") return "expanded";
-  // macOS 的零占地摘要属于菜单栏状态图标，不再把面板压成一条悬浮胶囊。
+  const view = new URLSearchParams(window.location.search).get("view");
+  if (view === "expanded") return "expanded";
+  if (view === "strip" && !IS_MAC) return "strip";
   if (IS_MAC) return "compact";
-  // 上次收成胶囊条则恢复；expanded 不恢复。
+  // Windows / Linux 桌面端三形态各自独立窗口：main 固定承担 compact 卡片，
+  // strip 与 expanded 由独立窗口承担；浏览器演示模式仍支持单页切换。
+  if (isDesktop()) return "compact";
   return localStorage.getItem("metrik:viewMode") === "strip" ? "strip" : "compact";
+}
+
+function readStartupSurfacePrefs() {
+  const storedCompact = localStorage.getItem("metrik:surfaceCompactVisible");
+  const storedStrip = localStorage.getItem("metrik:surfaceStripVisible");
+  if (storedCompact !== null || storedStrip !== null) {
+    const compact = storedCompact !== "false";
+    const strip = storedStrip === "true";
+    // 防止上次全部关掉导致冷启动无任何可见窗口
+    return compact || strip ? { compact, strip } : { compact: true, strip: false };
+  }
+  const legacyStrip = localStorage.getItem("metrik:viewMode") === "strip";
+  return { compact: !legacyStrip, strip: legacyStrip };
 }
 
 function stripPositionMode(orientation) {
@@ -713,10 +738,73 @@ export function App() {
   const [edgeAutoHide, setEdgeAutoHide] = useState(
     () => localStorage.getItem("metrik:edgeAutoHide") === "true",
   );
+  const [surfaceVisibility, setSurfaceVisibility] = useState(() => ({
+    compact: viewMode === "compact",
+    strip: viewMode === "strip",
+    expanded: viewMode === "expanded",
+  }));
+  const surfaceVisibilityRef = useRef(surfaceVisibility);
+  surfaceVisibilityRef.current = surfaceVisibility;
+
+  useEffect(() => {
+    if (IS_MAC || !isDesktop()) return undefined;
+    let cancelled = false;
+    getSurfaceVisibility().then((vis) => {
+      if (!cancelled && vis) setSurfaceVisibility(vis);
+    });
+    const stopPromise = onSurfaceVisibilityChanged((vis) => {
+      if (!vis) return;
+      setSurfaceVisibility(vis);
+      if (typeof vis.compact === "boolean") {
+        localStorage.setItem("metrik:surfaceCompactVisible", String(vis.compact));
+      }
+      if (typeof vis.strip === "boolean") {
+        localStorage.setItem("metrik:surfaceStripVisible", String(vis.strip));
+      }
+    });
+    return () => {
+      cancelled = true;
+      stopPromise.then((stop) => stop?.());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktop() || viewMode !== "expanded") return undefined;
+    const applyNav = (nav) => {
+      if (nav === "settings" || nav === "overview" || nav === "usage" || nav === "reports") {
+        setActiveNav(nav);
+      }
+    };
+    const stopPromise = onPanelNav(applyNav);
+    takePendingPanelNav().then((pending) => {
+      if (pending) applyNav(pending);
+    });
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
+  }, [viewMode]);
+
+  const handleSetSurfaceVisible = useCallback((surface, visible, nav = null) => {
+    if (IS_MAC || !isDesktop()) return;
+    if (surface === "compact") {
+      localStorage.setItem("metrik:surfaceCompactVisible", String(Boolean(visible)));
+    } else if (surface === "strip") {
+      localStorage.setItem("metrik:surfaceStripVisible", String(Boolean(visible)));
+    }
+    runWindowAction(() => setSurfaceVisible(surface, visible, nav));
+  }, []);
+
+  const handleToggleSurface = useCallback((surface) => {
+    if (IS_MAC || !isDesktop()) return;
+    const current = Boolean(surfaceVisibilityRef.current?.[surface]);
+    handleSetSurfaceVisible(surface, !current);
+  }, [handleSetSurfaceVisible]);
+
   const handleEdgeAutoHideChange = useCallback((next) => {
     const value = Boolean(next);
     setEdgeAutoHide(value);
     localStorage.setItem("metrik:edgeAutoHide", String(value));
+    broadcastStateSync("edgeAutoHide", value);
   }, []);
   const [pinnedHoverMode, setPinnedHoverMode] = useState(() =>
     normalizePinnedHoverMode(localStorage.getItem("metrik:pinnedHoverMode")),
@@ -729,11 +817,13 @@ export function App() {
     const value = normalizePinnedHoverMode(next);
     setPinnedHoverMode(value);
     localStorage.setItem("metrik:pinnedHoverMode", value);
+    broadcastStateSync("pinnedHoverMode", value);
   }, []);
   const handlePinnedHoverOpacity = useCallback((next) => {
     const value = Math.min(0.9, Math.max(0.05, next));
     setPinnedHoverOpacity(value);
     localStorage.setItem("metrik:pinnedHoverOpacity", String(value));
+    broadcastStateSync("pinnedHoverOpacity", value);
   }, []);
   // 胶囊条方向：横条 / 竖条，用户手动选，记住选择。
   const [stripOrientation, setStripOrientation] = useState(() =>
@@ -743,11 +833,12 @@ export function App() {
     setStripOrientation((current) => {
       const next = current === "vertical" ? "horizontal" : "vertical";
       localStorage.setItem("metrik:stripOrientation", next);
+      broadcastStateSync("stripOrientation", next);
       return next;
     });
   }, []);
-  // 大窗口（展开视图）暗色主题：自动 / 亮 / 暗三态，默认跟随系统。
-  // 仅作用于展开视图；紧凑小插件的玻璃/浅色外观不受此设置影响。
+  // 大窗口（主面板）暗色主题：自动 / 亮 / 暗三态，默认跟随系统。
+  // 仅作用于主面板；紧凑小插件的玻璃/浅色外观不受此设置影响。
   const [theme, setTheme] = useState(() => {
     const stored = localStorage.getItem("metrik:theme");
     return stored === "light" || stored === "dark" ? stored : "auto";
@@ -755,6 +846,7 @@ export function App() {
   const handleThemeChange = useCallback((next) => {
     setTheme(next);
     localStorage.setItem("metrik:theme", next);
+    broadcastStateSync("theme", next);
   }, []);
   const [systemDark, setSystemDark] = useState(
     () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
@@ -806,6 +898,7 @@ export function App() {
     setGlassAlpha(next);
     localStorage.setItem("metrik:glassAlpha", String(next));
     if (IS_MAC) runWindowAction(() => broadcastMacAppearance({ glassAlpha: next }));
+    else broadcastStateSync("glassAlpha", next);
   }, []);
   // 组件外观：深色 HUD / 透亮白（苹果式白 tint + 深色文字）/ 透明（不铺材质，
   // 直接透出桌面）。用户可选，记住选择。作用于 Windows 与 Linux 的卡片和胶囊；
@@ -824,6 +917,7 @@ export function App() {
     const value = normalizeGlassTint(next);
     setGlassTint(value);
     localStorage.setItem("metrik:glassTint", value);
+    broadcastStateSync("glassTint", value);
   }, []);
   // 透明档的文字颜色，只在透明档生效；其它两档的前景由配色本身决定。
   const [glassInk, setGlassInk] = useState(() =>
@@ -833,17 +927,17 @@ export function App() {
     const value = normalizeGlassInk(next);
     setGlassInk(value);
     localStorage.setItem("metrik:glassInk", value);
+    broadcastStateSync("glassInk", value);
   }, []);
   // 轮转按钮要读当前配色但不该因它重建回调，用 ref 取值。
   const glassTintRef = useRef(glassTint);
   glassTintRef.current = glassTint;
-  // 卡片/胶囊的整体缩放系数（连续值）：窗口尺寸与 WebView 原生 zoom 同乘一个系数，
-  // 等比放大不会变形；expanded 有独立系数。生效在 windowClient 的形态切换里，
-  // 设置页调整后下次回到卡片/胶囊时应用。
+  // 卡片的整体缩放系数（连续值）：滑杆与卡片右下角拖拽共用，实时生效。
   const [uiScale, setUiScale] = useState(() => readUiScale());
   const handleUiScale = useCallback((next) => {
-    // setWindowUiScale 负责钳位与持久化，返回实际生效值回填 UI。
-    setUiScale(setWindowUiScale(next));
+    const applied = setWindowUiScale(next);
+    setUiScale(applied);
+    broadcastStateSync("uiScale", applied);
   }, []);
   // 自动检查更新：默认开、设置里可关。只检查和提醒（小组件上的小圆点），
   // 下载安装始终由用户在设置页点击触发。
@@ -862,6 +956,7 @@ export function App() {
   const handleToggleTrayBadge = useCallback((next) => {
     setTrayBadgeEnabled(next);
     localStorage.setItem("metrik:trayQuotaBadge", String(next));
+    broadcastStateSync("trayBadgeEnabled", next);
   }, []);
   const [availableUpdate, setAvailableUpdate] = useState(null);
   useEffect(() => {
@@ -889,6 +984,7 @@ export function App() {
     // macOS 的设置页和菜单栏面板不共享 React 状态，也收不到彼此的 storage
     // 事件。立即广播选择，避免隐藏面板下一轮轮询把旧列表写回菜单栏/WidgetKit。
     if (IS_MAC) runWindowAction(() => broadcastMacAgentSelection(next));
+    else broadcastStateSync("widgetAgents", next);
   }, []);
   const handleToggleWidgetAgent = useCallback((agentId) => {
     // 新勾选的排到末尾（数组顺序就是显示顺序，与胶囊条同一套语义）。
@@ -1056,16 +1152,19 @@ export function App() {
   useEffect(() => {
     // macOS 面板由系统管层级和位置：不置顶、不恢复坐标。
     if (IS_MAC) return;
+    if (viewMode === "expanded") return;
     if (pinned) runWindowAction(() => setWindowPinned(true));
     runWindowAction(() => syncLinuxTrayPinned(pinned));
     // 小组件回到上次摆放的位置（含固定位置），坐标已不在任何屏幕上时居中。
     // strip 形态的启动定位在 strip 专属 effect 里做。
     if (viewMode === "compact") {
-      // 先到位、再按最终所在显示器的 factor 算尺寸：并发执行可能在错误的
-      // factor 下算物理尺寸，视口缩水后 320 的内容被裁。
+      const prefs = isDesktop() ? readStartupSurfacePrefs() : { compact: true, strip: false };
       runWindowAction(async () => {
         await restoreWindowPosition("compact");
-        await applyStartupUiScale("compact");
+        await applyStartupUiScale("compact", { keepHidden: !prefs.compact });
+        if (prefs.strip && isDesktop()) {
+          await setSurfaceVisible("strip", true);
+        }
       });
     }
   }, []);
@@ -1324,10 +1423,12 @@ export function App() {
   });
   const stripAgents = stripAgentsSetting ?? autoStripAgents;
 
-  // 胶囊条的独立缩放系数（与小组件互不影响）：设置页滑杆调整，下次进入时生效。
+  // 胶囊条的独立缩放系数（与小组件互不影响）：实时生效。
   const [stripScale, setStripScaleState] = useState(() => readStripScale());
   const handleStripScale = useCallback((next) => {
-    setStripScaleState(setStripScale(next));
+    const applied = setStripScale(next);
+    setStripScaleState(applied);
+    broadcastStateSync("stripScale", applied);
   }, []);
   const stripLayoutRef = useRef({
     orientation: stripOrientation,
@@ -1337,6 +1438,135 @@ export function App() {
     orientation: stripOrientation,
     count: stripAgents.length,
   };
+
+  const lastSyncSeqRef = useRef({});
+  const emitSyncedState = useCallback((key, value) => {
+    lastSyncSeqRef.current[key] = Date.now();
+    broadcastStateSync(key, value);
+  }, []);
+
+  // Windows / Linux 跨窗口实时同步（卡片、胶囊、主面板共享外观、缩放与列表设置）
+  useEffect(() => {
+    if (IS_MAC || !isDesktop()) return undefined;
+    const stopPromise = onStateSync(({ key, value, seq }) => {
+      if (typeof seq === "number" && (lastSyncSeqRef.current[key] || 0) > seq) return;
+      if (typeof seq === "number") lastSyncSeqRef.current[key] = seq;
+      switch (key) {
+        case "glassAlpha": {
+          const alpha = Number(value);
+          if (Number.isFinite(alpha) && alpha >= 0.05 && alpha <= 0.96) setGlassAlpha(alpha);
+          break;
+        }
+        case "glassTint":
+          setGlassTint(normalizeGlassTint(value));
+          break;
+        case "glassInk":
+          setGlassInk(normalizeGlassInk(value));
+          break;
+        case "theme":
+          if (value === "auto" || value === "light" || value === "dark") setTheme(value);
+          break;
+        case "uiScale": {
+          const applied = Number(value);
+          if (Number.isFinite(applied)) {
+            setUiScale(applied);
+            if (viewModeRef.current === "compact") {
+              runLatestWindowCorrection(() => applyLiveCompactScale(applied, { persist: true }));
+            }
+          }
+          break;
+        }
+        case "stripScale": {
+          const applied = Number(value);
+          if (Number.isFinite(applied)) {
+            setStripScaleState(applied);
+            if (viewModeRef.current === "strip") {
+              const layout = stripLayoutRef.current;
+              const estimate = stripWindowSize(layout.orientation, layout.count);
+              const content = stripContentSize(layout.orientation, estimate);
+              runLatestWindowCorrection(() => applyLiveStripScale(applied, content, { persist: true }));
+            }
+          }
+          break;
+        }
+        case "snapshotRefresh":
+          loadSnapshot(currentPeriod.current);
+          break;
+        case "widgetAgents": {
+          if (Array.isArray(value)) {
+            const next = normalizeVisibleAgentList(value);
+            if (next.length) setWidgetAgents(next);
+          }
+          break;
+        }
+        case "stripAgents": {
+          if (Array.isArray(value)) {
+            const next = normalizeVisibleAgentList(value);
+            if (next.length) setStripAgentsSetting(next);
+          }
+          break;
+        }
+        case "pinned": {
+          const next = Boolean(value);
+          setPinned(next);
+          if (viewModeRef.current !== "expanded") {
+            runWindowAction(async () => {
+              invalidateWindowCorrections();
+              await collapseVerticalStripHover();
+              await setWindowPinned(next);
+            });
+          }
+          break;
+        }
+        case "edgeAutoHide":
+          setEdgeAutoHide(Boolean(value));
+          break;
+        case "stripOrientation":
+          if (value === "horizontal" || value === "vertical") setStripOrientation(value);
+          break;
+        case "trayBadgeEnabled":
+          setTrayBadgeEnabled(Boolean(value));
+          break;
+        case "pinnedHoverMode":
+          setPinnedHoverMode(normalizePinnedHoverMode(value));
+          break;
+        case "pinnedHoverOpacity": {
+          const opacity = Number(value);
+          if (Number.isFinite(opacity)) setPinnedHoverOpacity(Math.min(0.9, Math.max(0.05, opacity)));
+          break;
+        }
+        default:
+          break;
+      }
+    });
+    return () => {
+      stopPromise.then((stop) => stop?.());
+    };
+  }, []);
+
+  const handleCardLiveDragScale = useCallback((nextScale) => {
+    setUiScale(nextScale);
+    runLatestWindowCorrection(() => applyLiveCompactScale(nextScale, { persist: false }));
+  }, []);
+
+  const handleCardCommitDragScale = useCallback((nextScale) => {
+    const applied = setWindowUiScale(nextScale);
+    setUiScale(applied);
+    broadcastStateSync("uiScale", applied);
+    runLatestWindowCorrection(() => applyLiveCompactScale(applied, { persist: true }));
+  }, []);
+
+  const handleStripLiveDragScale = useCallback((nextScale, base) => {
+    setStripScaleState(nextScale);
+    runLatestWindowCorrection(() => applyLiveStripScale(nextScale, base, { persist: false }));
+  }, []);
+
+  const handleStripCommitDragScale = useCallback((nextScale, base) => {
+    const applied = setStripScale(nextScale);
+    setStripScaleState(applied);
+    broadcastStateSync("stripScale", applied);
+    runLatestWindowCorrection(() => applyLiveStripScale(applied, base, { persist: true }));
+  }, []);
 
   // DPI 事件的 payload 是 Windows 已确认的新 factor，直接用它重算；compact
   // 与 strip 都不能只靠 DOM 自愈，因为被裁的可能是 WebView 外层 HWND。
@@ -1397,7 +1627,8 @@ export function App() {
     [macStatusItems],
   );
   useEffect(() => {
-    if (!IS_WINDOWS) return;
+    // 只有常驻的 main（compact）窗口负责更新 Windows 托盘数字，避免多窗口互相覆盖。
+    if (!IS_WINDOWS || viewMode !== "compact") return;
     const spec = trayBadgeEnabled
       ? trayBadge && {
           ...trayBadge,
@@ -1410,7 +1641,7 @@ export function App() {
       : null;
     runWindowAction(() => updateTrayQuotaBadge(spec));
     // 悬停提示是送到原生托盘的文字，切换语言时要重发。
-  }, [trayBadge, trayBadgeEnabled, language]);
+  }, [trayBadge, trayBadgeEnabled, language, viewMode]);
 
   // 勾选即追加到末尾（勾选顺序 = 显示顺序）；首次改动时以当前自动列表为基准。
   const handleToggleStripAgent = useCallback((agentId) => {
@@ -1421,6 +1652,7 @@ export function App() {
         : [...base, agentId];
       if (!next.length) return current; // 至少保留一个
       localStorage.setItem("metrik:stripAgents", JSON.stringify(next));
+      broadcastStateSync("stripAgents", next);
       return next;
     });
   }, []);
@@ -1431,6 +1663,7 @@ export function App() {
       if (index <= 0) return current;
       [base[index - 1], base[index]] = [base[index], base[index - 1]];
       localStorage.setItem("metrik:stripAgents", JSON.stringify(base));
+      broadcastStateSync("stripAgents", base);
       return base;
     });
   }, []);
@@ -1516,8 +1749,7 @@ export function App() {
   }, [activeNav, viewMode, period, usageReloadNonce]);
 
   const handleWindowMode = useCallback((nextMode) => {
-    // macOS：菜单栏状态图标承担零占地摘要；面板只保留紧凑卡片，完整视图
-    // 另开标准窗口，不再把 NSPanel 变形成一条悬浮胶囊。
+    // macOS：菜单栏状态图标承担零占地摘要；面板只保留紧凑卡片，主面板另开标准窗口。
     if (IS_MAC) {
       if (nextMode === "expanded") {
         runWindowAction(() => openExpandedWindow());
@@ -1529,6 +1761,17 @@ export function App() {
       runWindowAction(() => applyWindowMode("compact"));
       return;
     }
+    // Windows / Linux 桌面端：卡片、胶囊、主面板各自独立窗口，互不隐藏。
+    if (isDesktop()) {
+      if (nextMode === "expanded") {
+        runWindowAction(() => openExpandedWindow());
+        return;
+      }
+      if (nextMode === "compact" || nextMode === "strip") {
+        handleSetSurfaceVisible(nextMode, true);
+        return;
+      }
+    }
     const fromMode = viewModeRef.current;
     invalidateWindowCorrections();
     previousViewModeRef.current = fromMode;
@@ -1538,19 +1781,16 @@ export function App() {
     setViewMode(nextMode);
     if (nextMode === "compact") setActiveNav("overview");
     if (nextMode !== "expanded") localStorage.setItem("metrik:viewMode", nextMode);
-    // strip 的变形由 strip 专属 effect 统一处理（含启动恢复与置顶断言）。
-    // expanded 在 applyWindowMode 里强制解除置顶；回到 compact 后按用户选择
-    // 重新断言，固定只属于悬浮形态。
     if (nextMode === "strip") return;
     runWindowAction(async () => {
       await applyWindowMode(nextMode, { fromPositionMode });
       if (nextMode === "compact") await setWindowPinned(pinnedRef.current);
     });
-  }, []);
+  }, [handleSetSurfaceVisible]);
 
-  // 小组件上的更新提示点：点击直达设置页。macOS 的设置在独立展开窗口里。
+  // 小组件上的更新提示点：点击直达主面板设置页。
   const handleOpenUpdate = useCallback(() => {
-    if (IS_MAC) {
+    if (isDesktop()) {
       runWindowAction(() => openExpandedWindow("settings"));
       return;
     }
@@ -1577,15 +1817,17 @@ export function App() {
     const value = Boolean(next);
     setPinned(value);
     localStorage.setItem("metrik:pinned", String(value));
-    // 完整视图始终是普通窗口；在设置中选择“置顶只读”只为下次回到悬浮形态
-    // 预设状态，不能让 1120×760 的设置窗口本身盖住其它应用。
+    emitSyncedState("pinned", value);
+    // 主面板始终是普通窗口；只在悬浮窗口上应用置顶，避免在 Linux 上误停悬浮悬停监听。
     runWindowAction(async () => {
-      invalidateWindowCorrections();
-      await collapseVerticalStripHover();
-      await setWindowPinned(value && viewModeRef.current !== "expanded");
+      if (viewModeRef.current !== "expanded") {
+        invalidateWindowCorrections();
+        await collapseVerticalStripHover();
+        await setWindowPinned(value);
+      }
       await syncLinuxTrayPinned(value);
     });
-  }, []);
+  }, [emitSyncedState]);
 
   const handleTogglePinned = useCallback(() => {
     handlePinnedChange(!pinnedRef.current);
@@ -1648,6 +1890,7 @@ export function App() {
   // 否则切形态时 hooks 数量变化会直接把 React 树崩成白屏。
   const handleForceRefresh = useCallback(() => {
     loadSnapshot(currentPeriod.current, { force: true });
+    broadcastStateSync("snapshotRefresh", Date.now());
   }, [loadSnapshot]);
 
   if (viewMode === "strip" && !IS_MAC) {
@@ -1668,6 +1911,8 @@ export function App() {
           onTogglePinned={handleTogglePinned}
           onRestore={() => handleWindowMode("compact")}
           onExpand={() => handleWindowMode("expanded")}
+          onDragScale={handleStripLiveDragScale}
+          onCommitDragScale={handleStripCommitDragScale}
           availableUpdate={availableUpdate}
           onOpenUpdate={handleOpenUpdate}
         />
@@ -1693,6 +1938,10 @@ export function App() {
           onTogglePinned={handleTogglePinned}
           onToggleTransparent={handleToggleTransparent}
           onExpand={handleWindowMode}
+          onToggleSurface={isDesktop() && !IS_MAC ? handleToggleSurface : undefined}
+          surfaceVisibility={surfaceVisibility}
+          onDragScale={handleCardLiveDragScale}
+          onCommitDragScale={handleCardCommitDragScale}
           onRefresh={handleForceRefresh}
           quotaAgent={activeQuotaAgent}
           onCycleQuotaAgent={handleCycleQuotaAgent}
@@ -1725,8 +1974,10 @@ export function App() {
               pinned={pinned}
               theme={theme}
               darkTheme={darkTheme}
+              surfaceVisibility={surfaceVisibility}
               onThemeChange={handleThemeChange}
               onToggleMode={handleWindowMode}
+              onToggleSurface={isDesktop() && !IS_MAC ? handleToggleSurface : undefined}
               onTogglePinned={handleTogglePinned}
             />
           </>
@@ -1832,7 +2083,10 @@ export function App() {
           </>
         ) : activeNav === "settings" ? (
           <SettingsSection
-            onSnapshotRefresh={() => loadSnapshot(currentPeriod.current)}
+            onSnapshotRefresh={() => {
+              loadSnapshot(currentPeriod.current);
+              broadcastStateSync("snapshotRefresh", Date.now());
+            }}
             widgetAgents={widgetAgents}
             onToggleWidgetAgent={handleToggleWidgetAgent}
             onMoveWidgetAgent={handleMoveWidgetAgent}
@@ -1856,6 +2110,8 @@ export function App() {
             onPinnedChange={handlePinnedChange}
             edgeAutoHide={edgeAutoHide}
             onEdgeAutoHideChange={handleEdgeAutoHideChange}
+            surfaceVisibility={surfaceVisibility}
+            onSetSurfaceVisible={handleSetSurfaceVisible}
             pinnedHoverMode={pinnedHoverMode}
             onPinnedHoverMode={handlePinnedHoverMode}
             pinnedHoverOpacity={pinnedHoverOpacity}

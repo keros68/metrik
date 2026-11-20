@@ -61,7 +61,7 @@ struct AppState {
     quota_cache: SharedQuotaCache,
     response_speed: Arc<response_speed::Collector>,
     #[cfg(target_os = "linux")]
-    pinned_hover_monitor: Arc<pinned_hover::Monitor>,
+    pinned_hover_monitors: Mutex<HashMap<String, Arc<pinned_hover::Monitor>>>,
 }
 
 /// 命令体放到阻塞线程池执行，错误转成界面直接展示的文字。
@@ -1358,12 +1358,15 @@ fn configure_pinned_hover(
     enabled: bool,
     target_opacity: f64,
 ) -> bool {
-    pinned_hover::configure(
-        window,
-        Arc::clone(&state.pinned_hover_monitor),
-        enabled,
-        target_opacity,
-    )
+    let label = window.label().to_string();
+    let monitor = match state.pinned_hover_monitors.lock() {
+        Ok(mut map) => Arc::clone(
+            map.entry(label)
+                .or_insert_with(|| Arc::new(pinned_hover::Monitor::default())),
+        ),
+        Err(_) => return false,
+    };
+    pinned_hover::configure(window, monitor, enabled, target_opacity)
 }
 
 /// Synchronize the Linux tray item's label after a settings-page change.
@@ -1378,10 +1381,10 @@ fn sync_linux_tray_pinned(state: State<'_, LinuxTrayPinMenu>, pinned: bool) {
 impl LinuxTrayPinMenu {
     fn refresh_text(&self, lang: i18n::Lang) {
         let pinned = self.pinned.load(Ordering::Acquire);
-        if let Ok(item) = self.item.lock() {
-            if let Some(item) = item.as_ref() {
-                let _ = item.set_text(linux_pin_label(lang, pinned));
-            }
+        // 先克隆句柄并释放锁，再调用 GTK UI 线程方法，避免与托盘事件死锁。
+        let item = self.item.lock().ok().and_then(|slot| slot.clone());
+        if let Some(item) = item {
+            let _ = item.set_text(linux_pin_label(lang, pinned));
         }
     }
 }
@@ -1521,22 +1524,342 @@ fn set_native_theme(window: tauri::WebviewWindow, theme: Option<String>) -> Resu
     Ok(())
 }
 
-/// macOS 的完整视图是一个独立窗口（面板不能兼任），Windows 仍是同一个窗口变形，
-/// 所以这个命令只在 macOS 上有实现，前端也只在 macOS 上调用它。
+/// 主面板独立窗口：macOS 走原生 macos.rs；Windows / Linux 也开独立标准窗口，
+/// 保持桌面卡片和桌面胶囊同时可见，调样式实时预览。
+/// 必须是 async 命令并在后台线程创建窗口，避免 Windows WebView2 同步 IPC 死锁。
 #[tauri::command]
-fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<(), String> {
+async fn open_expanded_window(app: tauri::AppHandle, nav: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        macos::open_expanded_window(app, nav)
+        // macOS 的 open_expanded_window 会调用 AppKit（orderOut:/setActivationPolicy:），
+        // 必须在主线程执行。
+        let handle = app.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let _ = tx.send(macos::open_expanded_window(handle, nav));
+        })
+        .map_err(|error| error.to_string())?;
+        rx.recv().map_err(|error| error.to_string())?
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            set_surface_visible_inner(&app, "expanded", true, nav.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(desktop))]
     {
         let _ = (app, nav);
-        Err(i18n::tr!(
-            "独立的完整视图窗口仅用于 macOS",
-            "A separate expanded view window is available on macOS only"
-        ))
+        Err("Expanded window is desktop only".into())
     }
+}
+
+/// 跨平台待消费的主面板导航目标：当主面板正在加载期间再次点击「设置」，
+/// 避免一次性事件丢失，前端挂好监听器后主动取走最新路由。
+#[cfg(desktop)]
+#[derive(Default)]
+struct PendingPanelNav(Mutex<Option<String>>);
+
+#[cfg(desktop)]
+pub(crate) fn set_pending_panel_nav(app: &tauri::AppHandle, nav: &str) {
+    if let Some(state) = app.try_state::<PendingPanelNav>() {
+        if let Ok(mut slot) = state.0.lock() {
+            *slot = Some(nav.to_string());
+        }
+    }
+}
+
+#[tauri::command]
+fn take_pending_panel_nav(app: tauri::AppHandle) -> Option<String> {
+    #[cfg(desktop)]
+    {
+        app.try_state::<PendingPanelNav>()
+            .and_then(|state| state.0.lock().ok().and_then(|mut slot| slot.take()))
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// 串行化窗口创建与显示切换，避免并发请求重复创建同一 label 窗口。
+#[cfg(all(desktop, not(target_os = "macos")))]
+#[derive(Default)]
+struct SurfaceCreateLock(Mutex<()>);
+
+/// 记录用户期望的悬浮窗口可见态，防止异步初始化或换向期间误把已隐藏窗口重新显示。
+#[cfg(all(desktop, not(target_os = "macos")))]
+#[derive(Default)]
+struct RequestedSurfaceVisibility(Mutex<HashMap<&'static str, bool>>);
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn set_requested_visibility(app: &tauri::AppHandle, key: &'static str, visible: bool) {
+    if let Some(state) = app.try_state::<RequestedSurfaceVisibility>() {
+        if let Ok(mut map) = state.0.lock() {
+            map.insert(key, visible);
+        }
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn is_surface_requested(app: &tauri::AppHandle, key: &'static str) -> bool {
+    app.try_state::<RequestedSurfaceVisibility>()
+        .and_then(|state| state.0.lock().ok().and_then(|map| map.get(key).copied()))
+        .unwrap_or(true)
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SurfaceVisibilityPayload {
+    compact: bool,
+    strip: bool,
+    expanded: bool,
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+const SURFACE_VISIBILITY_EVENT: &str = "metrik://surface-visibility";
+
+#[cfg(desktop)]
+const PANEL_NAV_EVENT: &str = "metrik://panel-nav";
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn current_surface_visibility(app: &tauri::AppHandle) -> SurfaceVisibilityPayload {
+    let is_shown = |label: &str| {
+        app.get_webview_window(label)
+            .map(|window| {
+                window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+            })
+            .unwrap_or(false)
+    };
+    SurfaceVisibilityPayload {
+        compact: is_shown("main"),
+        strip: is_shown("strip"),
+        expanded: is_shown("expanded"),
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn sync_surface_visibility(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let state = current_surface_visibility(app);
+    if let Some(menu) = app.try_state::<SurfaceTrayMenu>() {
+        menu.sync_checked(state);
+    }
+    let _ = app.emit(SURFACE_VISIBILITY_EVENT, state);
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn ensure_strip_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window("strip") {
+        return Ok(window);
+    }
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "strip",
+        tauri::WebviewUrl::App("index.html?view=strip".into()),
+    )
+    .title("Metrik Strip")
+    .inner_size(240.0, 28.0)
+    .min_inner_size(28.0, 28.0)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .maximizable(false)
+    .skip_taskbar(true)
+    .visible(false)
+    .always_on_top(false);
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.resizable(true);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.resizable(false);
+    }
+    let window = builder.build().map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        disable_system_corner_rounding(hwnd.0 as isize);
+    }
+    Ok(window)
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn ensure_expanded_window(
+    app: &tauri::AppHandle,
+    nav: Option<&str>,
+) -> Result<(tauri::WebviewWindow, bool), String> {
+    if let Some(window) = app.get_webview_window("expanded") {
+        return Ok((window, false));
+    }
+    let mut url = String::from("index.html?view=expanded");
+    if let Some(nav) = nav.filter(|value| !value.is_empty()) {
+        url.push_str("&nav=");
+        url.push_str(nav);
+    }
+    // 按主显示器工作区自适应初始与最小尺寸，与下方 .center() 的目标屏幕一致，
+    // 避免主屏为高 DPI 小屏（如 1366×768@125%）而副屏较大时标题栏超出屏幕。
+    let monitor = app.primary_monitor().ok().flatten();
+    let (work_w, work_h) = monitor
+        .map(|m| {
+            let scale = m.scale_factor().max(1.0);
+            let wa = m.work_area().size;
+            (f64::from(wa.width) / scale, f64::from(wa.height) / scale)
+        })
+        .unwrap_or((1152.0, 792.0));
+    let target_w = 1120.0_f64.min((work_w - 32.0).max(320.0));
+    let target_h = 760.0_f64.min((work_h - 32.0).max(320.0));
+    let min_w = 960.0_f64.min(target_w);
+    let min_h = 700.0_f64.min(target_h);
+    let window =
+        tauri::WebviewWindowBuilder::new(app, "expanded", tauri::WebviewUrl::App(url.into()))
+            .title("Metrik")
+            .inner_size(target_w, target_h)
+            .min_inner_size(min_w, min_h)
+            .decorations(false)
+            .transparent(false)
+            .resizable(true)
+            .maximizable(true)
+            .skip_taskbar(false)
+            .center()
+            .visible(false)
+            .build()
+            .map_err(|error| error.to_string())?;
+    Ok((window, true))
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn set_surface_visible_inner(
+    app: &tauri::AppHandle,
+    surface: &str,
+    visible: bool,
+    nav: Option<&str>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let create_lock = app.try_state::<SurfaceCreateLock>();
+    let _guard = create_lock.as_ref().and_then(|lock| lock.0.lock().ok());
+
+    match surface {
+        "compact" => {
+            set_requested_visibility(app, "compact", visible);
+            if let Some(window) = app.get_webview_window("main") {
+                if visible {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                } else {
+                    let _ = window.hide();
+                }
+            }
+        }
+        "strip" => {
+            set_requested_visibility(app, "strip", visible);
+            if visible {
+                let existed = app.get_webview_window("strip").is_some();
+                let window = ensure_strip_window(app)?;
+                if existed {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            } else {
+                #[cfg(windows)]
+                strip_detail::hide_internal(app);
+                if let Some(window) = app.get_webview_window("strip") {
+                    let _ = window.hide();
+                }
+            }
+        }
+        "expanded" | "panel" => {
+            set_requested_visibility(app, "expanded", visible);
+            if visible {
+                if let Some(nav) = nav.filter(|value| !value.is_empty()) {
+                    set_pending_panel_nav(app, nav);
+                }
+                let (window, created) = ensure_expanded_window(app, nav)?;
+                let _ = window.set_skip_taskbar(false);
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+                if !created {
+                    if let Some(nav) = nav.filter(|value| !value.is_empty()) {
+                        let _ = app.emit_to("expanded", PANEL_NAV_EVENT, nav);
+                    }
+                }
+            } else if let Some(window) = app.get_webview_window("expanded") {
+                let _ = window.hide();
+            }
+        }
+        _ => return Err(format!("unknown surface: {surface}")),
+    }
+    sync_surface_visibility(app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_surface_visible(
+    app: tauri::AppHandle,
+    surface: String,
+    visible: bool,
+    nav: Option<String>,
+) -> Result<(), String> {
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            set_surface_visible_inner(&app, &surface, visible, nav.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(all(desktop, not(target_os = "macos"))))]
+    {
+        let _ = (app, surface, visible, nav);
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn is_surface_visibility_requested(app: tauri::AppHandle, surface: String) -> bool {
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    {
+        match surface.as_str() {
+            "compact" => is_surface_requested(&app, "compact"),
+            "strip" => is_surface_requested(&app, "strip"),
+            "expanded" => is_surface_requested(&app, "expanded"),
+            _ => true,
+        }
+    }
+    #[cfg(not(all(desktop, not(target_os = "macos"))))]
+    {
+        let _ = (app, surface);
+        true
+    }
+}
+
+#[tauri::command]
+fn get_surface_visibility(app: tauri::AppHandle) -> serde_json::Value {
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    {
+        serde_json::to_value(current_surface_visibility(&app)).unwrap_or_default()
+    }
+    #[cfg(not(all(desktop, not(target_os = "macos"))))]
+    {
+        let _ = app;
+        serde_json::json!({ "compact": true, "strip": false, "expanded": false })
+    }
+}
+
+#[tauri::command]
+fn notify_surface_visibility(app: tauri::AppHandle) {
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    sync_surface_visibility(&app);
+    #[cfg(not(all(desktop, not(target_os = "macos"))))]
+    let _ = app;
 }
 
 /// macOS 可选桌面组件由独立原生窗口承载；其它平台没有对应形态。
@@ -1646,7 +1969,9 @@ fn update_macos_status_items(
 #[cfg(desktop)]
 #[derive(Clone, Copy, Debug)]
 enum TrayLabel {
+    #[cfg(target_os = "macos")]
     Toggle,
+    #[cfg(target_os = "macos")]
     Expanded,
     #[cfg(target_os = "macos")]
     Settings,
@@ -1656,11 +1981,55 @@ enum TrayLabel {
 #[cfg(desktop)]
 fn tray_label(label: TrayLabel, lang: i18n::Lang) -> String {
     match label {
+        #[cfg(target_os = "macos")]
         TrayLabel::Toggle => i18n::tr_in!(lang, "显示 / 隐藏", "Show / hide"),
-        TrayLabel::Expanded => i18n::tr_in!(lang, "完整视图", "Expanded view"),
+        #[cfg(target_os = "macos")]
+        TrayLabel::Expanded => i18n::tr_in!(lang, "主面板", "Main panel"),
         #[cfg(target_os = "macos")]
         TrayLabel::Settings => i18n::tr_in!(lang, "设置", "Settings"),
         TrayLabel::Quit => i18n::tr_in!(lang, "退出 Metrik", "Quit Metrik"),
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+#[derive(Default)]
+struct SurfaceTrayMenu {
+    compact: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    strip: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    expanded: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+impl SurfaceTrayMenu {
+    fn sync_checked(&self, state: SurfaceVisibilityPayload) {
+        // 先克隆句柄并释放锁，再调用 Tauri UI 线程方法，避免与语言切换互锁。
+        let compact = self.compact.lock().ok().and_then(|slot| slot.clone());
+        let strip = self.strip.lock().ok().and_then(|slot| slot.clone());
+        let expanded = self.expanded.lock().ok().and_then(|slot| slot.clone());
+        if let Some(item) = compact {
+            let _ = item.set_checked(state.compact);
+        }
+        if let Some(item) = strip {
+            let _ = item.set_checked(state.strip);
+        }
+        if let Some(item) = expanded {
+            let _ = item.set_checked(state.expanded);
+        }
+    }
+
+    fn refresh_text(&self, lang: i18n::Lang) {
+        let compact = self.compact.lock().ok().and_then(|slot| slot.clone());
+        let strip = self.strip.lock().ok().and_then(|slot| slot.clone());
+        let expanded = self.expanded.lock().ok().and_then(|slot| slot.clone());
+        if let Some(item) = compact {
+            let _ = item.set_text(i18n::tr_in!(lang, "桌面卡片", "Desktop card"));
+        }
+        if let Some(item) = strip {
+            let _ = item.set_text(i18n::tr_in!(lang, "桌面胶囊", "Quota strip"));
+        }
+        if let Some(item) = expanded {
+            let _ = item.set_text(i18n::tr_in!(lang, "主面板", "Main panel"));
+        }
     }
 }
 
@@ -1759,35 +2128,29 @@ async fn set_ui_language(
     }
     #[cfg(desktop)]
     app.state::<TrayMenuText>().refresh(next.language);
+    #[cfg(all(desktop, not(target_os = "macos")))]
+    app.state::<SurfaceTrayMenu>().refresh_text(next.language);
     #[cfg(target_os = "linux")]
     app.state::<LinuxTrayPinMenu>().refresh_text(next.language);
     let _ = app.emit(i18n::CHANGED_EVENT, next);
     Ok(next)
 }
 
-/// 托盘菜单请求完整视图；前端监听后自己完成变形（见 windowClient 的
-/// onTrayShowExpanded）。macOS 的完整视图是独立窗口，走 macos.rs 自己的菜单栏。
-#[cfg(all(desktop, not(target_os = "macos")))]
-const TRAY_SHOW_EXPANDED: &str = "tray://show-expanded";
-
 #[cfg(target_os = "linux")]
 const TRAY_SET_PINNED: &str = "tray://set-pinned";
 
 #[cfg(all(desktop, not(target_os = "macos")))]
-fn toggle_main_window(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    let minimized = window.is_minimized().unwrap_or(false);
-    let visible = window.is_visible().unwrap_or(false);
-    if visible && !minimized {
-        #[cfg(windows)]
-        strip_detail::hide_internal(app);
-        let _ = window.hide();
+fn toggle_floating_surfaces(app: &tauri::AppHandle) {
+    let vis = current_surface_visibility(app);
+    if vis.compact || vis.strip {
+        if vis.compact {
+            let _ = set_surface_visible_inner(app, "compact", false, None);
+        }
+        if vis.strip {
+            let _ = set_surface_visible_inner(app, "strip", false, None);
+        }
     } else {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        let _ = set_surface_visible_inner(app, "compact", true, None);
     }
 }
 
@@ -1795,27 +2158,81 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     use tauri::menu::MenuItem;
-    use tauri::menu::{Menu, PredefinedMenuItem};
+    use tauri::menu::{CheckMenuItem, Menu, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    #[cfg(target_os = "linux")]
     use tauri::Emitter;
 
+    let lang = i18n::current();
     let text = app.state::<TrayMenuText>();
-    let toggle = text.item(app.handle(), "toggle", TrayLabel::Toggle)?;
-    let expanded = text.item(app.handle(), "expanded", TrayLabel::Expanded)?;
+    let surface_compact = CheckMenuItem::with_id(
+        app,
+        "surface-compact",
+        i18n::tr_in!(lang, "桌面卡片", "Desktop card"),
+        true,
+        true,
+        None::<&str>,
+    )?;
+    let surface_strip = CheckMenuItem::with_id(
+        app,
+        "surface-strip",
+        i18n::tr_in!(lang, "桌面胶囊", "Quota strip"),
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let surface_expanded = CheckMenuItem::with_id(
+        app,
+        "surface-expanded",
+        i18n::tr_in!(lang, "主面板", "Main panel"),
+        true,
+        false,
+        None::<&str>,
+    )?;
     #[cfg(target_os = "linux")]
     let pinned = MenuItem::with_id(
         app,
         "pinned",
-        linux_pin_label(i18n::current(), false),
+        linux_pin_label(lang, false),
         true,
         None::<&str>,
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = text.item(app.handle(), "quit", TrayLabel::Quit)?;
     #[cfg(target_os = "linux")]
-    let menu = Menu::with_items(app, &[&toggle, &expanded, &pinned, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &surface_compact,
+            &surface_strip,
+            &surface_expanded,
+            &pinned,
+            &separator,
+            &quit,
+        ],
+    )?;
     #[cfg(not(target_os = "linux"))]
-    let menu = Menu::with_items(app, &[&toggle, &expanded, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &surface_compact,
+            &surface_strip,
+            &surface_expanded,
+            &separator,
+            &quit,
+        ],
+    )?;
+
+    let surface_menu = app.state::<SurfaceTrayMenu>();
+    if let Ok(mut slot) = surface_menu.compact.lock() {
+        *slot = Some(surface_compact.clone());
+    }
+    if let Ok(mut slot) = surface_menu.strip.lock() {
+        *slot = Some(surface_strip.clone());
+    }
+    if let Ok(mut slot) = surface_menu.expanded.lock() {
+        *slot = Some(surface_expanded.clone());
+    }
 
     #[cfg(target_os = "linux")]
     if let Ok(mut item) = app.state::<LinuxTrayPinMenu>().item.lock() {
@@ -1827,21 +2244,26 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "toggle" => toggle_main_window(app),
-            // 胶囊/卡片直达完整视图，省掉"先弹卡片再点展开"这一步。窗口形态归
-            // 前端所有（Windows 是单窗口变形）。隐藏的 WebView 在部分 Windows
-            // 机器上不会及时处理事件，因此先只唤醒窗口（不抢焦点），再让前端完成
-            // hide/resize/show 事务；可见窗口不做额外 show，避免重复绘制。
-            "expanded" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let hidden = !window.is_visible().unwrap_or(false);
-                    let minimized = window.is_minimized().unwrap_or(false);
-                    if hidden || minimized {
-                        let _ = window.unminimize();
-                        let _ = window.show();
-                    }
-                }
-                let _ = app.emit(TRAY_SHOW_EXPANDED, ());
+            "surface-compact" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let next = !current_surface_visibility(&handle).compact;
+                    let _ = set_surface_visible_inner(&handle, "compact", next, None);
+                });
+            }
+            "surface-strip" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let next = !current_surface_visibility(&handle).strip;
+                    let _ = set_surface_visible_inner(&handle, "strip", next, None);
+                });
+            }
+            "surface-expanded" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let next = !current_surface_visibility(&handle).expanded;
+                    let _ = set_surface_visible_inner(&handle, "expanded", next, None);
+                });
             }
             #[cfg(target_os = "linux")]
             "pinned" => {
@@ -1860,7 +2282,10 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                toggle_main_window(tray.app_handle());
+                let handle = tray.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    toggle_floating_surfaces(&handle);
+                });
             }
         });
     if let Some(icon) = app.default_window_icon() {
@@ -1946,6 +2371,14 @@ pub fn run() {
             app.manage(UiLanguage(Mutex::new(ui_language)));
             #[cfg(desktop)]
             app.manage(TrayMenuText::default());
+            #[cfg(desktop)]
+            app.manage(PendingPanelNav::default());
+            #[cfg(all(desktop, not(target_os = "macos")))]
+            {
+                app.manage(SurfaceTrayMenu::default());
+                app.manage(SurfaceCreateLock::default());
+                app.manage(RequestedSurfaceVisibility::default());
+            }
 
             // macOS 是一个菜单栏应用：面板 + 独立完整视图窗口 + template 图标，
             // 与 Windows 的"单窗口变形 + 自绘按钮"完全分开。
@@ -2045,7 +2478,7 @@ pub fn run() {
                 quota_cache: Arc::new(Mutex::new(HashMap::new())),
                 response_speed,
                 #[cfg(target_os = "linux")]
-                pinned_hover_monitor: Arc::new(pinned_hover::Monitor::default()),
+                pinned_hover_monitors: Mutex::new(HashMap::new()),
             });
             #[cfg(windows)]
             app.manage(strip_detail::StripDetailState::default());
@@ -2053,17 +2486,41 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // 关闭时收进托盘常驻，退出走托盘菜单。
-            // macOS 的完整视图是独立窗口，红灯就该真的关掉它（关掉后 App 退回菜单栏）。
+            // macOS 的主面板是独立窗口，红灯就该真的关掉它（关掉后 App 退回菜单栏）。
             #[cfg(desktop)]
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() != "expanded" && window.label() != "strip-detail" {
-                    api.prevent_close();
-                    #[cfg(windows)]
-                    if window.label() == "main" {
-                        strip_detail::hide_internal(window.app_handle());
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label();
+                    #[cfg(target_os = "macos")]
+                    let keep_in_tray = label != "expanded" && label != "strip-detail";
+                    #[cfg(not(target_os = "macos"))]
+                    let keep_in_tray = label != "strip-detail";
+                    if keep_in_tray {
+                        api.prevent_close();
+                        #[cfg(windows)]
+                        if label == "main" || label == "strip" {
+                            strip_detail::hide_internal(window.app_handle());
+                        }
+                        let _ = window.hide();
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let surface_key = match label {
+                                "strip" => "strip",
+                                "expanded" => "expanded",
+                                _ => "compact",
+                            };
+                            set_requested_visibility(window.app_handle(), surface_key, false);
+                            sync_surface_visibility(window.app_handle());
+                        }
                     }
-                    let _ = window.hide();
                 }
+                #[cfg(not(target_os = "macos"))]
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(_) => {
+                    if matches!(window.label(), "main" | "strip" | "expanded") {
+                        sync_surface_visibility(window.app_handle());
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2111,6 +2568,11 @@ pub fn run() {
             ui_language,
             set_ui_language,
             open_expanded_window,
+            take_pending_panel_nav,
+            set_surface_visible,
+            is_surface_visibility_requested,
+            get_surface_visibility,
+            notify_surface_visibility,
             set_macos_desktop_widget_visible,
             resize_macos_panel,
             set_macos_agent_selection,
@@ -2245,14 +2707,14 @@ mod tests {
     #[test]
     fn tray_labels_follow_the_requested_language() {
         use i18n::Lang;
-        assert_eq!(tray_label(TrayLabel::Toggle, Lang::Zh), "显示 / 隐藏");
-        assert_eq!(tray_label(TrayLabel::Expanded, Lang::Zh), "完整视图");
         assert_eq!(tray_label(TrayLabel::Quit, Lang::Zh), "退出 Metrik");
-        assert_eq!(tray_label(TrayLabel::Toggle, Lang::En), "Show / hide");
-        assert_eq!(tray_label(TrayLabel::Expanded, Lang::En), "Expanded view");
         assert_eq!(tray_label(TrayLabel::Quit, Lang::En), "Quit Metrik");
         #[cfg(target_os = "macos")]
         {
+            assert_eq!(tray_label(TrayLabel::Toggle, Lang::Zh), "显示 / 隐藏");
+            assert_eq!(tray_label(TrayLabel::Expanded, Lang::Zh), "主面板");
+            assert_eq!(tray_label(TrayLabel::Toggle, Lang::En), "Show / hide");
+            assert_eq!(tray_label(TrayLabel::Expanded, Lang::En), "Main panel");
             assert_eq!(tray_label(TrayLabel::Settings, Lang::Zh), "设置");
             assert_eq!(tray_label(TrayLabel::Settings, Lang::En), "Settings");
         }

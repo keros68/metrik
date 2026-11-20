@@ -91,14 +91,27 @@ fn hide_popup_hwnd(app: &AppHandle) {
     });
 }
 
-fn cursor_near_main_window(app: &AppHandle, pad: i32) -> bool {
+fn strip_host_label(app: &AppHandle) -> Option<&'static str> {
+    if app.get_webview_window("strip").is_some() {
+        Some("strip")
+    } else if app.get_webview_window("main").is_some() {
+        Some("main")
+    } else {
+        None
+    }
+}
+
+fn cursor_near_strip_window(app: &AppHandle, pad: i32) -> bool {
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect, IsWindowVisible};
 
-    let Some(main_window) = app.get_webview_window("main") else {
+    let Some(host_label) = strip_host_label(app) else {
         return false;
     };
-    let Ok(hwnd) = main_window.hwnd() else {
+    let Some(strip_window) = app.get_webview_window(host_label) else {
+        return false;
+    };
+    let Ok(hwnd) = strip_window.hwnd() else {
         return false;
     };
     let handle = HWND(hwnd.0);
@@ -272,9 +285,11 @@ pub fn present_strip_detail(
         }
     }
 
-    if !cursor_near_main_window(&app, CURSOR_NEAR_PAD_PX) {
+    if !cursor_near_strip_window(&app, CURSOR_NEAR_PAD_PX) {
         hide_internal(&app);
-        let _ = app.emit_to("main", DETAIL_CLOSED_EVENT, ());
+        if let Some(host_label) = strip_host_label(&app) {
+            let _ = app.emit_to(host_label, DETAIL_CLOSED_EVENT, ());
+        }
         return Ok(());
     }
 
@@ -325,7 +340,7 @@ pub fn present_strip_detail(
             let mut outside_ticks = 0u8;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(WATCHER_POLL_MS));
-                let near = cursor_near_main_window(&app_handle, CURSOR_NEAR_PAD_PX);
+                let near = cursor_near_strip_window(&app_handle, CURSOR_NEAR_PAD_PX);
                 let Some(state) = app_handle.try_state::<StripDetailState>() else {
                     break;
                 };
@@ -354,7 +369,9 @@ pub fn present_strip_detail(
                 if should_hide {
                     hide_popup_hwnd(&app_handle);
                     let _ = app_handle.emit_to(POPUP_LABEL, DETAIL_EVENT, serde_json::Value::Null);
-                    let _ = app_handle.emit_to("main", DETAIL_CLOSED_EVENT, ());
+                    if let Some(host_label) = strip_host_label(&app_handle) {
+                        let _ = app_handle.emit_to(host_label, DETAIL_CLOSED_EVENT, ());
+                    }
                     break;
                 }
             }

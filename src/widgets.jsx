@@ -25,7 +25,7 @@ import { glassShellAppearance, nextGlassTint } from "./glassAppearance.js";
 import { compactTokens } from "./tokenFormat.js";
 import { entryBindingWindow, formatReset, isBalanceWindow } from "./quotaWindows.js";
 import { t } from "./i18n.js";
-import { desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
+import { computeDragScale, desyncHealRetryDelayMs, horizontalStripTargetWidth } from "./windowGeometry";
 import {
   beginStripControlsExpand,
   cancelStripControlsExpand,
@@ -38,6 +38,8 @@ import {
   minimizeWindow,
   onScaleFactorChanged,
   onStripDetailClosed,
+  readStripScale,
+  readUiScale,
   reassertCompactSize,
   resizeCompactWindow,
   resizeMacosPanel,
@@ -244,31 +246,48 @@ function ThemeQuickToggle({ theme, darkTheme, onThemeChange }) {
   );
 }
 
-export function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = false, theme, darkTheme, onThemeChange, onToggleMode, onTogglePinned, onToggleTransparent }) {
+export function WindowActions({
+  mode,
+  pinned,
+  glassTint = "dark",
+  macMinimal = false,
+  theme,
+  darkTheme,
+  surfaceVisibility,
+  onThemeChange,
+  onToggleMode,
+  onToggleSurface,
+  onTogglePinned,
+  onToggleTransparent,
+}) {
   const glassName = (id) =>
     t(GLASS_TINT_OPTIONS.find((option) => option.id === id)?.label || "深色");
   const glassCurrent = normalizeGlassTint(glassTint);
   const glassNext = nextGlassTint(glassCurrent);
   const glassLabel = t("{current} · 点击切为{next}", { current: glassName(glassCurrent), next: glassName(glassNext) });
+  const compactShown = Boolean(surfaceVisibility?.compact);
+  const stripShown = Boolean(surfaceVisibility?.strip);
   return (
     <div className={`window-actions window-actions--${mode}`} aria-label={t("窗口操作")}>
       {mode === "expanded" && (
         <>
           <button
             type="button"
-            className="window-action"
-            onClick={() => onToggleMode("compact")}
-            aria-label={t("收起为桌面小组件")}
-            title={t("收起为桌面小组件")}
+            className={`window-action ${compactShown ? "window-action--active" : ""}`}
+            onClick={() => (onToggleSurface ? onToggleSurface("compact") : onToggleMode("compact"))}
+            aria-label={compactShown ? t("隐藏桌面卡片") : t("显示桌面卡片")}
+            aria-pressed={compactShown}
+            title={compactShown ? t("隐藏桌面卡片") : t("显示桌面卡片")}
           >
             <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
           </button>
           <button
             type="button"
-            className="window-action"
-            onClick={() => onToggleMode("strip")}
-            aria-label={t("折叠为胶囊条")}
-            title={t("折叠为胶囊条")}
+            className={`window-action ${stripShown ? "window-action--active" : ""}`}
+            onClick={() => (onToggleSurface ? onToggleSurface("strip") : onToggleMode("strip"))}
+            aria-label={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
+            aria-pressed={stripShown}
+            title={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
           >
             <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
           </button>
@@ -279,9 +298,9 @@ export function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = f
         <button
           type="button"
           className="window-action"
-          onClick={() => onToggleMode("strip")}
-          aria-label={t("折叠为胶囊条")}
-          title={t("折叠为胶囊条")}
+          onClick={() => (onToggleSurface ? onToggleSurface("strip") : onToggleMode("strip"))}
+          aria-label={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
+          title={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
         >
           <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
         </button>
@@ -289,12 +308,12 @@ export function WindowActions({ mode, pinned, glassTint = "dark", macMinimal = f
       {mode === "compact" && !macMinimal && (
         <button
           type="button"
-          className="window-action window-action--active"
+          className="window-action"
           onClick={onToggleTransparent}
           aria-label={t("外观：{label}", { label: glassLabel })}
           title={t("外观：{label}", { label: glassLabel })}
         >
-          <CircleHalfTilt size={16} weight="fill" aria-hidden="true" />
+          <CircleHalfTilt size={16} weight="light" aria-hidden="true" />
         </button>
       )}
       {!macMinimal && mode !== "expanded" && (
@@ -373,6 +392,111 @@ function glassPointerProps(enabled) {
     : {};
 }
 
+function FloatingResizeHandle({
+  variant,
+  axis,
+  readScale,
+  getBaseSize,
+  onDragStart,
+  onDragEnd,
+  onLiveScale,
+  onCommitScale,
+  label,
+}) {
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef(null);
+  const rafRef = useRef(null);
+  const callbacksRef = useRef({ onDragEnd, onCommitScale });
+  callbacksRef.current = { onDragEnd, onCommitScale };
+
+  const settleDrag = useCallback((state) => {
+    if (!state) return;
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    callbacksRef.current.onDragEnd?.();
+    if (state.lastScale !== state.startScale) {
+      callbacksRef.current.onCommitScale?.(state.lastScale, state.base);
+    }
+  }, []);
+
+  // 拖拽过程中如果窗口被跨窗口置顶导致角标卸载，必须同样释放拖拽保护并落盘。
+  useEffect(() => () => {
+    const active = dragRef.current;
+    dragRef.current = null;
+    if (active) settleDrag(active);
+    else if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
+  }, [settleDrag]);
+
+  const handlePointerDown = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const startScale = readScale();
+    const base = getBaseSize();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      startScale,
+      lastScale: startScale,
+      base,
+    };
+    setDragging(true);
+    onDragStart?.();
+  };
+
+  const handlePointerMove = (event) => {
+    const state = dragRef.current;
+    if (!state || event.pointerId !== state.pointerId) return;
+    const next = computeDragScale({
+      startScale: state.startScale,
+      dx: event.screenX - state.startX,
+      dy: event.screenY - state.startY,
+      baseWidth: state.base.width,
+      baseHeight: state.base.height,
+      axis,
+    });
+    if (next === state.lastScale) return;
+    state.lastScale = next;
+    if (!rafRef.current) {
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        if (dragRef.current) {
+          onLiveScale?.(dragRef.current.lastScale, dragRef.current.base);
+        }
+      });
+    }
+  };
+
+  const finishDrag = (event) => {
+    const state = dragRef.current;
+    if (!state || event.pointerId !== state.pointerId) return;
+    dragRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {}
+    setDragging(false);
+    settleDrag(state);
+  };
+
+  return (
+    <div
+      className={`floating-resize-handle floating-resize-handle--${variant} ${dragging ? "is-dragging" : ""}`}
+      role="presentation"
+      title={label}
+      data-no-drag="true"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+      onLostPointerCapture={finishDrag}
+    />
+  );
+}
+
 export function StripBar({
   snapshot,
   agents,
@@ -388,6 +512,8 @@ export function StripBar({
   onTogglePinned,
   onRestore,
   onExpand,
+  onDragScale,
+  onCommitDragScale,
   availableUpdate,
   onOpenUpdate,
 }) {
@@ -928,8 +1054,8 @@ export function StripBar({
               type="button"
               className="strip-button"
               onClick={onRestore}
-              aria-label={t("展开为桌面小组件")}
-              title={t("展开为桌面小组件")}
+              aria-label={t("显示桌面卡片")}
+              title={t("桌面卡片")}
             >
               <ArrowsOutSimple size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -937,8 +1063,8 @@ export function StripBar({
               type="button"
               className="strip-button"
               onClick={onExpand}
-              aria-label={t("打开完整视图")}
-              title={t("完整视图")}
+              aria-label={t("打开主面板")}
+              title={t("主面板")}
             >
               <CornersOut size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
@@ -946,6 +1072,20 @@ export function StripBar({
         )}
       </div>
       </div>
+      {!IS_MAC && !pinned && onDragScale && (
+        <FloatingResizeHandle
+          variant={vertical ? "strip-v" : "strip-h"}
+          axis={vertical ? "y" : "x"}
+          readScale={readStripScale}
+          getBaseSize={() => ({
+            width: Math.max(28, Math.round(shellRef.current?.offsetWidth || 240)),
+            height: Math.max(28, Math.round(shellRef.current?.offsetHeight || 28)),
+          })}
+          onLiveScale={onDragScale}
+          onCommitScale={onCommitDragScale}
+          label={t("拖拽等比例缩放胶囊")}
+        />
+      )}
       {!usePopupWindow && detailOpen && detailCell && (
         <StripDetailCard
           agentId={detailCell.agentId}
@@ -972,6 +1112,10 @@ export function CompactWidget({
   onTogglePinned,
   onToggleTransparent,
   onExpand,
+  onToggleSurface,
+  surfaceVisibility,
+  onDragScale,
+  onCommitDragScale,
   onRefresh,
   quotaAgent,
   onCycleQuotaAgent,
@@ -984,6 +1128,7 @@ export function CompactWidget({
   const comparisonIsLower = snapshot.comparisonPercent < -0.5;
   const ComparisonArrow = comparisonIsLower ? ArrowDown : ArrowUp;
   const shellRef = useRef(null);
+  const scalingDragRef = useRef(false);
   // 宽度失配自愈的节奏状态：lastDesyncHealRef 记本轮上次自愈时刻，
   // desyncHealAttemptRef 记本轮已自愈次数（决定下次间隔），inFlight 防止
   // reassert 内部收敛期间观察器再叠加新事务。间隔按 0/250/600/1200ms 升级、
@@ -1016,6 +1161,7 @@ export function CompactWidget({
     let timer = null;
     const check = () => {
       timer = null;
+      if (scalingDragRef.current) return;
       const rect = shell.getBoundingClientRect();
       // 宽度失配（zoom×物理尺寸失配，视口 < 320，右侧被裁）是 Windows 单窗口
       // 变形独有的问题；macOS 面板没有 zoom，不会失配。
@@ -1155,7 +1301,9 @@ export function CompactWidget({
             pinned={pinned}
             glassTint={glassTint}
             macMinimal={IS_MAC}
+            surfaceVisibility={surfaceVisibility}
             onToggleMode={onExpand}
+            onToggleSurface={onToggleSurface}
             onTogglePinned={onTogglePinned}
             onToggleTransparent={onToggleTransparent}
           />
@@ -1329,11 +1477,27 @@ export function CompactWidget({
             <ArrowsClockwise size={13} weight="light" aria-hidden="true" />
           </button>
           <button type="button" className="widget-expand" onClick={() => onExpand("expanded")}>
-            <span>{t("完整视图")}</span>
+            <span>{t("主面板")}</span>
             <ArrowsOutSimple size={16} weight="light" aria-hidden="true" />
           </button>
         </footer>
       </div>
+      {!IS_MAC && !pinned && onDragScale && (
+        <FloatingResizeHandle
+          variant="card"
+          axis="both"
+          readScale={readUiScale}
+          getBaseSize={() => ({
+            width: 320,
+            height: Math.max(260, Math.round(shellRef.current?.offsetHeight || 320)),
+          })}
+          onDragStart={() => { scalingDragRef.current = true; }}
+          onDragEnd={() => { scalingDragRef.current = false; }}
+          onLiveScale={onDragScale}
+          onCommitScale={onCommitDragScale}
+          label={t("拖拽等比例缩放卡片")}
+        />
+      )}
     </main>
   );
 }

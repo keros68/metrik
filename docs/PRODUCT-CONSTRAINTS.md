@@ -198,11 +198,13 @@ change.
   All tints honor the glass-density slider; the choice is a Windows-only setting
   because the macOS panel material follows the system.
 - Expanded mode remains opaque and owns its light/dark theme independently.
-- Compact, strip, and expanded forms are reachable from one another in one
-  click. Each form remembers its own position and never overwrites another
-  form's position.
-- The tray's "show expanded" action works from a fully hidden main window; it
-  must not require the user to reveal compact or strip first.
+- Compact card (`main`), quota strip (`strip`), and main panel (`expanded`) are
+  independent windows that can be shown or hidden individually via tray menu
+  checkmarks and settings checkboxes. Opening the main panel never hides the
+  compact card or quota strip, and appearance/scale changes apply live across
+  windows. Each floating surface remembers its own position independently.
+- The tray's "Main panel" action works from a fully hidden state; it does not
+  require revealing the compact card or strip first.
 - Pinning and position lock apply only to compact and strip. Entering expanded
   mode always drops always-on-top and provides no pin control.
 - Strip resizing preserves the screen edge it is flush to. Fully off-screen
@@ -246,10 +248,10 @@ change.
   keeps refreshing at the compact cadence so the badge never freezes; turning
   the setting off restores the default app icon.
 - Compact and strip have independent continuous UI scales in the range
-  0.75–2.0, applied on the next entry into that form. Expanded mode is freely
-  resizable and keeps webview zoom at 1.
-- Border-drag scaling is intentionally unsupported without an OS-level hit-test
-  solution and native regression coverage.
+  0.75–2.0, applied live from settings sliders or by dragging the hover resize
+  handle on unpinned floating surfaces (keeping native `resizable: false` on
+  Windows so transparent glass and proportional zoom stay intact). Main panel
+  mode is freely resizable and keeps webview zoom at 1.
 
 ### macOS
 
