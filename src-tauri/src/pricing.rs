@@ -349,7 +349,7 @@ pub fn price_for_request(
     if input > 272_000 {
         match canonical {
             "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-astra" | "gpt-6-sol"
-            | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra" => {
+            | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6.2-astra" | "gpt-6.2-sol" => {
                 price.input *= 2.0;
                 price.cache_read *= 2.0;
                 price.cache_write *= 2.0;
@@ -580,6 +580,12 @@ mod tests {
                 (0.1, 0.01, 0.125, 0.5),
                 (0.2, 0.02, 0.25, 0.75),
             ),
+            (
+                "gpt-6.2-astra",
+                (8.0, 0.4, 10.0, 40.0),
+                (16.0, 0.8, 20.0, 60.0),
+            ),
+            ("gpt-6.2-sol", (2.0, 0.1, 2.5, 10.0), (4.0, 0.2, 5.0, 15.0)),
         ] {
             let base = price_for_request(model, 0, Some(272_000)).unwrap();
             assert_eq!(
@@ -858,6 +864,11 @@ mod tests {
         assert!(price_for("glm-4.6", ANY_TIME_MS).is_some());
         assert!(price_for("gemini-3-flash-preview", ANY_TIME_MS).is_some());
         assert!(price_for("gemini-2.5-pro", ANY_TIME_MS).is_some());
+        let neon = price_for("gemini-4-neon", ANY_TIME_MS).expect("Gemini 4 Neon priced");
+        assert_eq!(
+            (neon.input, neon.cache_read, neon.cache_write, neon.output),
+            (3.0, 0.15, 0.0, 15.0)
+        );
         let opus = price_for("claude-opus-5-5", ANY_TIME_MS).expect("Opus 5.5 priced");
         assert_eq!(
             (opus.input, opus.cache_read, opus.cache_write, opus.output),

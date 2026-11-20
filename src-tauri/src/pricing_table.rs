@@ -9,7 +9,7 @@
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-11-15";
+pub const PRICING_AS_OF: &str = "2026-11-20";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -62,6 +62,7 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gemini-4-argon", Pricing { input: 2.0, cache_read: 0.1, cache_write: 0.0, output: 10.0 }),
     ("gemini-4-carbon", Pricing { input: 2.0, cache_read: 0.1, cache_write: 0.0, output: 10.0 }),
     ("gemini-4-hydrogen", Pricing { input: 1.5, cache_read: 0.075, cache_write: 0.0, output: 7.5 }),
+    ("gemini-4-neon", Pricing { input: 3.0, cache_read: 0.15, cache_write: 0.0, output: 15.0 }),
     ("gemini-flash-latest", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 3.75 }),
     ("gemini-flash-lite-latest", Pricing { input: 0.3, cache_read: 0.03, cache_write: 0.0, output: 2.5 }),
     ("gemini-pro-latest", Pricing { input: 2.0, cache_read: 0.2, cache_write: 0.0, output: 12.0 }),
@@ -123,10 +124,13 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-6-astra-law", Pricing { input: 10.0, cache_read: 1.0, cache_write: 0.0, output: 50.0 }),
     ("gpt-6-cyber", Pricing { input: 20.0, cache_read: 2.0, cache_write: 25.0, output: 100.0 }),
     ("gpt-6-luna", Pricing { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 }),
-    ("gpt-6-rosalind", Pricing { input: 15.0, cache_read: 1.5, cache_write: 18.75, output: 75.0 }),
+    ("gpt-6-rosalind", Pricing { input: 10.0, cache_read: 1.0, cache_write: 12.5, output: 50.0 }),
     ("gpt-6-sol", Pricing { input: 2.0, cache_read: 0.2, cache_write: 2.5, output: 10.0 }),
     ("gpt-6.1-sol", Pricing { input: 2.0, cache_read: 0.1, cache_write: 2.5, output: 10.0 }),
     ("gpt-6.1-terra", Pricing { input: 1.0, cache_read: 0.05, cache_write: 1.25, output: 5.0 }),
+    ("gpt-6.2-astra", Pricing { input: 8.0, cache_read: 0.4, cache_write: 10.0, output: 40.0 }),
+    ("gpt-6.2-astra-law", Pricing { input: 8.0, cache_read: 0.4, cache_write: 10.0, output: 40.0 }),
+    ("gpt-6.2-sol", Pricing { input: 2.0, cache_read: 0.1, cache_write: 2.5, output: 10.0 }),
     ("gpt-daybreak-blue-latest", Pricing { input: 4.0, cache_read: 0.4, cache_write: 5.0, output: 20.0 }),
     ("gpt-daybreak-red-latest", Pricing { input: 12.5, cache_read: 1.25, cache_write: 15.625, output: 75.0 }),
     ("grok-4.20-0309-non-reasoning", Pricing { input: 1.25, cache_read: 0.2, cache_write: 0.0, output: 2.5 }),
