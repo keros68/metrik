@@ -2140,26 +2140,11 @@ async fn set_ui_language(
 const TRAY_SET_PINNED: &str = "tray://set-pinned";
 
 #[cfg(all(desktop, not(target_os = "macos")))]
-fn toggle_floating_surfaces(app: &tauri::AppHandle) {
-    let vis = current_surface_visibility(app);
-    if vis.compact || vis.strip {
-        if vis.compact {
-            let _ = set_surface_visible_inner(app, "compact", false, None);
-        }
-        if vis.strip {
-            let _ = set_surface_visible_inner(app, "strip", false, None);
-        }
-    } else {
-        let _ = set_surface_visible_inner(app, "compact", true, None);
-    }
-}
-
-#[cfg(all(desktop, not(target_os = "macos")))]
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     use tauri::menu::MenuItem;
     use tauri::menu::{CheckMenuItem, Menu, PredefinedMenuItem};
-    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
     #[cfg(target_os = "linux")]
     use tauri::Emitter;
 
@@ -2276,15 +2261,14 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
+            if let TrayIconEvent::DoubleClick {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
                 ..
             } = event
             {
                 let handle = tray.app_handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    toggle_floating_surfaces(&handle);
+                    let _ = set_surface_visible_inner(&handle, "expanded", true, None);
                 });
             }
         });

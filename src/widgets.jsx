@@ -4,8 +4,6 @@ import {
   ArrowDown,
   ArrowsClockwise,
   ArrowsDownUp,
-  ArrowsInLineVertical,
-  ArrowsInSimple,
   ArrowsLeftRight,
   ArrowsOutSimple,
   ArrowUp,
@@ -253,10 +251,7 @@ export function WindowActions({
   macMinimal = false,
   theme,
   darkTheme,
-  surfaceVisibility,
   onThemeChange,
-  onToggleMode,
-  onToggleSurface,
   onTogglePinned,
   onToggleTransparent,
 }) {
@@ -265,45 +260,10 @@ export function WindowActions({
   const glassCurrent = normalizeGlassTint(glassTint);
   const glassNext = nextGlassTint(glassCurrent);
   const glassLabel = t("{current} · 点击切为{next}", { current: glassName(glassCurrent), next: glassName(glassNext) });
-  const compactShown = Boolean(surfaceVisibility?.compact);
-  const stripShown = Boolean(surfaceVisibility?.strip);
   return (
     <div className={`window-actions window-actions--${mode}`} aria-label={t("窗口操作")}>
       {mode === "expanded" && (
-        <>
-          <button
-            type="button"
-            className={`window-action ${compactShown ? "window-action--active" : ""}`}
-            onClick={() => (onToggleSurface ? onToggleSurface("compact") : onToggleMode("compact"))}
-            aria-label={compactShown ? t("隐藏桌面卡片") : t("显示桌面卡片")}
-            aria-pressed={compactShown}
-            title={compactShown ? t("隐藏桌面卡片") : t("显示桌面卡片")}
-          >
-            <ArrowsInSimple size={17} weight="light" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={`window-action ${stripShown ? "window-action--active" : ""}`}
-            onClick={() => (onToggleSurface ? onToggleSurface("strip") : onToggleMode("strip"))}
-            aria-label={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
-            aria-pressed={stripShown}
-            title={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
-          >
-            <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
-          </button>
-          <ThemeQuickToggle theme={theme} darkTheme={darkTheme} onThemeChange={onThemeChange} />
-        </>
-      )}
-      {mode === "compact" && !macMinimal && (
-        <button
-          type="button"
-          className="window-action"
-          onClick={() => (onToggleSurface ? onToggleSurface("strip") : onToggleMode("strip"))}
-          aria-label={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
-          title={stripShown ? t("隐藏桌面胶囊") : t("显示桌面胶囊")}
-        >
-          <ArrowsInLineVertical size={16} weight="light" aria-hidden="true" />
-        </button>
+        <ThemeQuickToggle theme={theme} darkTheme={darkTheme} onThemeChange={onThemeChange} />
       )}
       {mode === "compact" && !macMinimal && (
         <button
@@ -1049,15 +1009,6 @@ export function StripBar({
               title={vertical ? t("切换为横条") : t("切换为竖条")}
             >
               <OrientationIcon size={15} weight={buttonWeight} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="strip-button"
-              onClick={onRestore}
-              aria-label={t("显示桌面卡片")}
-              title={t("桌面卡片")}
-            >
-              <ArrowsOutSimple size={15} weight={buttonWeight} aria-hidden="true" />
             </button>
             <button
               type="button"
