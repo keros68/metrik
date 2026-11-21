@@ -22,9 +22,27 @@ struct MetrikWidgetAgent: Decodable, Identifiable {
             return matched
         }
         let live = self.windows.filter { $0.available && !$0.resetExpired }
-        guard let shortest = live.first else { return nil }
+        guard let first = live.first else { return nil }
         let low = live.filter { $0.remainingPercent <= 15 }
-        return low.min { $0.remainingPercent < $1.remainingPercent } ?? shortest
+        if let tightestLow = low.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+            return tightestLow
+        }
+        let shortestTier = Self.windowTier(first.key)
+        return live
+            .filter { Self.windowTier($0.key) == shortestTier }
+            .min { $0.remainingPercent < $1.remainingPercent } ?? first
+    }
+
+    private static func windowTier(_ key: String) -> Int {
+        switch key {
+        case "five_hour", "primary": return 0
+        case "seven_day", "secondary": return 1
+        case "extra_usage": return 3
+        default:
+            if key.hasSuffix("_5h") || key.contains("5h") { return 0 }
+            if key.hasSuffix("_weekly") || key.hasSuffix("_7d") || key.contains("weekly") { return 1 }
+            return 2
+        }
     }
 
     var asset: (name: String, ext: String)? {

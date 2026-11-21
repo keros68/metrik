@@ -280,22 +280,72 @@ pub fn is_balance_window(window_key: &str) -> bool {
     window_key.starts_with("balance")
 }
 
+/// 额度窗口的周期档位（数字越小周期越短）：
+/// 0 = 5h / primary，1 = 每周 / secondary，2 = 月度或其余窗口，3 = 超额付费。
+pub fn quota_window_tier(key: &str) -> u8 {
+    match key {
+        "five_hour" | "primary" => 0,
+        "seven_day" | "secondary" => 1,
+        // 超额付费是套餐外的补充预算，排在全部套餐窗口之后。
+        "extra_usage" => 3,
+        other => {
+            if other.ends_with("_5h") || other.contains("5h") {
+                0
+            } else if other.ends_with("_weekly")
+                || other.ends_with("_7d")
+                || other.contains("weekly")
+            {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+/// 窗口展示排序键：按周期档位从短到长，同档位按窗口键字母序。
+pub fn quota_window_rank(key: &str) -> (u8, String) {
+    let tier = quota_window_tier(key);
+    let tie = match key {
+        "five_hour" | "primary" | "seven_day" | "secondary" | "extra_usage" => String::new(),
+        other => other.to_owned(),
+    };
+    (tier, tie)
+}
+
 /// 从已按 `quota_window_rank` 排好序的窗口序列中挑出当前真正约束用量的窗口：
-/// 平时取第一个有效且未过重置点的短周期窗口；有非余额窗口进入告急区间（<= 15%）时，
-/// 改取剩余比例最低的窗口（并列保持短周期优先）。
+/// 平时取最短有效周期档位内剩余比例最低的窗口（例如 Antigravity 同时有
+/// `3p_5h` 与 `gemini_5h` 两个 5h 池时，取消耗更多的那个，并列保持原排序）；
+/// 有任意非余额窗口进入告急区间（<= 15%）时，改取全局剩余比例最低的窗口
+/// （并列保持短周期优先）。
 pub fn binding_quota_window<'a>(
     windows: impl IntoIterator<Item = &'a AgentQuotaWindow>,
 ) -> Option<&'a AgentQuotaWindow> {
-    let mut first_live = None;
+    let mut shortest_tier: Option<u8> = None;
+    let mut shortest_best: Option<&AgentQuotaWindow> = None;
     let mut tightest_low: Option<&AgentQuotaWindow> = None;
     for window in windows {
         if !window.view.available || window.view.reset_expired {
             continue;
         }
-        if first_live.is_none() {
-            first_live = Some(window);
+        let tier = quota_window_tier(&window.key);
+        let balance = is_balance_window(&window.key);
+        match shortest_best {
+            None => {
+                shortest_tier = Some(tier);
+                shortest_best = Some(window);
+            }
+            Some(current)
+                if shortest_tier == Some(tier)
+                    && !balance
+                    && !is_balance_window(&current.key)
+                    && window.view.remaining_percent < current.view.remaining_percent =>
+            {
+                shortest_best = Some(window);
+            }
+            _ => {}
         }
-        if !is_balance_window(&window.key)
+        if !balance
             && window.view.remaining_percent <= QUOTA_LOW_REMAINING_PERCENT
             && tightest_low.is_none_or(|current| {
                 window.view.remaining_percent < current.view.remaining_percent
@@ -304,7 +354,7 @@ pub fn binding_quota_window<'a>(
             tightest_low = Some(window);
         }
     }
-    tightest_low.or(first_live)
+    tightest_low.or(shortest_best)
 }
 
 /// Codex 的 primary/secondary 只是槽位，不是窗口语义：套餐不同，同一个槽位
@@ -750,5 +800,39 @@ mod tests {
 
         let expired = [mk("five_hour", 0.0, true)];
         assert!(super::binding_quota_window(&expired).is_none());
+
+        // Antigravity 同为 5h 档位的两个独立模型池：取其中剩余更少的，不因字母序锁死在 100% 的 3p_5h；
+        // 更长周期的 gemini_weekly 未告急时不跨周期抢占。
+        let agy_gemini_used = [
+            mk("3p_5h", 100.0, false),
+            mk("gemini_5h", 98.0, false),
+            mk("3p_weekly", 100.0, false),
+            mk("gemini_weekly", 95.0, false),
+        ];
+        assert_eq!(
+            super::binding_quota_window(&agy_gemini_used).map(|w| w.key.as_str()),
+            Some("gemini_5h")
+        );
+
+        let agy_3p_used = [
+            mk("3p_5h", 72.0, false),
+            mk("gemini_5h", 98.0, false),
+            mk("3p_weekly", 90.0, false),
+            mk("gemini_weekly", 95.0, false),
+        ];
+        assert_eq!(
+            super::binding_quota_window(&agy_3p_used).map(|w| w.key.as_str()),
+            Some("3p_5h")
+        );
+
+        let agy_weekly_low = [
+            mk("3p_5h", 100.0, false),
+            mk("gemini_5h", 98.0, false),
+            mk("gemini_weekly", 12.0, false),
+        ];
+        assert_eq!(
+            super::binding_quota_window(&agy_weekly_low).map(|w| w.key.as_str()),
+            Some("gemini_weekly")
+        );
     }
 }
