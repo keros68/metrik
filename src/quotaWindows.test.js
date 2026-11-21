@@ -31,6 +31,29 @@ test("GLM：两个窗口都还满着时显示 5h，不因几个百分点的高�
   assert.equal(picked.key, "five_hour");
 });
 
+test("Antigravity：同为 5h 的多个模型池取剩余更少的，不被满额的 3p_5h 盖住", () => {
+  const picked = bindingWindow([
+    windowOf("3p_5h", 100),
+    windowOf("gemini_5h", 98),
+    windowOf("3p_weekly", 100),
+    windowOf("gemini_weekly", 95),
+  ]);
+  assert.equal(picked.key, "gemini_5h");
+
+  const picked3p = bindingWindow([
+    windowOf("3p_5h", 70),
+    windowOf("gemini_5h", 98),
+    windowOf("gemini_weekly", 95),
+  ]);
+  assert.equal(picked3p.key, "3p_5h");
+
+  const tied = bindingWindow([
+    windowOf("3p_5h", 100),
+    windowOf("gemini_5h", 100),
+  ]);
+  assert.equal(tied.key, "3p_5h");
+});
+
 test("较长窗口只是略低时不接管——差值属于噪声", () => {
   const picked = bindingWindow([
     windowOf("five_hour", 80),

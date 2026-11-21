@@ -53,11 +53,15 @@ change.
   expanded view.
 - Compact rows and strip cells have room for one number, and it answers "can I
   use this agent right now". Normally that is the shortest window (five-hour, or
-  the first ranked window for agents that have no five-hour limit). When any
-  window drops to the low-quota threshold, that window takes over the row,
-  because an exhausted weekly budget blocks the agent no matter how full the
-  session window looks. A reading whose reset moment has already passed
-  describes a finished cycle and is never used as the current value.
+  the first ranked window for agents that have no five-hour limit); when an
+  agent exposes multiple parallel pools at that same shortest tier (such as
+  Antigravity's `3p_5h` and `gemini_5h`), the pool with the lowest remaining
+  percentage represents the tier so an unused 100% pool does not mask active
+  consumption. When any window drops to the low-quota threshold, that window
+  takes over the row, because an exhausted weekly budget blocks the agent no
+  matter how full the session window looks. A reading whose reset moment has
+  already passed describes a finished cycle and is never used as the current
+  value.
 - Money balances are amounts, not quota windows, so they never participate in
   the low-quota takeover above. The strip's fixed cross-axis width only fits a
   short number, so strip cells render balances compactly: at most one decimal

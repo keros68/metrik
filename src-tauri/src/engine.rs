@@ -1557,26 +1557,7 @@ fn sum_tokens_between_with_cache(
     Ok(local_total + remote_total)
 }
 
-fn quota_window_rank(key: &str) -> (u8, String) {
-    match key {
-        "five_hour" | "primary" => (0, String::new()),
-        "seven_day" | "secondary" => (1, String::new()),
-        // 超额付费是套餐外的补充预算，排在全部套餐窗口之后。
-        "extra_usage" => (3, String::new()),
-        other => {
-            if other.ends_with("_5h") || other.contains("5h") {
-                (0, other.to_owned())
-            } else if other.ends_with("_weekly")
-                || other.ends_with("_7d")
-                || other.contains("weekly")
-            {
-                (1, other.to_owned())
-            } else {
-                (2, other.to_owned())
-            }
-        }
-    }
-}
+use crate::domain::quota_window_rank;
 
 fn capitalize_model(model: &str) -> String {
     let mut chars = model.chars();

@@ -26,9 +26,21 @@ export function isBalanceWindow(window) {
   return Boolean(window?.key?.startsWith("balance"));
 }
 
+/// 窗口的周期档位，与后端 `domain::quota_window_tier` 保持一致。
+function quotaWindowTier(key = "") {
+  if (key === "five_hour" || key === "primary") return 0;
+  if (key === "seven_day" || key === "secondary") return 1;
+  if (key === "extra_usage") return 3;
+  if (key.endsWith("_5h") || key.includes("5h")) return 0;
+  if (key.endsWith("_weekly") || key.endsWith("_7d") || key.includes("weekly")) return 1;
+  return 2;
+}
+
 /// 从窗口列表里挑出当前真正约束用量的那个；没有有效窗口时返回 null。
 /// 传入顺序须为后端的 quota_window_rank 顺序（five_hour → seven_day → 月度 →
-/// 超额付费）：平时取第一个，并列告急时也靠它保证短周期优先。
+/// 超额付费）：平时在最短有效周期档位内取剩余最少的窗口（同档位多池如
+/// Antigravity 的 `3p_5h` / `gemini_5h` 取更紧的那个，并列保持原排序）；
+/// 任意非余额窗口告急时改取全局剩余最少的窗口（并列短周期优先）。
 export function bindingWindow(windows) {
   const live = (windows || []).filter(
     (window) => window.view.available && !window.view.resetExpired,
@@ -39,10 +51,25 @@ export function bindingWindow(windows) {
   const low = live.filter(
     (window) => !isBalanceWindow(window) && window.view.remainingPercent <= QUOTA_LOW_REMAINING,
   );
-  if (!low.length) return live[0];
-  return low.reduce((tightest, window) =>
-    window.view.remainingPercent < tightest.view.remainingPercent ? window : tightest,
-  );
+  if (low.length) {
+    return low.reduce((tightest, window) =>
+      window.view.remainingPercent < tightest.view.remainingPercent ? window : tightest,
+    );
+  }
+  const shortestTier = quotaWindowTier(live[0].key);
+  let best = live[0];
+  if (!isBalanceWindow(best)) {
+    for (const window of live.slice(1)) {
+      if (
+        !isBalanceWindow(window) &&
+        quotaWindowTier(window.key) === shortestTier &&
+        window.view.remainingPercent < best.view.remainingPercent
+      ) {
+        best = window;
+      }
+    }
+  }
+  return best;
 }
 
 /// 优先读取后端统一计算好的 `bindingWindowKey`，缺省时（如浏览器预览 mock）回退前端计算。
