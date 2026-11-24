@@ -9,7 +9,7 @@
 use super::Pricing;
 
 /// 价格表的生成日期，透传给前端做"估算截至"标注。
-pub const PRICING_AS_OF: &str = "2026-11-20";
+pub const PRICING_AS_OF: &str = "2026-11-24";
 
 // 每行一个模型：rustfmt 会把它拆成每条六行（近千行），生成结果与格式化结果
 // 互相打架。这是生成文件，保持一行一条更好读也更好 diff。
@@ -100,7 +100,6 @@ pub const PRICING_TABLE: &[(&str, Pricing)] = &[
     ("gpt-5.2-pro-2025-12-11", Pricing { input: 21.0, cache_read: 21.0, cache_write: 0.0, output: 168.0 }),
     ("gpt-5.3-chat-latest", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }),
     ("gpt-5.3-codex", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }),
-    ("gpt-5.3-codex-spark", Pricing { input: 1.75, cache_read: 0.175, cache_write: 0.0, output: 14.0 }), // models.dev
     ("gpt-5.4", Pricing { input: 2.5, cache_read: 0.25, cache_write: 0.0, output: 15.0 }),
     ("gpt-5.4-2026-03-05", Pricing { input: 2.5, cache_read: 0.25, cache_write: 0.0, output: 15.0 }),
     ("gpt-5.4-mini", Pricing { input: 0.75, cache_read: 0.075, cache_write: 0.0, output: 4.5 }),

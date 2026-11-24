@@ -23,7 +23,7 @@
 //! 按裸模型名匹配）。OpenCode、Antigravity 等直连这些官方 API 的用量因此可以
 //! 计价（如 kimi-k2.5、glm-4.6、gemini-3-flash-preview）。
 //!
-//! 生成表覆盖不到的官方 API（DeepSeek、阿里云百炼的 Qwen）按官方定价页手动
+//! 生成表覆盖不到的官方 API（DeepSeek、阿里云百炼的 Qwen、腾讯混元）按官方定价页手动
 //! 补在 MANUAL_PRICING，规则不变：只认官方第一方价目，不借第三方转售价。
 //!
 //! ## 分时定价
@@ -73,8 +73,7 @@ pub struct Pricing {
 }
 
 impl Pricing {
-    /// 谷段 5 折：四个分量同比例打折（DeepSeek 官方谷段价正是峰段的一半）。
-    fn halved(self) -> Self {
+    const fn halved(self) -> Self {
         Self {
             input: self.input / 2.0,
             cache_read: self.cache_read / 2.0,
@@ -83,6 +82,20 @@ impl Pricing {
         }
     }
 }
+
+// 腾讯云 TokenHub 国际站目录价：https://www.tencentcloud.com/document/product/1300/78937
+const HY4_STANDARD_RATE: Pricing = Pricing {
+    input: 0.834,
+    cache_read: 0.042,
+    cache_write: 0.0,
+    output: 2.501,
+};
+const HY4_FLASH_STANDARD_RATE: Pricing = Pricing {
+    input: 0.07,
+    cache_read: 0.003,
+    cache_write: 0.0,
+    output: 0.281,
+};
 
 /// 手动补充的官方第一方价目（生成表之外）：模型太新、两个来源都未收录时
 /// 按官方定价页临时补齐，**收录后即删**——两处都留会让手工值一直压过生成值，
@@ -106,10 +119,12 @@ impl Pricing {
 ///   下线前的峰段价（v4-flash 2026-08-20 核对；vision-exp 2026-08-21 上线即与
 ///   v4-flash 同价，见 2026-08-28 的定价页存档）。此后旧名按 deepseek-flash
 ///   计费，见 RETIRED_ROUTES。
-/// - qwen3.8-max：阿里云百炼（2026-08-20 核对）。输入 $2/M、输出 $6/M 是官方
-///   公布价；缓存两项官方尚未逐模型列出，按百炼计费文档的通用规则推算——
-///   命中按输入价 10%（$0.2/M）、显式缓存写入按 125%（$2.5/M）。这两项是
-///   规则推算不是逐模型报价，官方列出后应替换。
+/// - glm-5.3-flashx-legal：Z.ai 官方定价页 docs.z.ai/guides/overview/pricing。
+/// - qwen3.8-max / qwen4-max：阿里云百炼新加坡国际部署费率，缓存读采用隐式缓存价。
+///   https://www.alibabacloud.com/help/en/model-studio/qwen3-8-max
+///   https://www.alibabacloud.com/help/en/model-studio/qwen4-max
+///   Qwen4 缓存写按显式缓存文档的 5 分钟档（输入价的 125%）估算。
+///   https://www.alibabacloud.com/help/en/model-studio/explicit-cache-qwen4
 const MANUAL_PRICING: &[(&str, Pricing)] = &[
     (
         "deepseek-flash",
@@ -148,12 +163,32 @@ const MANUAL_PRICING: &[(&str, Pricing)] = &[
         },
     ),
     (
+        "glm-5.3-flashx-legal",
+        Pricing {
+            input: 0.37,
+            cache_read: 0.075,
+            cache_write: 0.0,
+            output: 1.25,
+        },
+    ),
+    ("hy4", HY4_STANDARD_RATE),
+    ("hy4-flash", HY4_FLASH_STANDARD_RATE),
+    (
         "qwen3.8-max",
         Pricing {
             input: 2.0,
-            cache_read: 0.2,
+            cache_read: 0.25,
             cache_write: 2.5,
             output: 6.0,
+        },
+    ),
+    (
+        "qwen4-max",
+        Pricing {
+            input: 1.5,
+            cache_read: 0.075,
+            cache_write: 1.875,
+            output: 4.5,
         },
     ),
 ];
@@ -226,8 +261,8 @@ const GEMINI_4_STANDARD_RATE: Pricing = Pricing {
 
 /// (模型, 生效时刻, 调价前费率, 调价后费率)。保留两档费率可让生成表刷新后
 /// 继续按事件时间计价。历史费率滑出解析视界且生成表采用新价后可移除。
-/// https://aistudio.google.com/docs/pricing （2026-11-12 核对）。页面按日期
-/// 公布标准档，切换时刻取 UTC 午夜。
+/// Gemini 定价页按日期公布标准档，切换时刻取 UTC 午夜。
+/// 腾讯云 Hy4 和 Hy4 Flash 的首发优惠截止时间按北京时间。
 const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing, Pricing)] = &[
     (
         "gemini-4-argon",
@@ -256,6 +291,18 @@ const SCHEDULED_PRICE_CHANGES: &[(&str, i64, Pricing, Pricing)] = &[
             cache_write: 0.0,
             output: 7.5,
         },
+    ),
+    (
+        "hy4",
+        1_798_732_800_000, // 2027-01-01 00:00 北京时间
+        HY4_STANDARD_RATE.halved(),
+        HY4_STANDARD_RATE,
+    ),
+    (
+        "hy4-flash",
+        1_796_011_200_000, // 2026-11-30 12:00 北京时间
+        HY4_FLASH_STANDARD_RATE.halved(),
+        HY4_FLASH_STANDARD_RATE,
     ),
 ];
 
@@ -717,7 +764,15 @@ mod tests {
         // 订阅 coding plan 的专属 ID 没有官方按 token 价目：不得借第三方
         // 转售价或同系模型的价格蒙混（Kimi Code 订阅等）。
         assert!(price_for("kimi-code/kimi-for-coding", ANY_TIME_MS).is_none());
-        assert!(price_for("qwen4-max-preview", ANY_TIME_MS).is_none());
+        for model in [
+            "glm-5.4",
+            "GLM-5.4",
+            "glm-5.4[1m]",
+            "gpt-5.3-codex-spark",
+            "qwen4-max-preview",
+        ] {
+            assert!(price_for(model, ANY_TIME_MS).is_none(), "{model}");
+        }
         // 有 -preview 后缀的官方价也不补给稳定版名字。
         assert!(price_for("gemini-3.1-pro", ANY_TIME_MS).is_none());
     }
@@ -768,6 +823,20 @@ mod tests {
         let flash_upper = price_for("GLM-5.3-Flash", ANY_TIME_MS).expect("alias priced");
         assert_eq!(flash_upper.input, flash.input);
         assert_eq!(flash_upper.output, flash.output);
+
+        for model in ["glm-5.3-flashx-legal", "GLM-5.3-FlashX-Legal"] {
+            let legal = price_for(model, ANY_TIME_MS).expect("GLM Legal priced");
+            assert_eq!(
+                (
+                    legal.input,
+                    legal.cache_read,
+                    legal.cache_write,
+                    legal.output
+                ),
+                (0.37, 0.075, 0.0, 1.25),
+                "{model}"
+            );
+        }
     }
 
     #[test]
@@ -1055,13 +1124,17 @@ mod tests {
 
     #[test]
     fn qwen_and_codex_auto_review_are_priced_from_official_sources() {
-        // 阿里云百炼 qwen3.8-max：输入 $2、输出 $6 是官方公布价；缓存两项按
-        // 官方计费规则推算（命中 10%、显式缓存写入 125%）。
-        let qwen = price_for("qwen3.8-max", ANY_TIME_MS).expect("qwen3.8-max priced");
-        assert_eq!(qwen.input, 2.0);
-        assert_eq!(qwen.cache_read, 0.2);
-        assert_eq!(qwen.cache_write, 2.5);
-        assert_eq!(qwen.output, 6.0);
+        for (model, rates) in [
+            ("qwen3.8-max", (2.0, 0.25, 2.5, 6.0)),
+            ("qwen4-max", (1.5, 0.075, 1.875, 4.5)),
+        ] {
+            let qwen = price_for(model, ANY_TIME_MS).expect("Qwen priced");
+            assert_eq!(
+                (qwen.input, qwen.cache_read, qwen.cache_write, qwen.output),
+                rates,
+                "{model}"
+            );
+        }
 
         // codex-auto-review 按 OpenAI 官方声明的 GPT-5.4 计价，不是自成一档。
         let review = price_for("codex-auto-review", ANY_TIME_MS).expect("alias priced");
@@ -1069,6 +1142,38 @@ mod tests {
         assert_eq!(review.input, gpt.input);
         assert_eq!(review.cache_read, gpt.cache_read);
         assert_eq!(review.output, gpt.output);
+    }
+
+    #[test]
+    fn hy4_launch_discount_ends_at_the_published_beijing_time() {
+        for (model, cutoff, promotion, standard) in [
+            (
+                "hy4",
+                1_798_732_800_000,
+                (0.417, 0.021, 0.0, 1.2505),
+                (0.834, 0.042, 0.0, 2.501),
+            ),
+            (
+                "hy4-flash",
+                1_796_011_200_000,
+                (0.035, 0.0015, 0.0, 0.1405),
+                (0.07, 0.003, 0.0, 0.281),
+            ),
+        ] {
+            for (timestamp, expected) in [(cutoff - 1, promotion), (cutoff, standard)] {
+                let price = price_for(model, timestamp).expect("Hy4 model priced");
+                assert_eq!(
+                    (
+                        price.input,
+                        price.cache_read,
+                        price.cache_write,
+                        price.output
+                    ),
+                    expected,
+                    "{model} at {timestamp}"
+                );
+            }
+        }
     }
 
     #[test]

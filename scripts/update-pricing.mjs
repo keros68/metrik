@@ -85,9 +85,10 @@ const activeOnly = (model) => {
 
 // 模型存在不等于价格已公开。LiteLLM 偶尔会先填入一个推测值；官方价目可核验前
 // 保持 unpriced，不能把第三方数值当成第一方价格。
-// gpt-5.5-cyber 曾在此列：2026-10-25 官方定价页已公布（$12.5/$1.25/$75，与
-// LiteLLM 一致），解禁。新出现同类情况加回这里即可。
-const UNVERIFIED_PRICING = new Set();
+const UNVERIFIED_PRICING = new Set([
+  "glm-5.4", // https://z.ai/blog/glm-5.4: Coding Plan 已上线，按量 API 待开放。
+  "gpt-5.3-codex-spark", // API 仅面向部分合作方，官方未公布按量费率。
+]);
 
 // 视界内还可能出现在受支持 agent 日志里的代际（见文件头部说明）。
 // 按模型名（已剥 provider 前缀）匹配，两源同规则。
@@ -172,7 +173,7 @@ let rejectedNames = 0;
 
 /// 两个来源共用的准入规则。
 function admissible(model, input, output) {
-  if (UNVERIFIED_PRICING.has(model)) return false;
+  if (UNVERIFIED_PRICING.has(model.toLowerCase())) return false;
   const pricingStarts = PRICING_START_DATES.get(model);
   if (pricingStarts != null && asOf < pricingStarts) return false;
   // 没有完整且为正的 token 输入/输出价就不要——半个价格算出来的成本是错的；
