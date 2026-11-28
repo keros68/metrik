@@ -31,7 +31,6 @@ pub use workbuddy::WorkbuddyAdapter;
 pub use zcode::ZcodeAdapter;
 
 // 配额快照从日志或 RPC 读取，供 quota 注册表调用。
-pub use antigravity::fetch_antigravity_quota_snapshot;
 pub use grok::{fetch_grok_quota_snapshot, grok_home, grok_home_exists};
 
 // Cursor 用量与套餐余量默认关闭，设置开关与状态查询。

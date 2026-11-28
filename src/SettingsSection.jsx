@@ -1316,7 +1316,7 @@ export function SettingsSection({ onSnapshotRefresh, widgetAgents, onToggleWidge
             </HookCard>
             <HookCard
               title={t("Antigravity CLI 官方配额")}
-              description={t("仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子 （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留； 卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。")}
+              description={t("通过 Antigravity CLI（agy）的状态栏（statusLine）读取官方配额。已有状态栏命令会继续运行，卸载钩子时恢复原设置。")}
               getStatus={getAntigravityHookStatus}
               setHook={setAntigravityHook}
               installedMessage={"钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。"}

@@ -41,7 +41,7 @@ The interface is available in English and Simplified Chinese. It follows the sys
 | GLM / ZCode | `~/.zcode/cli/db/db.sqlite` | ✅ 5-hour, weekly |
 | Kimi (incl. Kimi Work desktop) | `~/.kimi-code`, `~/.kimi`, kimi-desktop data directory | ✅ 5-hour, weekly, monthly |
 | OpenCode | `~/.local/share/opencode/storage` | ✅ Go plan (OpenCode / pi auth.json) |
-| Antigravity | `~/.gemini/antigravity/conversations` (2.x local conversation databases; older IDE builds fall back to the language server RPC) | ✅ |
+| Antigravity | `~/.gemini/antigravity/conversations` (2.x local conversation databases; older IDE builds fall back to the language server RPC) | ✅ CLI statusLine hook |
 | WorkBuddy / CodeBuddy | `~/.codebuddy/projects`, `~/.workbuddy/projects` | ✅ Official credits |
 | Qoder | — | ✅ Official credits |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ Weekly credits (CLI log snapshot) |

@@ -8,6 +8,8 @@ change.
 
 - Official quota, locally parsed usage, and estimated cost are different facts.
   Keep them visibly separate and never present an estimate as official billing.
+- Antigravity quota comes from the official CLI's `statusLine` payload. Desktop
+  and IDE conversation records provide token history.
 - Cost estimation prices only models that can still appear in logs within the
   182-day parse horizon. Generations superseded before that horizon are pruned
   from the pricing table at generation time and reported as unpriced; a rescan
@@ -207,8 +209,9 @@ change.
   checkmarks and settings checkboxes. Opening the main panel never hides the
   compact card or quota strip, and appearance/scale changes apply live across
   windows. Each floating surface remembers its own position independently.
-- The tray's "Main panel" action works from a fully hidden state; it does not
-  require revealing the compact card or strip first.
+- A single left click on the tray icon opens the main panel or brings it to
+  the foreground. Right click opens the tray menu. Both a left click and the
+  menu's "Main panel" action can open the panel when all surfaces are hidden.
 - Pinning and position lock apply only to compact and strip. Entering expanded
   mode always drops always-on-top and provides no pin control.
 - Strip resizing preserves the screen edge it is flush to. Fully off-screen
