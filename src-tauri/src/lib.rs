@@ -1597,10 +1597,17 @@ struct RequestedSurfaceVisibility(Mutex<HashMap<&'static str, bool>>);
 
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn set_requested_visibility(app: &tauri::AppHandle, key: &'static str, visible: bool) {
+    #[cfg(windows)]
+    use tauri::Emitter;
+
     if let Some(state) = app.try_state::<RequestedSurfaceVisibility>() {
         if let Ok(mut map) = state.0.lock() {
             map.insert(key, visible);
         }
+    }
+    #[cfg(windows)]
+    if matches!(key, "compact" | "strip") {
+        let _ = app.emit_to("main", "metrik://surface-preference", (key, visible));
     }
 }
 
@@ -1686,6 +1693,39 @@ fn ensure_strip_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, S
         disable_system_corner_rounding(hwnd.0 as isize);
     }
     Ok(window)
+}
+
+#[tauri::command]
+async fn restore_floating_surfaces(
+    app: tauri::AppHandle,
+    compact: bool,
+    strip: bool,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let create_lock = app.state::<SurfaceCreateLock>();
+            let _guard = create_lock.0.lock().map_err(|error| error.to_string())?;
+            let show_strip = {
+                let state = app.state::<RequestedSurfaceVisibility>();
+                let mut requested = state.0.lock().map_err(|error| error.to_string())?;
+                // A tray action can arrive before the main webview finishes loading.
+                requested.entry("compact").or_insert(compact);
+                *requested.entry("strip").or_insert(strip)
+            };
+            if show_strip {
+                ensure_strip_window(&app)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, compact, strip);
+        Ok(())
+    }
 }
 
 #[cfg(all(desktop, not(target_os = "macos")))]
@@ -2301,7 +2341,28 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::show_panel(app);
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                for label in ["main", "strip", "expanded"] {
+                    if let Some(window) = handle.get_webview_window(label) {
+                        if window.is_visible().unwrap_or(false) {
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                            return;
+                        }
+                    }
+                }
+                if !is_surface_requested(&handle, "compact")
+                    && !is_surface_requested(&handle, "strip")
+                {
+                    let _ = set_surface_visible_inner(&handle, "expanded", true, None);
+                }
+            });
+        }
+
+        #[cfg(target_os = "linux")]
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
@@ -2560,6 +2621,7 @@ pub fn run() {
             open_expanded_window,
             take_pending_panel_nav,
             set_surface_visible,
+            restore_floating_surfaces,
             is_surface_visibility_requested,
             get_surface_visibility,
             notify_surface_visibility,

@@ -34,6 +34,33 @@ test("startup does not apply compact zoom to a strip or expanded window", async 
   assert.equal(zoomCalls, 0);
 });
 
+test("compact startup leaves the card hidden when its show request has been withdrawn", async () => {
+  const context = controller();
+  let requested = true;
+  let showCalls = 0;
+  const appWindow = {
+    setMinSize: async () => {},
+    setResizable: async () => {},
+    setSize: async () => { requested = false; },
+    show: async () => { showCalls += 1; },
+    setFocus: async () => {},
+  };
+  Object.assign(context, {
+    isMacPlatform: () => false,
+    isLinuxPlatform: () => false,
+    isWindowsPlatform: () => true,
+    windowApi: async () => ({ getCurrentWindow: () => appWindow }),
+    applyWebviewZoom: async () => {},
+    floatingPlacement: async () => ({}),
+    scaledPhysicalSize: async () => ({ width: 320, height: 320 }),
+    reconcileFloatingSizeAfterShow: async () => {},
+    isSurfaceVisibilityRequested: async () => requested,
+    invoke: async () => {},
+  });
+  await context.applyStartupUiScale("compact");
+  assert.equal(showCalls, 0);
+});
+
 test("cached 28px horizontal strip and short compact heights survive startup", () => {
   const context = controller({
     "metrik:stripContentSize": JSON.stringify({ horizontal: { width: 366, height: 28 } }),
