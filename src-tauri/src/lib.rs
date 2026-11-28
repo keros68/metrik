@@ -2144,7 +2144,9 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     use tauri::menu::MenuItem;
     use tauri::menu::{CheckMenuItem, Menu, PredefinedMenuItem};
-    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+    use tauri::tray::TrayIconBuilder;
+    #[cfg(windows)]
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
     #[cfg(target_os = "linux")]
     use tauri::Emitter;
 
@@ -2259,10 +2261,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
             "quit" => app.exit(0),
             _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::DoubleClick {
+        });
+    #[cfg(windows)]
+    {
+        tray = tray.on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
                 button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
                 ..
             } = event
             {
@@ -2272,6 +2277,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 });
             }
         });
+    }
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }

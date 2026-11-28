@@ -1626,9 +1626,13 @@ fn load_agent_quota_windows(
     adapter_id: &str,
     now_ms: i64,
 ) -> Result<Vec<crate::domain::AgentQuotaWindow>> {
+    // Cached Antigravity desktop RPC samples are outside the CLI quota source.
     let mut statement = connection.prepare(
         "SELECT window_key, remaining_percent, resets_at_ms, source_label, quality, collected_at_ms
-         FROM quota_snapshot WHERE adapter_id = ?1 ORDER BY window_key",
+         FROM quota_snapshot
+         WHERE adapter_id = ?1
+           AND (adapter_id <> 'antigravity' OR quality <> 'official_live')
+         ORDER BY window_key",
     )?;
     let mut windows = statement
         .query_map([adapter_id], |row| {
@@ -1922,8 +1926,8 @@ fn source_views(lang: Lang, report: ScanReport, sync_status: Option<SyncView>) -
             i18n::tr_in!(lang, "Antigravity 官方配额", "Antigravity official quota"),
             i18n::tr_in!(
                 lang,
-                "IDE 在跑时通过本机 language server 的私有 RPC 读取官方配额窗口；只有 Antigravity CLI（agy）在跑时改由官方 statusLine 钩子提供同一份官方快照。两者都不可用时显示为不可用，绝不估算。",
-                "While the IDE is running, the official quota windows are read through the private RPC of the local language server; when only the Antigravity CLI (agy) is running, the official statusLine hook provides the same official snapshot. When neither is available, the quota shows as unavailable and is never estimated."
+                "官方配额来自 Antigravity CLI（agy）的 statusLine 快照。没有快照时显示为不可用。",
+                "Official quotas come from Antigravity CLI (agy) statusLine snapshots. Quotas are unavailable until a snapshot is received."
             ),
         ),
         local(
@@ -4298,6 +4302,45 @@ mod tests {
             quota_window_label(Lang::Zh, "antigravity", "3p_5h"),
             "Claude/GPT · 5h"
         );
+    }
+
+    #[test]
+    fn antigravity_quota_reports_cli_snapshots_only() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::schema::ensure_schema(&connection).unwrap();
+        let now = Utc::now().timestamp_millis();
+        connection
+            .execute(
+                "INSERT INTO quota_snapshot (
+                    adapter_id, window_key, remaining_percent, collected_at_ms, quality, source_label
+                 ) VALUES
+                    ('antigravity', 'gemini_5h', 70, ?1, 'official_live', 'Antigravity 官方配额'),
+                    ('codex', 'primary', 80, ?1, 'official_live', 'Codex')",
+                [now],
+            )
+            .unwrap();
+        assert!(
+            load_visible_agent_quota_windows(&connection, "antigravity", now)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            load_visible_agent_quota_windows(&connection, "codex", now)
+                .unwrap()
+                .len(),
+            1
+        );
+        connection
+            .execute(
+                "INSERT INTO quota_snapshot (
+                    adapter_id, window_key, remaining_percent, collected_at_ms, quality, source_label
+                 ) VALUES ('antigravity', 'gemini_weekly', 60, ?1, 'official_snapshot', ?2)",
+                params![now, crate::antigravity_hook::SOURCE_LABEL],
+            )
+            .unwrap();
+        let windows = load_visible_agent_quota_windows(&connection, "antigravity", now).unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].key, "gemini_weekly");
     }
 
     #[test]

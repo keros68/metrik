@@ -479,8 +479,8 @@ export default {
     "Hook installed. The official 5h/7d quota left appears here after Claude Code next refreshes its status line.",
   "等待 Claude Code 下次刷新状态栏": "waiting for Claude Code to refresh its status line",
   "Antigravity CLI 官方配额": "Antigravity CLI official quota",
-  "仅为 Antigravity CLI（agy）安装一个提取官方额度窗口的状态栏（statusLine）钩子 （不读对话内容、不碰登录凭据）。已有自定义 statusLine 会自动串联、原样保留； 卸载时恢复原状。IDE（language server）在跑时额度仍走实时 RPC，不依赖此钩子。":
-    "Installs a status line (statusLine) hook for Antigravity CLI (agy) only, which extracts the official quota windows without reading conversations or touching sign-in credentials. An existing custom statusLine is chained and kept as is, and is restored when the hook is removed. While the IDE (language server) runs, quota still comes from its live RPC and doesn't need this hook.",
+  "通过 Antigravity CLI（agy）的状态栏（statusLine）读取官方配额。已有状态栏命令会继续运行，卸载钩子时恢复原设置。":
+    "Reads official quotas from the Antigravity CLI (agy) statusLine. Existing status line commands keep running. Removing the hook restores your previous settings.",
   "钩子已安装。下次 Antigravity CLI 刷新状态后，此处显示官方额度窗口。":
     "Hook installed. The official quota windows appear here after Antigravity CLI next refreshes its status.",
   "等待 Antigravity CLI 下次刷新状态": "waiting for Antigravity CLI to refresh its status",

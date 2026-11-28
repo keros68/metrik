@@ -11,13 +11,13 @@
 //! 2. **language server 私有 RPC**（`exa.language_server_pb`，自签 TLS，认证
 //!    令牌从进程命令行取）：只用于本地没有 `.db` 的会话（旧版 IDE 把会话存成
 //!    `.pb`，不是这种库）。IDE 必须正在运行；进程不在时返回空，绝不估算。
-//!    2.23 实测：端点发现与配额 RPC 正常，但 `GetAllCascadeTrajectories` 返回
+//!    2.23 实测：`GetAllCascadeTrajectories` 返回
 //!    空对象，`chatStartMetadata` 也不再带 `createdAt`（只剩 `checkpointIndex`
 //!    与 `contextWindowMetadata`）——单靠 RPC，2.x 的用量一条都读不到。对本地
 //!    20 个会话逐个调 `GetCascadeTrajectoryGeneratorMetadata`，与本地库解析出的
 //!    1383 个事件 event_id、token 分量、模型名全部一致。
 //!
-//! 套进 `AgentAdapter` 框架：`discover` = 本地库 + RPC 会话 + 一个配额入口，
+//! 套进 `AgentAdapter` 框架：`discover` = 本地库 + RPC 会话，
 //! `parse` = 取该会话的用量记录。账本按 `responseId` 去重——每次都读到该会话的
 //! **全量**记录，活跃生成会被多次观察到、计数逐步增长，正是账本已有的
 //! 「按 provider id 合并、分量取最大值」语义（与 Claude 同型，见 storage.rs）。
@@ -34,7 +34,7 @@
 //!   查表转真名，查不到原样保留。
 
 use super::{AgentAdapter, ParsedScan, ScanDiagnostics, SourceCandidate};
-use crate::domain::{stable_hash, ParsedSource, QuotaSample, TokenVector, UsageEvent};
+use crate::domain::{stable_hash, ParsedSource, TokenVector, UsageEvent};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde_json::{json, Value};
@@ -87,18 +87,6 @@ where
     let resolved = discover();
     *cache = Some((Instant::now(), resolved.clone()));
     resolved
-}
-
-/// 官方配额拉取入口（供 quota 统一注册表调用）。
-pub fn fetch_antigravity_quota_snapshot(timeout: Duration) -> Result<Vec<QuotaSample>> {
-    let endpoint = get_endpoint().ok_or_else(|| anyhow!("Antigravity language server 未在运行"))?;
-    let value = rpc_call_with_timeout(
-        &endpoint,
-        "RetrieveUserQuotaSummary",
-        &json!({ "forceRefresh": true }),
-        timeout,
-    )?;
-    Ok(parse_quota_summary(&value))
 }
 
 pub struct AntigravityAdapter {
@@ -463,57 +451,6 @@ fn duration_ms(value: &Value) -> Option<i64> {
         .take(3)
         .fold(0i64, |ms, digit| ms * 10 + i64::from(digit - b'0'));
     seconds.checked_mul(1000)?.checked_add(millis)
-}
-
-/// 官方配额：两个 group（Gemini / Claude+GPT），各含 weekly + 5h 桶。
-/// `remainingFraction` 可能直接给，也可能包在 oneof `remaining.remainingFraction`。
-/// 桶名是连字符（2.23 实测 `gemini-weekly`、`3p-5h`），按 statusLine 钩子的
-/// 约定归一成下划线，否则界面认不出窗口、标签不会美化。
-fn parse_quota_summary(value: &Value) -> Vec<QuotaSample> {
-    let root = value
-        .get("response")
-        .or_else(|| value.get("summary"))
-        .unwrap_or(value);
-    let Some(groups) = root.get("groups").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let now = chrono::Utc::now().timestamp_millis();
-    let mut samples = Vec::new();
-    for group in groups {
-        let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
-            continue;
-        };
-        for bucket in buckets {
-            if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
-                continue;
-            }
-            let Some(bucket_id) = first_string(bucket, &["bucketId", "displayName"]) else {
-                continue;
-            };
-            let remaining = bucket
-                .get("remainingFraction")
-                .and_then(Value::as_f64)
-                .or_else(|| {
-                    bucket
-                        .get("remaining")
-                        .and_then(|inner| inner.get("remainingFraction"))
-                        .and_then(Value::as_f64)
-                });
-            let Some(remaining) = remaining else {
-                continue;
-            };
-            samples.push(QuotaSample {
-                adapter_id: "antigravity",
-                window_key: crate::antigravity_hook::normalize_window_key(&bucket_id),
-                remaining_percent: (remaining * 100.0).clamp(0.0, 100.0),
-                resets_at_ms: first_time_ms(bucket, &["resetTime", "resetsAt"]),
-                collected_at_ms: now,
-                source_label: "Antigravity 官方配额".into(),
-                quality: "official_live",
-            });
-        }
-    }
-    samples
 }
 
 /// 占位符模型名 → 真名。查不到原样保留（不猜、不丢）。表会随版本滞后。
@@ -1104,13 +1041,8 @@ fn insecure_agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
-fn rpc_call_with_timeout(
-    endpoint: &Endpoint,
-    method: &str,
-    body: &Value,
-    timeout: Duration,
-) -> Result<Value> {
-    let agent = insecure_agent(timeout);
+fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
+    let agent = insecure_agent(Duration::from_secs(6));
     let url = format!("{}{RPC_BASE_METHOD}/{method}", endpoint.base_url);
     let response = agent
         .post(&url)
@@ -1123,10 +1055,6 @@ fn rpc_call_with_timeout(
         .into_string()
         .context("读取 Antigravity 响应失败")?;
     serde_json::from_str(&text).context("Antigravity 响应不是有效 JSON")
-}
-
-fn rpc_call(endpoint: &Endpoint, method: &str, body: &Value) -> Result<Value> {
-    rpc_call_with_timeout(endpoint, method, body, Duration::from_secs(6))
 }
 
 fn heartbeat_ok(endpoint: &Endpoint) -> bool {
@@ -1600,47 +1528,6 @@ mod tests {
             Some("model_placeholder_m84")
         );
         assert_eq!(resolve_model(Some("".into())), None);
-    }
-
-    #[test]
-    fn quota_summary_parses_both_fraction_shapes() {
-        let value = json!({
-            "groups": [{
-                "displayName": "Gemini Models",
-                "buckets": [
-                    { "bucketId": "gemini_weekly", "remainingFraction": 0.4, "resetTime": "2026-07-20T00:00:00Z" },
-                    { "bucketId": "gemini_5h", "remaining": { "remainingFraction": 0.75 } },
-                    { "bucketId": "disabled_one", "remainingFraction": 0.1, "disabled": true }
-                ]
-            }]
-        });
-        let samples = parse_quota_summary(&value);
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0].window_key, "gemini_weekly");
-        assert!((samples[0].remaining_percent - 40.0).abs() < 1e-9);
-        assert_eq!(samples[1].window_key, "gemini_5h");
-        assert!((samples[1].remaining_percent - 75.0).abs() < 1e-9);
-    }
-
-    /// Antigravity 2.23 的 RetrieveUserQuotaSummary 真机响应形状：外层包一层
-    /// `response`，桶名是连字符，要归一成与 statusLine 钩子相同的窗口键。
-    #[test]
-    fn quota_summary_normalizes_hyphenated_bucket_ids() {
-        let value = json!({ "response": { "groups": [
-            { "displayName": "Gemini Models", "buckets": [
-                { "bucketId": "gemini-weekly", "displayName": "Weekly Limit Remaining",
-                  "window": "weekly", "remainingFraction": 1, "resetTime": "2026-10-20T00:00:00Z" },
-                { "bucketId": "gemini-5h", "window": "5h", "remainingFraction": 0.5 }
-            ]},
-            { "displayName": "Claude and GPT models", "buckets": [
-                { "bucketId": "3p-5h", "window": "5h", "remainingFraction": 0.25 }
-            ]}
-        ]}});
-        let keys: Vec<String> = parse_quota_summary(&value)
-            .into_iter()
-            .map(|sample| sample.window_key)
-            .collect();
-        assert_eq!(keys, ["gemini_weekly", "gemini_5h", "3p_5h"]);
     }
 
     #[test]

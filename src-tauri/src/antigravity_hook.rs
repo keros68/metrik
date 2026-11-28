@@ -10,11 +10,8 @@ use std::path::PathBuf;
 
 /// Antigravity CLI（`agy`）官方配额的零凭据来源：statusLine 钩子。
 ///
-/// CLI 内嵌的 language server 与 IDE 共用同一套 Connect RPC，但 csrf token
-/// 只存在于进程内部（命令行、日志、配置文件都不落盘），外部进程拿不到，无法
-/// 像 IDE 那样直连。官方给本机工具留的口子是 statusLine：CLI 每次状态变化都把
-/// 会话 JSON（含 `quota` 对象的 `remaining_fraction` 与 `reset_time`）通过
-/// stdin 推给用户配置的命令。安装的钩子只提取额度窗口并原子写入
+/// CLI 通过 stdin 向用户配置的命令发送会话 JSON，其中包含 `quota` 对象的
+/// `remaining_fraction` 与 `reset_time`。钩子提取额度窗口并原子写入
 /// `~/.gemini/antigravity-cli/metrik-antigravity-quota.json`，同时输出一行
 /// 简洁的状态栏文本；不读取、不保存对话内容或凭据。安装、串联与委托见
 /// `statusline` 模块。
@@ -88,9 +85,8 @@ fn payload_from_input(input: &Value, now_ms: i64) -> QuotaFile {
 }
 
 /// 官方桶名是连字符（`gemini-weekly`），引擎与界面的窗口键约定是下划线
-/// （`gemini_weekly`）。统一小写归一，未知后缀原样保留。IDE 的 RPC 配额
-/// 也用同样的桶名，两个来源共用这一处归一。
-pub(crate) fn normalize_window_key(key: &str) -> String {
+/// （`gemini_weekly`）。统一小写，保留未知后缀。
+fn normalize_window_key(key: &str) -> String {
     key.trim().to_ascii_lowercase().replace('-', "_")
 }
 

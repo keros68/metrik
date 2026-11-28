@@ -119,7 +119,7 @@ pub trait QuotaProvider: Send + Sync {
 
     fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>>;
 
-    /// 主来源拿不到时的本地兜底（目前只有 Claude 的 statusLine 钩子文件）。
+    /// 主来源拿不到时的本地兜底，例如 Claude 的 statusLine 钩子文件。
     /// 读本地文件，成本可忽略，故不进缓存。
     fn fallback(&self) -> Vec<QuotaSample> {
         Vec::new()
@@ -238,10 +238,7 @@ pub fn registry() -> Vec<Box<dyn QuotaProvider>> {
     providers
 }
 
-/// Google Antigravity：官方配额双来源。IDE 在跑时走本机 language server 私有
-/// RPC（实时）；只有 Antigravity CLI（`agy`）在跑时 RPC 不可达（csrf 只在
-/// 进程内部，外部无法接入），回落到官方 statusLine 钩子落盘的快照。
-/// 两者都不可用时返回不可用，绝不估算。
+/// 官方配额来自 Antigravity CLI 的 statusLine 快照文件。
 struct AntigravityQuota;
 
 impl QuotaProvider for AntigravityQuota {
@@ -250,15 +247,11 @@ impl QuotaProvider for AntigravityQuota {
     }
 
     fn policy(&self) -> QuotaPolicy {
-        QuotaPolicy::new(60, 240, 4)
+        QuotaPolicy::new(0, 0, 0)
     }
 
-    fn fetch(&self, timeout: Duration) -> Result<Vec<QuotaSample>> {
-        adapters::fetch_antigravity_quota_snapshot(timeout)
-    }
-
-    fn fallback(&self) -> Vec<QuotaSample> {
-        crate::antigravity_hook::AntigravityHook::detected().quota_samples()
+    fn fetch(&self, _timeout: Duration) -> Result<Vec<QuotaSample>> {
+        Ok(crate::antigravity_hook::AntigravityHook::detected().quota_samples())
     }
 }
 
