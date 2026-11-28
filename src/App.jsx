@@ -56,6 +56,7 @@ import {
   onPanelNav,
   onScaleFactorChanged,
   onStateSync,
+  onSurfacePreferenceChanged,
   onSurfaceVisibilityChanged,
   onTrayPinnedChange,
   onTrayShowExpanded,
@@ -64,6 +65,7 @@ import {
   readUiScale,
   reassertCompactSize,
   reassertStripSize,
+  restoreFloatingSurfaces,
   restoreWindowPosition,
   setNativeTheme,
   setPinnedHoverTargetOpacity,
@@ -703,6 +705,15 @@ function readStartupSurfacePrefs() {
   return { compact: !legacyStrip, strip: legacyStrip };
 }
 
+function saveStartupSurfacePreference(surface, visible) {
+  if (typeof visible !== "boolean") return;
+  if (surface === "compact") {
+    localStorage.setItem("metrik:surfaceCompactVisible", String(visible));
+  } else if (surface === "strip") {
+    localStorage.setItem("metrik:surfaceStripVisible", String(visible));
+  }
+}
+
 function stripPositionMode(orientation) {
   return `strip-${orientation}`;
 }
@@ -752,19 +763,21 @@ export function App() {
     getSurfaceVisibility().then((vis) => {
       if (!cancelled && vis) setSurfaceVisibility(vis);
     });
-    const stopPromise = onSurfaceVisibilityChanged((vis) => {
-      if (!vis) return;
+    const stopVisibility = onSurfaceVisibilityChanged((vis) => {
       setSurfaceVisibility(vis);
-      if (typeof vis.compact === "boolean") {
-        localStorage.setItem("metrik:surfaceCompactVisible", String(vis.compact));
-      }
-      if (typeof vis.strip === "boolean") {
-        localStorage.setItem("metrik:surfaceStripVisible", String(vis.strip));
+      if (IS_LINUX) {
+        saveStartupSurfacePreference("compact", vis.compact);
+        saveStartupSurfacePreference("strip", vis.strip);
       }
     });
+    // Windows persists explicit choices in the main webview, which reads them at launch.
+    const stopPreference = IS_WINDOWS && viewMode === "compact"
+      ? onSurfacePreferenceChanged(([surface, visible]) => saveStartupSurfacePreference(surface, visible))
+      : null;
     return () => {
       cancelled = true;
-      stopPromise.then((stop) => stop?.());
+      stopVisibility.then((stop) => stop?.());
+      stopPreference?.then((stop) => stop?.());
     };
   }, []);
 
@@ -786,11 +799,7 @@ export function App() {
 
   const handleSetSurfaceVisible = useCallback((surface, visible, nav = null) => {
     if (IS_MAC || !isDesktop()) return;
-    if (surface === "compact") {
-      localStorage.setItem("metrik:surfaceCompactVisible", String(Boolean(visible)));
-    } else if (surface === "strip") {
-      localStorage.setItem("metrik:surfaceStripVisible", String(Boolean(visible)));
-    }
+    if (IS_LINUX) saveStartupSurfacePreference(surface, Boolean(visible));
     runWindowAction(() => setSurfaceVisible(surface, visible, nav));
   }, []);
 
@@ -1160,11 +1169,13 @@ export function App() {
     if (viewMode === "compact") {
       const prefs = isDesktop() ? readStartupSurfacePrefs() : { compact: true, strip: false };
       runWindowAction(async () => {
-        await restoreWindowPosition("compact");
-        await applyStartupUiScale("compact", { keepHidden: !prefs.compact });
-        if (prefs.strip && isDesktop()) {
-          await setSurfaceVisible("strip", true);
+        try {
+          if (IS_WINDOWS) await restoreFloatingSurfaces(prefs);
+        } finally {
+          await restoreWindowPosition("compact");
+          await applyStartupUiScale("compact", { keepHidden: !prefs.compact });
         }
+        if (IS_LINUX && prefs.strip && isDesktop()) await setSurfaceVisible("strip", true);
       });
     }
   }, []);

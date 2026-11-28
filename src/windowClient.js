@@ -204,7 +204,7 @@ async function applyStartupUiScale(mode, options = {}) {
   // 跳走。任何一步失败都不能把应用永久留在托盘，所以显示放在 finally。
   let revealed = Boolean(options.keepHidden);
   const reveal = async () => {
-    if (revealed) return;
+    if (revealed || (isWindowsPlatform() && !(await isSurfaceVisibilityRequested("compact")))) return;
     revealed = true;
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
@@ -643,6 +643,11 @@ async function setSurfaceVisible(surface, visible, nav = null) {
   await invoke("set_surface_visible", { surface, visible: Boolean(visible), nav: nav || null });
 }
 
+async function restoreFloatingSurfaces({ compact, strip }) {
+  if (!isDesktop() || !isWindowsPlatform()) return;
+  await invoke("restore_floating_surfaces", { compact, strip });
+}
+
 async function notifySurfaceVisibility() {
   if (!isDesktop() || isMacPlatform()) return;
   await invoke("notify_surface_visibility").catch(() => {});
@@ -652,6 +657,12 @@ async function onSurfaceVisibilityChanged(handler) {
   if (!isDesktop() || isMacPlatform()) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
   return listen("metrik://surface-visibility", (event) => handler(event.payload || {}));
+}
+
+async function onSurfacePreferenceChanged(handler) {
+  if (!isDesktop() || !isWindowsPlatform()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("metrik://surface-preference", (event) => handler(event.payload));
 }
 
 async function onPanelNav(handler) {
@@ -2141,6 +2152,7 @@ export {
   onScaleFactorChanged,
   onStateSync,
   onStripDetailClosed,
+  onSurfacePreferenceChanged,
   onSurfaceVisibilityChanged,
   onTrayPinnedChange,
   onTrayShowExpanded,
@@ -2152,6 +2164,7 @@ export {
   resizeCompactWindow,
   resizeMacosPanel,
   resizeStripWindow,
+  restoreFloatingSurfaces,
   restoreWindowPosition,
   setAutostart,
   setNativeTheme,
